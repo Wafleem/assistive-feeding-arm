@@ -1,0 +1,7 @@
+# Offline development: core + MuJoCo + tests.  `make setup` installs this.
+numpy>=1.24
+mujoco>=3.1
+pytest>=8
+# Optional, install when you get there:
+#   viam-sdk>=0.40            (real robot, see src/assistive_arm/robot_iface/viam.py)
+#   torch transformers pillow (OWLv2 / Grounding DINO / OpenVLA)
