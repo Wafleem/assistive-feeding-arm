@@ -1,0 +1,32 @@
+<mujoco model="door_lever">
+  <include file="../models/xarm6_wheelchair.xml"/>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.82 0.82 0.80" rgb2="0.74 0.74 0.72" width="256" height="256"/>
+    <material name="floor" texture="grid" texrepeat="8 8"/>
+  </asset>
+  <worldbody>
+    <light pos="0.3 -0.3 2.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="-0.5 -1.0 2.0" dir="0.5 0.5 -1" diffuse="0.4 0.4 0.4"/>
+    <geom name="floor" type="plane" size="4 4 0.1" material="floor"/>
+    <!-- Pull door in front of the chair: hinge on the robot's RIGHT at world y=-1.10,
+         0.85 m wide, opens toward the robot (+rotation about z). A latch (equality
+         constraint "door_latch") holds it shut until the lever is turned > 0.5 rad;
+         SimRobot toggles it (see _scene_hooks). -->
+    <geom name="wall_a" type="box" pos="0.86 -1.40 1.10" size="0.06 0.28 1.10" rgba="0.62 0.64 0.66 1"/>
+    <geom name="wall_b" type="box" pos="0.86 0.15 1.10" size="0.06 0.38 1.10" rgba="0.62 0.64 0.66 1"/>
+    <body name="door" pos="0.78 -1.10 0">
+      <joint name="door" type="hinge" axis="0 0 1" range="0 1.6" damping="4" frictionloss="0.5"/>
+      <geom name="door_panel" type="box" pos="0 0.425 1.0" size="0.02 0.42 0.98" rgba="0.55 0.40 0.28 1" mass="15"/>
+        <!-- lever: spindle 7 cm from the latch edge, bar points toward the hinge;
+             +rotation about the door normal pushes the bar down; spring return. -->
+        <body name="lever" pos="-0.02 0.78 0.95">
+          <joint name="lever" type="hinge" axis="1 0 0" range="0 1.0" stiffness="0.8" damping="0.05"/>
+          <geom name="lever_spindle" type="capsule" fromto="0 0 0 -0.06 0 0" size="0.008" rgba="0.75 0.75 0.78 1" mass="0.05"/>
+          <geom name="lever_bar" type="capsule" fromto="-0.06 0 0 -0.06 -0.12 0" size="0.01" rgba="0.75 0.75 0.78 1" mass="0.1"/>
+        </body>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="door_latch" joint1="door" polycoef="0 0 0 0 0" solref="0.005 1"/>
+  </equality>
+</mujoco>

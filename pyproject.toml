@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assistive-arm"
+version = "0.1.0"
+description = "Voice-driven assistive xArm6 for wheelchair users: open-vocabulary perception, guarded skills, MuJoCo sim, Viam on hardware"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+sim = ["mujoco>=3.1"]
+dev = ["pytest>=8", "mujoco>=3.1"]
+viam = ["viam-sdk>=0.40"]
+vision = ["torch", "transformers>=4.44", "pillow"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["sim: needs mujoco (skipped if not installed)", "render: needs an OpenGL context"]

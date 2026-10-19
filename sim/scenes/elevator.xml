@@ -1,0 +1,59 @@
+<mujoco model="elevator">
+  <include file="../models/xarm6_wheelchair.xml"/>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.82 0.82 0.80" rgb2="0.74 0.74 0.72" width="256" height="256"/>
+    <material name="floor" texture="grid" texrepeat="8 8"/>
+  </asset>
+  <worldbody>
+    <light pos="0.3 -0.3 2.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="-0.5 -1.0 2.0" dir="0.5 0.5 -1" diffuse="0.4 0.4 0.4"/>
+    <geom name="floor" type="plane" size="4 4 0.1" material="floor"/>
+    <!-- Elevator lobby wall 0.52 m in front of the arm base. Buttons 1-9 and L on a
+         keypad-style panel; ADA puts call/car buttons 0.38-1.22 m above the floor.
+         Buttons are spring-loaded slide joints with 6 mm travel (~2.4 N at the stop). -->
+    <geom name="wall" type="box" pos="0.77 -0.30 1.10" size="0.05 1.20 1.10" rgba="0.62 0.64 0.66 1"/>
+    <body name="panel" pos="0.72 -0.30 0.95">
+      <geom name="panel_plate" type="box" pos="-0.004 0 0.015" size="0.004 0.11 0.16" rgba="0.55 0.56 0.58 1"/>
+      <body name="button_7" pos="-0.014 0.07 0.12">
+        <joint name="button_7" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_7" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_8" pos="-0.014 0.0 0.12">
+        <joint name="button_8" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_8" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_9" pos="-0.014 -0.07 0.12">
+        <joint name="button_9" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_9" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_4" pos="-0.014 0.07 0.05">
+        <joint name="button_4" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_4" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_5" pos="-0.014 0.0 0.05">
+        <joint name="button_5" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_5" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_6" pos="-0.014 -0.07 0.05">
+        <joint name="button_6" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_6" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_1" pos="-0.014 0.07 -0.02">
+        <joint name="button_1" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_1" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_2" pos="-0.014 0.0 -0.02">
+        <joint name="button_2" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_2" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_3" pos="-0.014 -0.07 -0.02">
+        <joint name="button_3" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_3" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+      <body name="button_L" pos="-0.014 0.0 -0.09">
+        <joint name="button_L" type="slide" axis="1 0 0" range="0 0.006" stiffness="400" damping="3"/>
+        <geom name="button_L" type="cylinder" size="0.012 0.006" euler="0 1.5708 0" rgba="0.78 0.78 0.70 1" mass="0.01" contype="4" conaffinity="2"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

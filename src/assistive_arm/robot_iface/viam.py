@@ -1,0 +1,189 @@
+"""Real hardware through Viam: xArm6 + xArm Gripper + RealSense cameras (+ optional F/T sensor).
+
+UNTESTED against hardware (none yet). Written against the Python viam-sdk
+API (``RobotClient``, ``Arm``, ``Gripper``, ``Camera``, ``Sensor``,
+``MotionClient``); re-check signatures for the SDK version you install.
+
+Expected machine config (component names are constructor arguments):
+
+* ``arm``     - ``viam:ufactory:xArm6`` (frame parent: ``world``; put the
+                wheelchair mount offset in the frame system, not in code)
+* ``gripper`` - xArm gripper module, frame parent ``arm``
+* ``wrist-cam`` / ``scene-cam`` - ``viam:camera:realsense`` with depth; the
+                wrist camera's frame parent is ``gripper`` (hand-eye
+                calibration), the scene camera's is ``world`` (on the chair)
+* ``ft``      - optional sensor returning force_x/y/z in N (UFACTORY 6-axis
+                F/T sensor via a small module, or joint-current estimates)
+* ``builtin`` motion service with the keep-out boxes passed as obstacles
+
+Viam has no force-guarded linear move, so ``move_linear(max_force=...)``
+steps in ``guard_step`` increments and reads the sensor between steps. That
+is slow but bounded; replace it with the xArm SDK's force/impedance mode
+via ``do_command`` on a custom module for anything faster.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import threading
+
+import numpy as np
+
+from ..geometry import Pose, interpolate_poses
+from ..perception.types import CameraIntrinsics, CameraSpec, RGBDFrame
+from ..planning.safety import SafetyConfig
+from .base import GripperState, MoveResult, RobotInterface, Wrench
+from .viam_convert import pose_to_viam_dict, viam_dict_to_pose
+
+
+class _Loop:
+    """Run the async SDK from synchronous skills on a background event loop."""
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+
+    def run(self, coro, timeout=60):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+
+class ViamRobot(RobotInterface):
+    def __init__(self, address: str | None = None, arm="arm", gripper="gripper",
+                 cameras: dict[str, tuple[str, str]] | None = None, ft_sensor: str | None = None,
+                 safety: SafetyConfig | None = None, guard_step: float = 0.002):
+        from viam.components.arm import Arm
+        from viam.components.camera import Camera
+        from viam.components.gripper import Gripper
+        from viam.robot.client import RobotClient
+        from viam.services.motion import MotionClient
+
+        self._io = _Loop()
+        address = address or os.environ["VIAM_ADDRESS"]
+        opts = RobotClient.Options.with_api_key(
+            api_key=os.environ["VIAM_API_KEY"], api_key_id=os.environ["VIAM_API_KEY_ID"]
+        )
+        self.client = self._io.run(RobotClient.at_address(address, opts))
+        self.arm = Arm.from_robot(self.client, arm)
+        self.gripper_c = Gripper.from_robot(self.client, gripper)
+        self.motion = MotionClient.from_robot(self.client, "builtin")
+        # local name -> (viam component name, mount)
+        cameras = cameras or {"wrist": ("wrist-cam", "wrist"), "scene": ("scene-cam", "base")}
+        self._cams = {k: (Camera.from_robot(self.client, v[0]), v[1]) for k, v in cameras.items()}
+        self._cam_names = {k: v[0] for k, v in cameras.items()}
+        self.ft = None
+        if ft_sensor:
+            from viam.components.sensor import Sensor
+
+            self.ft = Sensor.from_robot(self.client, ft_sensor)
+        self.safety = safety or SafetyConfig()
+        self.guard_step = guard_step
+        self._tare = np.zeros(3)
+        self._specs: dict[str, CameraSpec] = {}
+
+    # helpers ---------------------------------------------------------------------
+    def _viam_pose(self, p: Pose):
+        from viam.proto.common import Pose as VPose
+
+        return VPose(**pose_to_viam_dict(p))
+
+    def _obstacles(self):
+        """Keep-out boxes as Viam obstacles so the motion planner avoids the user."""
+        from viam.proto.common import Geometry, GeometriesInFrame, Pose as VPose, RectangularPrism, Vector3, WorldState
+
+        geoms = []
+        for b in self.safety.keep_out:
+            c, s = b.center * 1000, b.size * 1000
+            geoms.append(Geometry(
+                center=VPose(x=c[0], y=c[1], z=c[2], o_z=1, theta=0),
+                box=RectangularPrism(dims_mm=Vector3(x=s[0], y=s[1], z=s[2])),
+                label=b.name,
+            ))
+        return WorldState(obstacles=[GeometriesInFrame(reference_frame="world", geometries=geoms)])
+
+    # RobotInterface ---------------------------------------------------------------
+    def get_tcp_pose(self) -> Pose:
+        p = self._io.run(self.arm.get_end_position())
+        return viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
+
+    def move_to_pose(self, pose: Pose, speed: float = 0.10) -> MoveResult:
+        from viam.proto.common import PoseInFrame
+
+        dest = PoseInFrame(reference_frame="world", pose=self._viam_pose(pose))
+        try:
+            ok = self._io.run(self.motion.move(
+                component_name=self.gripper_c.get_resource_name(self.gripper_c.name),
+                destination=dest, world_state=self._obstacles(),
+            ), timeout=120)
+        except Exception as e:  # planning failure, IK failure, timeout
+            return MoveResult(False, f"motion: {e}", self.get_tcp_pose())
+        return MoveResult(bool(ok), "", self.get_tcp_pose())
+
+    def move_linear(self, pose: Pose, speed: float = 0.03, max_force: float | None = None) -> MoveResult:
+        start = self.get_tcp_pose()
+        dist = float(np.linalg.norm(pose.position - start.position))
+        step = self.guard_step if max_force is not None else 0.02
+        peak, travelled, prev = 0.0, 0.0, start
+        for wp in interpolate_poses(start, pose, max(1, int(np.ceil(dist / step)))):
+            self._io.run(self.arm.move_to_position(self._viam_pose(wp)))
+            travelled += float(np.linalg.norm(wp.position - prev.position))
+            prev = wp
+            if max_force is not None:
+                f = self.get_wrench().magnitude
+                peak = max(peak, f)
+                if f > max_force:
+                    return MoveResult(False, "force_limit", self.get_tcp_pose(), peak, travelled)
+        return MoveResult(True, "", self.get_tcp_pose(), peak, travelled)
+
+    def open_gripper(self, width: float | None = None) -> GripperState:
+        self._io.run(self.gripper_c.open())
+        return GripperState(self.gripper_max_width, False)
+
+    def close_gripper(self, force: float = 20.0) -> GripperState:
+        holding = bool(self._io.run(self.gripper_c.grab()))  # grab() reports whether something was caught
+        return GripperState(np.nan, holding, force)
+
+    def _raw_force(self) -> np.ndarray:
+        if self.ft is None:
+            return np.zeros(3)  # no sensing: guarded moves degrade to travel limits only
+        r = self._io.run(self.ft.get_readings())
+        return np.array([r.get("force_x", 0.0), r.get("force_y", 0.0), r.get("force_z", 0.0)], dtype=float)
+
+    def get_wrench(self) -> Wrench:
+        return Wrench(self._raw_force() - self._tare)
+
+    def tare_wrench(self) -> None:
+        self._tare = self._raw_force()
+
+    def cameras(self) -> dict[str, CameraSpec]:
+        if not self._specs:
+            for k, (cam, mount) in self._cams.items():
+                props = self._io.run(cam.get_properties())
+                ip = props.intrinsic_parameters
+                self._specs[k] = CameraSpec(k, mount, CameraIntrinsics(
+                    ip.focal_x_px, ip.focal_y_px, ip.center_x_px, ip.center_y_px, ip.width_px, ip.height_px))
+        return self._specs
+
+    def get_frames(self, names=None) -> dict[str, RGBDFrame]:
+        out = {}
+        for k in names or list(self._cams):
+            cam = self._cams[k][0]
+            images, _meta = self._io.run(cam.get_images())
+            color = next(i for i in images if i.mime_type.startswith("image/jpeg") or i.mime_type.startswith("image/png"))
+            depth = next(i for i in images if "dep" in i.mime_type)
+            rgb = np.asarray(color.image.convert("RGB"))
+            d = np.asarray(depth.image if hasattr(depth, "image") else depth.data, dtype=np.float32) / 1000.0
+            out[k] = RGBDFrame(k, rgb, d, self.cameras()[k].intrinsics)
+        return out
+
+    def camera_pose(self, name: str) -> Pose:
+        from viam.proto.common import Pose as VPose, PoseInFrame
+
+        # The frame system knows both the static chair mount and the hand-eye offset.
+        origin = PoseInFrame(reference_frame=self._cam_names[name], pose=VPose(o_z=1))
+        p = self._io.run(self.client.transform_pose(origin, "world")).pose
+        # Assumes the camera frame is configured with OpenCV optical axes (+z forward, +y down).
+        return viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
+
+    def stop(self) -> None:
+        self._io.run(self.arm.stop())

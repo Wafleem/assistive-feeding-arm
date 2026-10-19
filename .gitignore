@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+.pytest_cache/
+out/
+# Model downloads and recorded data stay out of git (see docs/SIMULATION.md)
+sim/assets/
+data/
+*.mp4
+*.npz
+.env
+MUJOCO_LOG.TXT
