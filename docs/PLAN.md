@@ -1,5 +1,59 @@
 # Plan
 
+## 0. Flagship demo: open-vocabulary "hand me ___"
+
+The demo leads with **fetching any named object and handing it to the user**.
+The wheelchair skills (button, bag, door: sections 2-3) are later skills on
+the same pipeline: same intent schema, same detect → mask → 3D → plan → guarded
+motion → verify chain, same `RobotInterface`.
+
+**90-second script**
+
+| # | User says | Robot does | Shows |
+|---|---|---|---|
+| 1 | "Hand me the blue water bottle." | Overlay highlights it, picks it, hovers at the user's open palm, releases when the user pulls or says "got it". | Open-vocab detection + attributes, handover |
+| 2 | "Grab the mug." (two mugs) | Numbers both candidates on screen, asks "Which one?"; user: "The left one." | Ambiguity handled by asking, not guessing |
+| 3 | A judge names an unrehearsed object | Fetches it. | **The winning moment**: nothing was trained for it |
+| 4 | "Put it in the bin." | Places it into a modelled receptacle. | Placement with a relation target |
+
+**Pipeline**
+
+| Stage | v1 (event) | v2 | In repo today |
+|---|---|---|---|
+| Voice | push-to-talk faster-whisper (mlx-whisper on the Mac) | wake word on the sidecar | — |
+| Intent | small local LLM → strict JSON `{action, object, attributes, relation, target}`, validated against a schema; rule-based fallback (always handles "stop") | | Validated `Intent` + rule parser for the wheelchair phrases; needs `fetch`/`place` tasks and the attribute/relation fields |
+| Detection | OWLv2 or Grounding DINO with the object phrase (YOLO-World if speed matters; NanoOWL on a Jetson) | | OWLv2 / Grounding DINO wrappers (not yet run) |
+| Mask | SAM 2 from the box (NanoSAM on a Jetson); re-use the mask across frames | | box-centre fallback |
+| 3D | mask + aligned RealSense depth → point cloud → centroid, PCA axes, size | | depth → point + normal (`Locator`) |
+| Grasp | top-down along the shortest PCA axis; reject if width > 85 mm (gripper opening, with margin) | AnyGrasp / Contact-GraspNet | top-down handle grasp |
+| Collision scene | table plane + every other masked object as a box; carried object attached to the gripper | | keep-out boxes as Viam obstacles |
+| Motion | Viam builtin motion: approach, pre-grasp, close, check the grip by gripper position/current, lift | | `ViamRobot` (untested), `SimRobot` |
+| Handover | MediaPipe Hands: open palm → hover target; release on pull (F/T or gripper current spike) or "got it" | | hand-over pose + `release` |
+| Verify | re-detect: the object is gone from the table / in the bin | | world checks in sim eval |
+| Ambiguity | >1 candidate above threshold → number them in the overlay, ask by voice, resolve "left/right/nearest/biggest" against the candidates | | — |
+
+**Event milestones** (the long-term ones are in section 4)
+
+| When | Milestone | Done when |
+|---|---|---|
+| Week -2 | Offline perception | Detect + mask + 3D on ~50 recorded RealSense tabletop frames; accuracy baseline on the Linux GPU box; NanoOWL/NanoSAM engines running on the Jetson |
+| Week -1 | Sim pick loop | MuJoCo fetch with YCB objects through the **same vision API**; ≥ 70% grasp success over randomised scenes |
+| Day 1 | First real picks | Hand-eye calibration done, live overlay, 4 of 5 real picks |
+| Day 2 | Full demo | Voice + clarification + handover; unrehearsed objects; recorded backup video |
+
+**Risks and mitigations**
+
+| Risk | Mitigation |
+|---|---|
+| Detection latency | Run detection on a GPU (Jetson TensorRT or the Linux box); detect once, re-use the mask while the scene is static |
+| RealSense depth fails on shiny or black items | Matte, non-black demo objects; reject masks with < N valid depth pixels and say so |
+| Object wider than the gripper (85 mm) | Size check from the PCA extent before approaching; choose demo objects < 80 mm wide |
+| Look-alike objects | Number the candidates and confirm by voice |
+| Safety near a seated user | Speed/force limits, confirm before contact, keep-out zone (MediaPipe body on the sidecar + boxes), hardware e-stop; README "Safety framing" |
+
+Compute placement for every stage is in `docs/COMPUTE.md`; props and their
+simulation twins in `docs/PROPS.md`.
+
 ## 1. System architecture
 
 ```
@@ -133,7 +187,7 @@ to combine, cheapest first:
    (crumpled bag handles, cups), with the locator's 3D target as a sanity bound.
 3. **VLM as the planner/perception helper**: a VLM reads button labels, picks
    which handle, or answers "is the door open?" as a verifier.
-4. **Fine-tune** Octo or pi0 on sim rollouts of the scripted skills + teleop
+4. **Fine-tune** Octo, SmolVLA or pi0 (via LeRobot) on sim rollouts of the scripted skills + teleop
    demos from the real chair, evaluated in `scripts/eval_sim.py` before hardware.
 
 ## 4. Milestones
@@ -151,23 +205,22 @@ to combine, cheapest first:
 
 ## 5. Hackathon-sized MVP (one weekend, 3-5 people)
 
-Goal: **"press button 7" works on a real xArm6 against a printed/3D-printed
-button board, by voice, with a confirmation, and the same code passes in sim.**
+The MVP is the flagship fetch in section 0, scripts 1 and 2 first, 3 and 4 if
+time allows. The wheelchair skills appear as sim videos (button, bag, door)
+plus the `eval_sim.py` table. Hour by hour:
 
-* Hour 0-2: `make setup && make test` on every laptop; Viam machine with
-  xArm6 + gripper + one RealSense (wrist or table-mounted); `make viam-check`.
-* Hour 2-8: perception on real frames: OWLv2 "button" boxes + a digit reader
-  (Florence-2 OCR or a small VLM on crops); fall back to AprilTag-marked
-  buttons if detection is flaky (a legitimate hackathon shortcut, say so).
-* Hour 2-8 in parallel: bench F/T. If there is no F/T sensor, guard on joint
-  current via a Viam `do_command`, or on a cheap load cell under the button
-  board for the demo.
-* Hour 8-14: `ViamRobot.move_linear` guarded stepping tuned; press 9 buttons
-  in a row; record a video.
-* Hour 8-14 in parallel: Whisper push-to-talk + `parse()` + spoken
-  confirmation ("Press button 7? Say yes.").
-* Hour 14-20: bag grasp as the stretch goal; door only in sim for the demo.
-* Demo: live voice → press, plus sim videos of bag and door, plus the
-  `eval_sim.py` table and the safety framing slide.
+* Before the event: everything in the pre-event checklist in `docs/COMPUTE.md`
+  (JetPack flashed, TensorRT engines built, librealsense with aligned depth,
+  viam-server + xArm driver tested on the Jetson, weights on a USB stick).
+* Hour 0-2: `make setup && make test` on every laptop; Viam machine with xArm6
+  + gripper + RealSense; `make viam-check`; ChArUco hand-eye calibration.
+* Hour 2-8: live overlay: detection + SAM mask + 3D centroid drawn on the
+  camera feed for any typed phrase. In parallel: intent LLM → JSON with the
+  schema check and the rule fallback.
+* Hour 8-14: top-down PCA grasp + Viam motion + grip check; 5 real picks of
+  the YCB-style set. In parallel: MediaPipe open-palm detection on the sidecar.
+* Hour 14-20: handover (hover at palm, release on pull / "got it"); the
+  "which one?" clarification; placement in the bin.
+* Hour 20+: unrehearsed objects; record the backup video; rehearse the 90 s.
 
 See `docs/WORKSTREAMS.md` for who does what.

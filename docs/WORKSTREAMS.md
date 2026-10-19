@@ -1,6 +1,6 @@
 # Workstreams: splitting the work across a team
 
-The scaffold is cut along interfaces so six pieces can move in parallel without
+The scaffold is cut along interfaces so six pieces (plus props and a safety lead) can move in parallel without
 waiting on each other. Each workstream **owns** a set of paths, **consumes**
 and **provides** a small number of frozen contracts, has a **first task**
 it can start today with no hardware and no other stream's output, and a
@@ -23,6 +23,7 @@ it can start today with no hardware and no other stream's output, and a
                                     ┌──────────────▼──────────────┐
                                     │ F. Learning / VLA           │
                                     └─────────────────────────────┘
+   P. Props & instrumentation: physical props from the same CAD as their sim twins (PROPS.md).
    S. Safety lead (part-time, cross-cutting): reviews every change to planning/safety.py,
       skills' force/speed numbers, and owns the risk assessment and test protocol.
 ```
@@ -42,6 +43,23 @@ Ground rules: `make test` green on every PR; a stream that needs a contract
 change opens that PR first and small; nobody else edits your owned paths
 without telling you; results go in the PR description as an `eval_sim.py`
 table when behaviour changes.
+
+## Priority: the flagship fetch comes first
+
+The flagship demo is open-vocabulary "hand me ___" (PLAN.md §0). Each stream's
+**first** task is its piece of the fetch; the wheelchair-skill tasks listed in
+the stream sections below come after it.
+
+| Stream | Fetch task (do first) | Done when |
+|---|---|---|
+| A | Intent LLM → strict JSON `{action, object, attributes, relation, target}` with schema validation + rule fallback; add `fetch` and `place` tasks to `Intent`; "which one?" dialogue resolving "left/right/nearest" | 95% correct JSON on 100 recorded fetch phrases; ambiguous phrases always produce a question |
+| B | Recorded-frame replay as `RGBDFrame`s; OWLv2 / GDINO / YOLO-World / NanoOWL + SAM 2 / NanoSAM on ~50 RealSense frames; centroid, PCA axes and width from mask + depth; numbered candidates for the overlay | Accuracy and latency baseline table (COMPUTE.md) by week -2 |
+| C | `fetch` skill: top-down grasp along the shortest PCA axis with the 85 mm width check, collision scene (table + other objects as boxes, carried object attached), grip check, lift, handover to the open palm, release on pull or "got it", verify by re-detection; `place` into the bin | ≥ 70% in the sim tabletop eval by week -1, 0 false claims |
+| D | `tabletop.xml` with YCB meshes and a bin; fetch/place rows in `eval_sim.py` with world checks (lifted > 5 cm and held 2 s; inside the bin) | Scene randomised over objects, poses, look-alikes |
+| E | Jetson setup per COMPUTE.md pre-event checklist; NanoOWL/NanoSAM as Viam vision modules; gripper position/current exposed for the grip check; hand-eye calibration | Live overlay on the real camera; 4 of 5 real picks on day 1 |
+| F | ~50 sim teleop fetch demos; SmolVLA / pi0 via LeRobot ("two brains, same task") | Scored in the same tabletop eval |
+| S | Handover safety: open-palm target speed limits, keep-out zone from MediaPipe body on the sidecar, release logic that can't drop onto the lap | Reviewed before day 1 |
+| P | Fetch object set, bin, table at chair height, calibration board (PROPS.md) | Props built and their MuJoCo twins match the CAD |
 
 ---
 
@@ -198,6 +216,21 @@ Done: a policy that beats the scripted skill on at least one randomised
 task in `eval_sim.py` with 0 user contacts and 0 keep-out refusals.
 **Can start:** today (zero-shot in the current scenes).
 
+## P. Props & instrumentation
+
+**Owns:** new `props/` (CAD sources: OpenSCAD/Fusion/Onshape exports, firmware
+for the ESP32s), the sim twins' dimensions in `sim/scenes/`, shared with D.
+**Provides:** physical props that report success as JSON lines, and a sim
+twin of each from the same CAD model (PROPS.md).
+
+First tasks: fetch object set + bin + table (cheap, needed first); then the
+elevator panel (one evening, ESP32 reporting `pressed:N`); then the door
+(a weekend, hinge encoder + handle switch); an adapter that feeds prop events
+into the dashboard and the eval harness alongside `SimRobot.events`.
+
+Done: every prop in the demo reports its own success, and its sim twin
+matches the measured dimensions, travel, forces and weights.
+
 ## S. Safety lead (cross-cutting, part-time)
 
 **Owns:** `planning/safety.py` review, `docs/SAFETY.md` (to write), the
@@ -214,16 +247,21 @@ outside the team before M6.
 
 | Team | Split |
 |---|---|
-| 3 people | (A + S), (B + F), (C + D + E) |
-| 4 people | A + S, B, C + D, E + F |
-| 6 people | one per A-F; the C owner doubles as safety lead |
+| 3 people | (A + S + P), (B + F), (C + D + E) |
+| 4 people | A + S, B, C + D, E + F + P |
+| 6 people | one per A-F; the C owner doubles as safety lead; props shared by D and E |
 | Weekend hackathon | follow PLAN.md §5: E gets the arm moving, B gets buttons found, A gets voice, C/D keep sim and skills green and do the demo glue |
 
 ## Integration points (put them on the calendar)
 
-1. **Week 1 end:** B's real detector on D's textured frames inside `make eval`.
-2. **Week 2:** E's `ViamRobot` + C's skills on the bench button board, with
-   A's voice front end: the hackathon MVP.
-3. **Week 3:** C's compliant door control on E's force mode, scored in sim first.
-4. **Week 4:** F's best policy vs C's scripted skill on D's randomised bag scenes.
-5. **Before the chair:** every item in SIMULATION.md §9, signed off by S.
+1. **Week -2:** B's offline perception baseline on recorded frames (Linux and
+   Jetson numbers in COMPUTE.md); A's JSON intent on recorded phrases.
+2. **Week -1:** C's fetch skill + B's perception in D's tabletop scene, ≥ 70%
+   in `eval_sim.py`; E's Jetson passes the pre-event checklist.
+3. **Day 1:** hand-eye calibration, live overlay, 4 of 5 real picks (E + B + C).
+4. **Day 2:** voice + clarification + handover (A + C + S), unrehearsed
+   objects, recorded backup video.
+5. **After the event:** wheelchair skills on the same pipeline: button board
+   bench test, compliant door control (C + E), F's policy vs the scripted
+   skills on randomised scenes; every item in SIMULATION.md §9 signed off by S
+   before the chair.

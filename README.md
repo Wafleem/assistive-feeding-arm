@@ -4,8 +4,15 @@ A UFACTORY **xArm6** with a parallel-jaw gripper (the xArm Gripper, 0-85 mm),
 mounted on a power wheelchair, that does the small reach-and-touch jobs a
 seated user often can't:
 
-> "Press button 7 on the elevator." · "Grab the shopping bag." ·
+> "Hand me the blue water bottle." · "Grab the mug." – "Which one?" – "The left one." ·
+> "Put it in the bin." · "Press button 7 on the elevator." · "Grab the shopping bag." ·
 > "Grab the door handle and open it." · "Stop." · "Let go."
+
+**Flagship demo:** open-vocabulary "hand me ___": any object a judge names is
+found, picked, and handed to the user's open palm; look-alikes are numbered
+on screen and resolved by asking. The wheelchair skills (button, bag, door)
+are built on the same pipeline and come next. Script, pipeline and event
+milestones: [docs/PLAN.md §0](docs/PLAN.md).
 
 Speech becomes a validated intent; open-vocabulary vision finds the target in
 3D using a camera **on the wheelchair** plus one **on the wrist**; a small
@@ -21,6 +28,8 @@ elevator button, lifts a 1.2 kg bag and hands it over, and opens a lever door.
 
 | As a seated user I want to... | so that... | Skill | Status in sim |
 |---|---|---|---|
+| say "hand me the blue water bottle" | I get things I can't reach, without naming them in advance | `fetch` (planned: detect → SAM mask → PCA grasp → handover to open palm) | not built yet: tabletop + YCB scene and the fetch skill are the first tasks (SIMULATION.md §0) |
+| be asked "which one?" when there are two mugs | it never guesses between look-alikes | clarification | planned |
 | say "press 7" in an elevator | I don't need to ask a stranger to press my floor | `press_button` | works: 10/10 buttons, with and without 4 mm chair sway |
 | say "grab the shopping bag" | I can get my bag from a counter onto my lap | `grasp_handle` | works: grasp, weigh (1.22 kg measured / 1.2 kg true), hand over |
 | say "open the door" | I can get through a pull door alone | `open_door` | lever door works when the hinge is known; with an estimated hinge it stops partway (safe, not yet useful); knob: not yet |
@@ -111,6 +120,8 @@ scripts/eval_sim.py      benchmark table over seeds, sway, detector noise
 docs/PLAN.md             architecture, skills, modular-vs-VLA, milestones, hackathon MVP
 docs/SIMULATION.md       how to build and test all of it before the arm and chair exist
 docs/WORKSTREAMS.md      the work split into parallel pieces for a team
+docs/COMPUTE.md          what runs on the Jetson AGX / Orin Nano / Linux GPU box / Mac; pre-event checklist
+docs/PROPS.md            how to build each prop and its MuJoCo twin from one CAD model; self-reporting props
 tests/                   intent, geometry, safety, skills, executor, MuJoCo end-to-end
 ```
 
