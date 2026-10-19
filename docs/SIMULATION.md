@@ -34,6 +34,55 @@ columns that must stay at zero do.
 
 ---
 
+## 0. Simulate the flagship fetch first
+
+The flagship demo (PLAN.md §0, "hand me ___") is rehearsed in three layers,
+cheapest first. None of them needs the arm.
+
+**(a) Offline perception on recorded frames, from day one.** Record ~50
+RealSense RGB-D frames of tabletop scenes (the demo objects, two look-alike
+mugs, clutter, the bin) from the wrist and wheelchair viewpoints. Save per
+frame: colour PNG, depth as uint16 millimetres (`.npz`, aligned to colour),
+intrinsics JSON, and a `labels.json` with the object phrases and hand-drawn
+boxes (CVAT, or one SAM click per object). A small replay class that serves
+these frames as `RGBDFrame`s lets the *same* `Detector`/`Locator` code run on
+them. Metrics per detector (OWLv2, Grounding DINO, YOLO-World, NanoOWL):
+recall at IoU 0.5 for the named object, wrong-object rate on the look-alikes,
+3D centroid error against a tape-measured position for 10 frames, object
+width error against calipers (this drives the 85 mm gripper check), latency
+per device (see COMPUTE.md). Store the frames in `data/` (git-ignored) and a
+copy on the demo USB stick.
+
+**(b) MuJoCo tabletop with YCB objects.** A `tabletop.xml` scene (to add):
+table at seat height in front of the chair, 3-6 objects per episode drawn from
+YCB meshes (mustard bottle, mug, banana, can, sponge, box; the same set as the
+real props, PROPS.md), plus a bin. Sources: the YCB benchmark meshes, or the
+Google Scanned Objects / YCB conversions to MJCF (e.g. the
+`mujoco_scanned_objects` collection); convex-decompose with `obj2mjcf`
+(CoACD) so contacts are stable. The wrist and wheelchair cameras render the
+scene and feed the **same** perception code; with the oracle detector first,
+then the real detectors on textured renders. Success metric per episode:
+object lifted > 5 cm and still held 2 s later (and, for "put it in the bin",
+its centre inside the bin volume). Target before day 1: **≥ 70% grasp success
+over randomised scenes**, reported per object by `eval_sim.py` with zero false
+claims and zero user contacts, as for the other tasks.
+
+**(c) One robot API.** Unchanged: the fetch skill talks to `RobotInterface`,
+so the same code runs on `SimRobot` and `ViamRobot`.
+
+**(d) Domain randomisation** (§7): object pose/yaw, which objects and how many,
+look-alike pairs, table colour, lighting, camera extrinsics, depth noise and
+dropouts (black and shiny objects lose depth on a real RealSense: model it, and
+choose matte props).
+
+**Stretch: "two brains, same task".** Collect ~50 teleop demos of the fetch
+in sim (and a few real ones), train SmolVLA or pi0 through LeRobot, and score
+it in the same `eval_sim.py` tabletop task against the modular pipeline.
+
+Not in the repo yet: the `fetch`/`place` intents, the tabletop scene, the
+recorded-frame replay class and the PCA grasp. They are first tasks for the
+workstreams in WORKSTREAMS.md.
+
 ## 1. Robot models
 
 ### xArm6 + gripper
@@ -90,7 +139,8 @@ Studio readout for 5 joint configurations (< 1 mm).
 | Fit here | **Default for everything now** | Perception data + large-scale VLA/RL training later | Quick URDF checks | Only if a ROS stack is needed |
 
 **Recommendation:** MuJoCo for development, CI and skill evaluation (it is
-already wired). Add Isaac Sim (Replicator) when the perception workstream needs
+already wired, and it runs natively with the viewer on the team's Mac; Isaac
+Sim does not run on macOS at all). Add Isaac Sim (Replicator) when the perception workstream needs
 photoreal training images of elevator panels and handles, and Isaac Lab or MJX
 when the VLA workstream needs many parallel rollouts. Both import the same
 URDF. Benchmarks worth borrowing for VLA evaluation: SIMPLER (sim evaluation
