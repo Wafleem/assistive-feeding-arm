@@ -121,7 +121,7 @@ docs/PLAN.md             architecture, skills, modular-vs-VLA, milestones, hacka
 docs/SIMULATION.md       how to build and test all of it before the arm and chair exist
 docs/WORKSTREAMS.md      the work split into parallel pieces for a team
 docs/COMPUTE.md          what runs on the Jetson AGX / Orin Nano / Linux GPU box / Mac; pre-event checklist
-docs/PROPS.md            how to build each prop and its MuJoCo twin from one CAD model; self-reporting props
+docs/PROPS.md            props bought ready-made or packed flat, shopping/packing lists, sim twins, self-reporting sensors
 tests/                   intent, geometry, safety, skills, executor, MuJoCo end-to-end
 ```
 

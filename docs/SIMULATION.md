@@ -56,7 +56,8 @@ copy on the demo USB stick.
 **(b) MuJoCo tabletop with YCB objects.** A `tabletop.xml` scene (to add):
 table at seat height in front of the chair, 3-6 objects per episode drawn from
 YCB meshes (mustard bottle, mug, banana, can, sponge, box; the same set as the
-real props, PROPS.md), plus a bin. Sources: the YCB benchmark meshes, or the
+real props, PROPS.md: they are bought at Target-type stores, so measure the
+bought item and adjust or replace the YCB mesh to match), plus a bin. Sources: the YCB benchmark meshes, or the
 Google Scanned Objects / YCB conversions to MJCF (e.g. the
 `mujoco_scanned_objects` collection); convex-decompose with `obj2mjcf`
 (CoACD) so contacts are stable. The wrist and wheelchair cameras render the
@@ -360,7 +361,7 @@ Before the first contact on hardware, each line checked and written down:
       on the controller (not only in this code).
 - [ ] Software stop: "stop" by voice halts motion in < 300 ms, measured.
 - [ ] Every skill run first in sim with the measured parameters, then on a
-      bench mock-up (button board, bag, door on a frame), then with a
+      bench mock-up (the PROPS.md arcade panel, bag and cabinet door), then with a
       mannequin in the chair, then with a person.
 - [ ] Risk assessment written (ISO 10218-2 / ISO/TS 15066 / ISO 13482 as
       references) and reviewed by someone not on the build team.

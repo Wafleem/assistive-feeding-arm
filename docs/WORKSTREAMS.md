@@ -23,7 +23,7 @@ it can start today with no hardware and no other stream's output, and a
                                     ┌──────────────▼──────────────┐
                                     │ F. Learning / VLA           │
                                     └─────────────────────────────┘
-   P. Props & instrumentation: physical props from the same CAD as their sim twins (PROPS.md).
+   P. Props & instrumentation: bought or flat-pack props, measured into sim twins (PROPS.md).
    S. Safety lead (part-time, cross-cutting): reviews every change to planning/safety.py,
       skills' force/speed numbers, and owns the risk assessment and test protocol.
 ```
@@ -59,7 +59,7 @@ the stream sections below come after it.
 | E | Jetson setup per COMPUTE.md pre-event checklist; NanoOWL/NanoSAM as Viam vision modules; gripper position/current exposed for the grip check; hand-eye calibration | Live overlay on the real camera; 4 of 5 real picks on day 1 |
 | F | ~50 sim teleop fetch demos; SmolVLA / pi0 via LeRobot ("two brains, same task") | Scored in the same tabletop eval |
 | S | Handover safety: open-palm target speed limits, keep-out zone from MediaPipe body on the sidecar, release logic that can't drop onto the lap | Reviewed before day 1 |
-| P | Fetch object set, bin, table at chair height, calibration board (PROPS.md) | Props built and their MuJoCo twins match the CAD |
+| P | Buy and measure the fetch objects, bin, shelf riser, calibration board (PROPS.md shopping list) | Every fetch prop measured into its sim twin; near-venue items listed by brand and size |
 
 ---
 
@@ -218,18 +218,24 @@ task in `eval_sim.py` with 0 user contacts and 0 keep-out refusals.
 
 ## P. Props & instrumentation
 
-**Owns:** new `props/` (CAD sources: OpenSCAD/Fusion/Onshape exports, firmware
-for the ESP32s), the sim twins' dimensions in `sim/scenes/`, shared with D.
-**Provides:** physical props that report success as JSON lines, and a sim
-twin of each from the same CAD model (PROPS.md).
+**Owns:** new `props/` (measurements of bought items, CAD for the few custom
+flat parts, ESP32 firmware), the sim twins' dimensions in `sim/scenes/`
+(shared with D), and the packing list.
+**Provides:** props that are either bought ready-made (A) or flat-pack and
+table-clamped (B), each reporting its own success as JSON lines, each with a
+sim twin built from measurements (PROPS.md).
 
-First tasks: fetch object set + bin + table (cheap, needed first); then the
-elevator panel (one evening, ESP32 reporting `pressed:N`); then the door
-(a weekend, hinge encoder + handle switch); an adapter that feeds prop events
-into the dashboard and the eval harness alongside `SimRobot.events`.
+First tasks: buy the "ahead" items on the PROPS.md shopping list; measure each
+one with calipers or a tape measure and hand the numbers to D; assemble and
+test the arcade-button panel (USB encoder or ESP32 reporting `pressed:N`);
+fit hinges, catch and pull to the cabinet door and bolt up the 2020 frame;
+time a full teardown and a 30-minute rebuild at home; write the adapter that
+feeds prop events into the dashboard and the eval harness alongside
+`SimRobot.events`.
 
-Done: every prop in the demo reports its own success, and its sim twin
-matches the measured dimensions, travel, forces and weights.
+Done: everything packs into the bags in the packing plan; the on-site setup
+checklist takes ≤ 30 minutes; every demo prop reports its own success; every
+sim twin matches the measured item.
 
 ## S. Safety lead (cross-cutting, part-time)
 

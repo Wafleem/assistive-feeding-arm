@@ -51,8 +51,10 @@ motion → verify chain, same `RobotInterface`.
 | Look-alike objects | Number the candidates and confirm by voice |
 | Safety near a seated user | Speed/force limits, confirm before contact, keep-out zone (MediaPipe body on the sidecar + boxes), hardware e-stop; README "Safety framing" |
 
-Compute placement for every stage is in `docs/COMPUTE.md`; props and their
-simulation twins in `docs/PROPS.md`.
+Compute placement for every stage is in `docs/COMPUTE.md`. Props are all
+either bought ready-made (Target, Home Depot, IKEA, Amazon) or flat-pack and
+clamped to the venue table; shopping list, packing plan, sim twins and
+self-reporting sensors are in `docs/PROPS.md`.
 
 ## 1. System architecture
 
@@ -198,7 +200,7 @@ to combine, cheapest first:
 | M1 | Real perception in sim | OWLv2/GDINO + SAM on rendered frames replaces the oracle; `make eval` ≥ 90% on the elevator with real detector + labelled button textures + OCR | M0 |
 | M2 | Sim realism | Real xArm6 + gripper meshes; domain randomisation; `eval-hard` (sway + noise) ≥ 90% elevator/bag | M0 |
 | M3 | Door v2 | Hinge from door-edge detection; compliant turn/swing; lever ≥ 80% with estimated hinge; knob working | M1 |
-| M4 | Bench hardware | xArm6 on a table + Viam: `ViamRobot` passes the same skill tests against a real button board and bag; F/T sensor wired | M0 |
+| M4 | Bench hardware | xArm6 on a table + Viam: `ViamRobot` passes the same skill tests against the arcade-button panel and the bag (PROPS.md); F/T sensor wired | M0 |
 | M5 | Voice | Whisper + LLM intent + spoken confirmations; "stop" latency < 300 ms | M0 |
 | M6 | On the chair | Arm on the chair mount, keep-out boxes measured, mannequin trials, risk assessment | M2-M5 |
 | M7 | VLA track | Octo/pi0 fine-tuned on sim + teleop data, scored by `eval_sim.py` with zero user contacts | M2 |
@@ -211,7 +213,11 @@ plus the `eval_sim.py` table. Hour by hour:
 
 * Before the event: everything in the pre-event checklist in `docs/COMPUTE.md`
   (JetPack flashed, TensorRT engines built, librealsense with aligned depth,
-  viam-server + xArm driver tested on the Jetson, weights on a USB stick).
+  viam-server + xArm driver tested on the Jetson, weights on a USB stick);
+  the "ahead" items in the PROPS.md shopping list bought, measured into
+  their sim twins and packed per its packing plan.
+* On arrival: buy the "near venue" items (groceries, bin, drawer unit), then
+  the 30-minute prop setup checklist in PROPS.md.
 * Hour 0-2: `make setup && make test` on every laptop; Viam machine with xArm6
   + gripper + RealSense; `make viam-check`; ChArUco hand-eye calibration.
 * Hour 2-8: live overlay: detection + SAM mask + 3D centroid drawn on the
