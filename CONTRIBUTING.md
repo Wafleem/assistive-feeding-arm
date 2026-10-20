@@ -10,8 +10,8 @@ make render     # what the cameras see in the MuJoCo feeding scene (out/)
 make todo       # every TODO, by section
 ```
 
-Then read `README.md` → `docs/PLAN.md` → `docs/WORKSTREAMS.md` → your section's
-`src/assistive_arm/<section>/README.md`.
+Then read **`AGENTS.md`** (the rules) → `README.md` → `docs/PLAN.md` →
+`docs/WORKSTREAMS.md` → your section's `src/assistive_arm/<section>/README.md`.
 
 ## Implementing a section
 
