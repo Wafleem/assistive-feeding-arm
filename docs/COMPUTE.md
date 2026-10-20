@@ -5,53 +5,58 @@
 | Machine | From | Role |
 |---|---|---|
 | UFACTORY xArm6 + parallel gripper | venue | the arm, through Viam |
-| Linux PC | venue | `viam-server`, motion, orchestration, feeding motion & safety, dashboard |
-| Jetson AGX Orin 32 GB | us | model host: food detection + segmentation, grasp model, local LLM, speech, optional VLM/VLA |
-| Jetson Orin Nano 8 GB dev kit | us | dedicated face/mouth tracker + safety monitor at high frame rate, next to the fixed camera |
-| RealSense-class RGB-D camera(s) | **assumption: confirm** | one fixed (face + plate), ideally one on the wrist |
+| The venue's Viam machine (a normal Linux PC) | venue | `viam-server`, cameras, motion service, orchestration, feeding motion & safety, mouth tracking, dashboard |
+| Jetson AGX Orin 32 GB | us | **additional AI compute** the Viam machine may not have: food detection + segmentation, grasp model, local LLM, speech, optional VLM/VLA |
+| RealSense-class RGB-D camera(s) | **assumption: confirm** | one fixed (sees the plate and the printed mouth), ideally one on the wrist |
 | Mac (M-series) | us | development and MuJoCo simulation only |
 
-Every model is wrapped as a **Viam vision or generic service**, and the
-computers are parts of one Viam machine. Moving a model between the AGX, the
-Nano and the PC is then a config change.
+The AGX joins as a **remote part of the same Viam machine**. Each model is wrapped as a
+Viam vision or generic service, so moving a model between the AGX and the Viam machine
+is a config change, not a code change.
 
-## Placement
+## Placement (to review)
 
 | Stage | Where | Why |
 |---|---|---|
-| Mouth detection + Kalman tracker + ready gate + head-motion monitor | **Orin Nano** (camera plugged in) | short, predictable latency; it's the safety-critical loop; MediaPipe/ArUco are light |
-| Food detection (NanoOWL; OWLv2/GDINO fallback) + masks (NanoSAM; SAM 2) | **AGX Orin** | TensorRT engines, 32 GB |
-| Grasp model (AnyGrasp / Contact-GraspNet) | AGX or Linux PC (if it has a GPU) | CUDA |
-| Intent LLM: local small quantised model (Ollama / llama.cpp) + faster-whisper | **AGX Orin** (default backend) | private and offline; optional Claude / OpenAI **API** backends as fallbacks (API keys, not subscriptions; see `language/README.md`) |
+| Cameras, `viam-server`, motion service | Viam machine | next to the arm; that's what the venue provides |
+| Mouth tracking: ArUco on the printed mouth + Kalman tracker + gates | **Viam machine** | light (CPU), and it's the safety-critical loop, so keep it next to the camera and the arm and off the network hop. Move it to the AGX only if the PC is too slow. |
+| Food detection (NanoOWL; OWLv2 / Grounding DINO fallback) + masks (NanoSAM; SAM 2) | **AGX Orin** | GPU, TensorRT, 32 GB |
+| Grasp model (AnyGrasp / Contact-GraspNet) | **AGX Orin** | CUDA |
+| Intent LLM: a local small quantised model (Ollama / llama.cpp) + faster-whisper | **AGX Orin** (default backend) | private and offline; optional Claude / OpenAI **API** backends as fallbacks (API keys, not subscriptions; see `language/README.md`) |
 | VLM attribute questions (small Qwen-VL / SmolVLM class) | AGX Orin | only at decision points |
-| VLA (stretch: SmolVLA / pi0) | AGX inference; training elsewhere | treat any published latency figures as self-reported until measured |
-| viam-server, motion service, orchestration, feeding servo loop, dashboard | **venue Linux PC** | next to the arm |
+| VLA (stretch: SmolVLA / pi0) | AGX inference; training elsewhere | treat published latency figures as self-reported until measured |
+| Orchestration, feeding servo loop, dashboard | Viam machine | next to the arm |
 | Simulation, development | Mac | MuJoCo native; no CUDA/TensorRT there |
 
-**If the Orin Nano is unavailable:** run the mouth tracker on the AGX with its
-own camera process at top priority. **If the AGX is unavailable:** the Nano
-runs NanoOWL + NanoSAM and the tracker at a lower rate, and the LLM runs on the
-Mac or the Linux PC.
+**Network:** the AGX and the Viam machine on our own switch with a cable (no venue Wi-Fi).
+Frames for the food models cross the network only at decision points (selecting an
+item), never inside the servo loop.
+
+**If the AGX is unavailable:** run OWLv2 / Grounding DINO on the Viam machine's GPU
+(if it has one) or on the CPU at low rate, and run the LLM on the Mac or through a cloud API.
+The demo still works, just slower.
+
+**If the venue also provides a Jetson Orin Nano or a GPU:** a later option is to move
+mouth tracking there; it isn't needed for the printed mouth.
 
 ## Pre-event checklist
 
-- [ ] JetPack flashed on both Jetsons; versions of JetPack/CUDA/TensorRT/models written down here
+- [ ] JetPack flashed on the AGX; JetPack/CUDA/TensorRT/model versions written down here
 - [ ] TensorRT engines built in advance (NanoOWL, NanoSAM; 10-30 min each)
-- [ ] librealsense with aligned depth on the Nano (and AGX if it has a camera)
-- [ ] MediaPipe Face Landmarker and the ArUco detector running on the Nano at ≥ 30 fps
-- [ ] Local LLM + faster-whisper on the AGX, offline; if using cloud fallbacks, API keys in `.env` on the machine running the router (never in git)
-- [ ] Each model reachable as a Viam service from a test machine config
-- [ ] A USB stick with weights, engines, recorded frames, the backup video
-- [ ] Our own network switch/router and cables (no venue Wi-Fi dependency)
-- [ ] Power supplies for both Jetsons
+- [ ] The AGX added as a remote part of a test Viam machine; each model reachable as a Viam service
+- [ ] Local LLM + faster-whisper on the AGX, offline. If using cloud fallbacks, API keys
+      go in `.env` on the machine that runs the router (never in git).
+- [ ] ArUco tracking of the printed mouth running at ≥ 30 fps on a laptop-class CPU (stand-in for the venue PC)
+- [ ] A USB stick with weights, engines, recorded frames and the backup video
+- [ ] Our own switch and cables; power for the AGX
 
 ## Latency budget (fill in on hardware)
 
 | Step | Target | Measured |
 |---|---|---|
-| Camera capture → MouthState (Nano) | < 50 ms | |
-| MouthState → arm command takes effect (PC + controller) | < 80 ms | |
+| Camera capture → MouthState (Viam machine) | < 50 ms | |
+| MouthState → arm command takes effect | < 80 ms | |
 | Total used by `TrackerParams.latency` | ~100-130 ms | |
-| Food detection + mask, one frame (AGX) | < 300 ms | |
-| Speech end → validated intent | < 1.5 s | |
+| Food detection + mask, one frame (AGX, incl. network) | < 300 ms | |
+| Speech end → validated intent (AGX) | < 1.5 s | |
 | "stop" spoken → arm halted | < 300 ms | |

@@ -2,13 +2,15 @@
 
 ReadyGate (PLAN): ready only when the mouth is open AND the head is still
 (speed < max_speed) AND tracking is confident and fresh, continuously for
-``hold`` seconds. Any failure resets the timer. Expose a human-readable
+``hold`` seconds. (The printed mouth is always open, so for the demo this is
+"still and tracked"; keep the open check for real faces later.) Any failure resets the timer. Expose a human-readable
 ``reason`` for the dashboard ("mouth closed", "head moving 0.06 m/s", ...).
 
 HeadMotionMonitor (PLAN): call ``start`` when the final approach begins, then
 ``check`` every tick. Retreat (ok=False, with a reason) if: the head moves fast,
 drifts more than max_drift from the anchor, turns more than max_turn_deg,
-tracking is lost or stale, or (optionally) the mouth closes before the bite.
+tracking is lost or stale, or (for real faces) the mouth closes before the bite.
+Test it by sliding or turning the printed mouth by hand during an approach.
 """
 
 from __future__ import annotations
