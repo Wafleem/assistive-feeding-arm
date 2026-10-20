@@ -1,232 +1,84 @@
-# Plan
+# Plan: assisted eating
 
-## 0. Flagship demo: open-vocabulary "hand me ___"
+## 1. Architecture
 
-The demo leads with **fetching any named object and handing it to the user**.
-The wheelchair skills (button, bag, door: sections 2-3) are later skills on
-the same pipeline: same intent schema, same detect → mask → 3D → plan → guarded
-motion → verify chain, same `RobotInterface`.
+```
+                         ┌──────────────── Jetson Orin Nano (at the camera) ─────────────────┐
+ fixed RGB-D cam ───────►│ 1 mouth perception: detector → Kalman tracker → ready gate /       │──► MouthState @30 Hz
+ (face + plate)          │   head-motion monitor   (+ wake word, safety monitor)              │
+                         └────────────────────────────────────────────────────────────────────┘
+                         ┌──────────────── Jetson AGX Orin 32 GB (model host) ────────────────┐
+ wrist RGB-D cam ───────►│ 2 food perception: NanoOWL/OWLv2 + NanoSAM/SAM 2 + depth → items   │──► FoodItem[]
+ mic ───────────────────►│ 5 language: faster-whisper → local LLM → FeedIntent (rules fallback)│──► FeedIntent
+                         │ 3 grasp model (AnyGrasp / Contact-GraspNet), optional VLM / VLA     │──► GraspCandidate
+                         └────────────────────────────────────────────────────────────────────┘
+                         ┌──────────────── Venue Linux PC ────────────────────────────────────┐
+                         │ viam-server: xArm6 + gripper + cameras, builtin motion service      │
+                         │ 6 orchestration state machine, 4 feeding motion & safety            │──► arm
+                         │ dashboard: camera + overlays, state, transcript, big STOP            │
+                         └────────────────────────────────────────────────────────────────────┘
+ Mac: development + 7 MuJoCo simulation only.  Every model is a Viam vision/generic service,
+ so moving it between machines is a config change (docs/COMPUTE.md).
+```
 
-**90-second script**
+**Bite cycle** (section 6):
+`IDLE → SELECT_ITEM → ACQUIRE → VERIFY_GRASP → WAIT_READY → APPROACH → DELIVER → WAIT_BITE → RETREAT → next`.
+"Stop" from any state halts the arm, and it retreats if it is near the face.
+Every state has a timeout.
 
-| # | User says | Robot does | Shows |
+**Cameras (an assumption to confirm with the venue):** one fixed RealSense-class
+RGB-D camera on a clamp-on post that sees the plate and the face, plus one on the
+wrist. If only one camera is available, use it fixed for the mouth (at the end
+of the approach the food blocks the wrist camera's view) and add the wrist
+camera for food when you have it.
+
+## 2. The 90-second demo
+
+| t | Who | What happens | What it shows |
 |---|---|---|---|
-| 1 | "Hand me the blue water bottle." | Overlay highlights it, picks it, hovers at the user's open palm, releases when the user pulls or says "got it". | Open-vocab detection + attributes, handover |
-| 2 | "Grab the mug." (two mugs) | Numbers both candidates on screen, asks "Which one?"; user: "The left one." | Ambiguity handled by asking, not guessing |
-| 3 | A judge names an unrehearsed object | Fetches it. | **The winning moment**: nothing was trained for it |
-| 4 | "Put it in the bin." | Places it into a modelled receptacle. | Placement with a relation target |
+| 0:00 | User | "What's on the plate?" → "Grapes, strawberries and melon." | Open-vocabulary perception + voice |
+| 0:10 | User | "Feed me a strawberry." The overlay highlights the strawberry; the arm pinches it, checks the grip, lifts | Detection → grasp → closed-loop check |
+| 0:25 | Robot | "Ready for a strawberry?" User: "Yes." The arm waits at the staging point until the mouth is open and still | Confirm before every bite; ready gate |
+| 0:35 | Robot | Final approach along the face normal, stopping 3 cm from the lips while following small head motions smoothly | Kalman prediction + latency compensation (the RoboMaster part) |
+| 0:45 | Fake mouth | The head turns away mid-approach, and the arm retreats at once | Safety: retreat on head motion |
+| 0:55 | User | "Slower, and a grape this time." | LLM router, dialogue preferences |
+| 1:10 | User | "Stop!" mid-move: the arm freezes. "I'm done.": the arm parks | Safety words override everything |
+| 1:20 | Slide | Sim eval table: deliveries, distance at delivery, max speed near the face, 0 contacts | Evidence |
 
-**Pipeline**
-
-| Stage | v1 (event) | v2 | In repo today |
-|---|---|---|---|
-| Voice | push-to-talk faster-whisper (mlx-whisper on the Mac) | wake word on the sidecar | — |
-| Intent | small local LLM → strict JSON `{action, object, attributes, relation, target}`, validated against a schema; rule-based fallback (always handles "stop") | | Validated `Intent` + rule parser for the wheelchair phrases; needs `fetch`/`place` tasks and the attribute/relation fields |
-| Detection | OWLv2 or Grounding DINO with the object phrase (YOLO-World if speed matters; NanoOWL on a Jetson) | | OWLv2 / Grounding DINO wrappers (not yet run) |
-| Mask | SAM 2 from the box (NanoSAM on a Jetson); re-use the mask across frames | | box-centre fallback |
-| 3D | mask + aligned RealSense depth → point cloud → centroid, PCA axes, size | | depth → point + normal (`Locator`) |
-| Grasp | top-down along the shortest PCA axis; reject if width > 85 mm (gripper opening, with margin) | AnyGrasp / Contact-GraspNet | top-down handle grasp |
-| Collision scene | table plane + every other masked object as a box; carried object attached to the gripper | | keep-out boxes as Viam obstacles |
-| Motion | Viam builtin motion: approach, pre-grasp, close, check the grip by gripper position/current, lift | | `ViamRobot` (untested), `SimRobot` |
-| Handover | MediaPipe Hands: open palm → hover target; release on pull (F/T or gripper current spike) or "got it" | | hand-over pose + `release` |
-| Verify | re-detect: the object is gone from the table / in the bin | | world checks in sim eval |
-| Ambiguity | >1 candidate above threshold → number them in the overlay, ask by voice, resolve "left/right/nearest/biggest" against the candidates | | — |
-
-**Event milestones** (the long-term ones are in section 4)
+## 3. Milestones
 
 | When | Milestone | Done when |
 |---|---|---|
-| Week -2 | Offline perception | Detect + mask + 3D on ~50 recorded RealSense tabletop frames; accuracy baseline on the Linux GPU box; NanoOWL/NanoSAM engines running on the Jetson |
-| Week -1 | Sim pick loop | MuJoCo fetch with YCB objects through the **same vision API**; ≥ 70% grasp success over randomised scenes |
-| Day 1 | First real picks | Hand-eye calibration done, live overlay, 4 of 5 real picks |
-| Day 2 | Full demo | Voice + clarification + handover; unrehearsed objects; recorded backup video |
+| Week -2 | Offline perception | Mouth tracker running on recorded video of the fake mouth; food detection + masks on ~50 recorded plate frames; latency measured on each device |
+| Week -2 | First implementations of the stubs | The KF, ready gate, rule parser, PCA grasp and feeding-pose specs in `make test` pass instead of xfail |
+| Week -1 | Full bite cycle in sim | "Feed me a grape" end to end in `sim/scenes/feeding.xml`, including the turn-away retreat and the never-opens timeout; eval table |
+| Week -1 | Jetsons ready | JetPack, TensorRT engines (NanoOWL/NanoSAM), MediaPipe, local LLM, and Viam services on the AGX and the Nano |
+| Day 1 | Real arm | Hand-eye calibration; overlay on the live camera; 4 of 5 real grape picks; approach to the fake mouth stopping at 3 cm |
+| Day 2 | Full demo | Voice + confirmations + retreat on head motion; rehearse the 90 s; record a backup video |
+| Stretch | Utensil + cup, VLA | Spoon from a rest + a scoop of yogurt; cup with a straw; SmolVLA/pi0 acquisition compared in sim |
 
-**Risks and mitigations**
+## 4. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Detection latency | Run detection on a GPU (Jetson TensorRT or the Linux box); detect once, re-use the mask while the scene is static |
-| RealSense depth fails on shiny or black items | Matte, non-black demo objects; reject masks with < N valid depth pixels and say so |
-| Object wider than the gripper (85 mm) | Size check from the PCA extent before approaching; choose demo objects < 80 mm wide |
-| Look-alike objects | Number the candidates and confirm by voice |
-| Safety near a seated user | Speed/force limits, confirm before contact, keep-out zone (MediaPipe body on the sidecar + boxes), hardware e-stop; README "Safety framing" |
+| Anything touching the face | 3 cm standoff, speed caps, force limit, moving keep-out zone, confirm each bite, e-stop; mannequin only |
+| Mouth tracking jitter or latency makes the approach jerky | Kalman filter + latency compensation, rate-limited servoing, stop on stale tracking; measure latency end to end |
+| MediaPipe doesn't detect the fake mouth | Fiducial (ArUco) detector on the mannequin as the main demo path |
+| Soft or wet food slips or bruises | Firm foods (grapes, cheese or melon cubes), low grip force, holding check before the approach |
+| Detection fails on shiny plates or black items | Matte plate, colourful foods, depth validity check |
+| Venue camera or network differs from the plan | Fallback using only the fixed camera; everything wired, no dependence on venue Wi-Fi |
+| LLM slow or wrong | The rule parser handles safety words first and is the fallback; schema validation |
+| Spills (cup) | Stretch goal only; lid + straw; never tilt near the face |
 
-Compute placement for every stage is in `docs/COMPUTE.md`. Props are all
-either bought ready-made (Target, Home Depot, IKEA, Amazon) or flat-pack and
-clamped to the venue table; shopping list, packing plan, sim twins and
-self-reporting sensors are in `docs/PROPS.md`.
+## 5. Team roles
 
-## 1. System architecture
-
-```
- mic ──► ASR ──► intent ──► task planner ──► executor ───────────────────────────────┐
-        (Whisper   (rules,     (plan as data,   │                                      │
-         / Vosk)    or LLM →    read back to    │ clear_view → locate → observe →      │
-                    validated   the user)       │ locate (close-up) → skill            │
-                    Intent)                     ▼                                      ▼
-                                    perception (Locator)                    skills (guarded)
-                          wheelchair cam ─┐  open-vocab detector         press_button / grasp_handle /
-                          wrist cam ──────┼► (+ SAM mask, + OCR) ──►     open_door / release / run_vla
-                                          │  depth → 3D point + normal          │
-                                          └─ camera pose from frame system      │ safety envelope:
-                                                                                │ keep-out, speed, force,
-                                                                                │ confirm-before-contact
-                                                                                ▼
-                                                           RobotInterface (one API)
-                                              ┌───────────────────┼───────────────────┐
-                                          FakeRobot          SimRobot (MuJoCo)     ViamRobot
-                                         (unit tests)      arm, gripper, F/T,     Arm, Gripper, Camera,
-                                                           2 RGB-D cams, sway     Sensor, Motion service
-```
-
-| Stage | Today (in repo) | Target |
+| Role | Section(s) | Best fit |
 |---|---|---|
-| Speech | none (text in) | Whisper `small.en` or `distil-whisper` locally on the chair computer, push-to-talk button on the armrest; Vosk as a CPU fallback. Wake word optional. |
-| Intent | `intent/parser.py` rule parser, `Intent.from_dict` validator | LLM (Claude / local Llama) with `Intent.json_schema()` as a tool/JSON schema; rules stay as the offline fallback and for "stop" (never wait on an LLM to stop). |
-| Planner | `planning/task_planner.py`: fixed per-task step list | Same shape; add multi-step tasks ("take me to floor 3" = call button, wait, enter, press 3) as sequences of plans. |
-| Perception | `perception/locate.py` + sim oracle, OWLv2 / Grounding DINO wrappers | Grounding DINO or OWLv2 boxes → SAM 2 mask → depth → point + support-plane normal. OCR/VLM reads button labels. |
-| Skills | 3 hand-written + VLA runner | Add impedance control for handle turns; door hinge estimation; more handles. |
-| Robot | `ViamRobot` (untested), `SimRobot`, `FakeRobot` | Viam xArm6 module + gripper + 2 RealSense + F/T sensor module; motion service with keep-out obstacles. |
+| Tracking lead | 1 mouth perception | RoboMaster vision/tracking: Kalman, latency compensation |
+| Servo & safety lead | 4 feeding motion & safety (+ safety review of all the numbers) | RoboMaster controls: smooth servoing, limits |
+| Perception | 2 food perception (+ VLM) | detection/segmentation, Jetson TensorRT |
+| Manipulation | 3 grasping & acquisition (+ VLA stretch) | grasping, Viam motion |
+| Interaction | 5 language + dashboard | LLMs, speech, UI |
+| Integration | 6 orchestration + 7 sim + 8 props | systems, MuJoCo, hardware bring-up |
 
-### Frames and cameras
-
-* **Base frame** = xArm6 base flange: +x forward of the chair, +y toward the user
-  (arm on the right armrest), +z up. Everything the skills see is in this frame.
-* **Wheelchair camera** (`mount="base"`): a D435/D455 on a mast behind and above
-  the arm, looking forward-down. Calibrated once to the arm base (it moves with
-  the chair, so the extrinsic does not change). Sees the whole workspace while the
-  arm works; used for the coarse fix, for checking the arm stays clear of the user,
-  and as the third-person view most VLAs were trained with.
-* **Wrist camera** (`mount="wrist"`): a D405/D435 on the gripper. Hand-eye
-  calibrated. Used for the close-up refine just before contact.
-* **World camera** (`mount="world"`, optional): fixed in the environment for
-  lab work and data collection; needs the chair's pose (AprilTag on the chair).
-
-Why both: the wheelchair camera alone was ~7 mm off on a button from ~70 cm in
-sim (and its normal estimate is noisy); the wrist camera alone can't find things
-outside its narrow view and is blind when the arm is parked. Coarse-then-fine
-uses each where it is good. In sim the parked arm's elbow occluded the wheelchair
-camera badly enough that a "clear view" move became the first step of every plan.
-
-## 2. Skill library
-
-Every skill: free-space approach → confirm → guarded contact → verify → retract.
-Parameters live in dataclasses at the top of each file.
-
-### press_button (`skills/press_button.py`)
-1. Target = button face point + panel normal (the normal comes from the
-   **panel** plane, not the tiny button).
-2. Close the fingers into one blunt pusher. Pre-press pose 8 cm out along the
-   normal, tool axis = -normal, tool rolled "camera up"; if that roll needs a
-   wrist flip, try rolled 180° (the closed fingers are symmetric).
-3. Confirm. Tare the F/T sensor.
-4. Guarded straight-line move to 2 cm *past* the expected face at 2 cm/s, stop at 6 N.
-5. Verify: stopped on force (else "no resistance") and not more than 12 mm
-   early (else "wrong surface": bezel, frame, neighbouring button).
-6. Retract to the pre-press pose. Future: watch the button light up with the
-   wrist camera as a second check.
-
-### grasp_handle (`skills/grasp.py`), e.g. a shopping bag
-1. Top-down approach; tool x along the handle bar so the fingers close across it.
-2. Fingertips 2 cm below the seen top of the bar; guarded descent (15 N).
-3. Tare, close slowly (jaw speed matters: a fast close knocks free objects away),
-   check the jaws stopped on something.
-4. Lift 12 cm, **weigh** with the F/T sensor; over 3 kg → put it back.
-5. Carry at lift height, then lower to the hand-over pose in front of the user at
-   0.05 m/s; check it is still in the hand. Hold until "let go".
-
-### open_door (`skills/door.py`)
-1. Target = handle grip point; normal from the **door** plane.
-2. Grasp from the front, fingers closing vertically across a lever.
-3. Turn: lever = arc about the spindle (axis = door normal, radius ≈ half the
-   lever, chosen so the lever goes down); knob = twist about its own axis.
-   Guarded at 25 N.
-4. Swing: arc about the hinge line (vertical), sign chosen so the handle moves
-   toward the robot for "pull", guarded at 30 N, 2° steps, 25° target.
-5. Verify the handle is still in the hand. Hold the door (a closer would shut it).
-
-The arc geometry is only as good as the hinge and spindle estimates. Sim
-findings to design around: with the true hinge the lever door opens 25°; with
-the hinge estimated from handle + door width (2-3 cm off) the guarded swing
-stops early or loses the handle (correctly reported as partial/failed, not
-success); spindle radius estimates of 0.04-0.06 m work for a 0.06 m lever,
-0.065 m and above jam. Real fixes, in order: estimate the hinge from the
-detected door edge and the door plane; then make the turn and swing compliant
-(xArm impedance/force mode via a custom Viam module, or admittance control on
-the F/T reading: move along the measured force within a cone around the arc).
-
-### release, stop
-`release` asks, opens, backs off 5 cm. `stop` halts and stays stopped.
-
-### run_vla (`skills/vla.py`)
-Any policy with `reset(instruction)` / `act(obs) -> delta pose + gripper`.
-Each step is clamped (2 cm, 0.15 rad), checked against the keep-out boxes,
-executed as a guarded move, and the episode is step-bounded. One confirmation
-before the policy may move.
-
-## 3. Modular pipeline vs end-to-end VLA
-
-| | Modular (detect → locate → scripted skill) | VLA (OpenVLA 7B, Octo, pi0 / pi0.5) |
-|---|---|---|
-| Novel objects/scenes | Good where open-vocab detection works; each new *kind* of interaction needs a skill | Promising in-distribution; brittle on new embodiments without fine-tuning |
-| Data needed | None to start | 50-500 demos per task on *this* arm/camera for useful fine-tunes |
-| Precision (a 2 cm button) | mm-level from depth + guarded press | Typically cm-level; fine pushing of small targets is a known weak spot |
-| Contact / force | Explicit thresholds, verifiable | No force input in most VLAs; must be wrapped |
-| Explainability | Plan can be read back; every step logged | Opaque |
-| Compute | CPU-ish (OWLv2 ~1 s/frame) | GPU: OpenVLA 7B ~16 GB bf16 at ~5 Hz; Octo small runs on a laptop GPU |
-| Safety argument | Straightforward | Needs the wrapper anyway |
-
-**Recommendation: modular core, VLA as a skill.** The planner owns the task
-and the safety envelope; perception and the hand-written skills handle the
-three reference tasks; a VLA is invoked only for open-ended "grab X" requests
-that the handle-grasp skill doesn't cover, and only through `run_vla`. Ways
-to combine, cheapest first:
-
-1. **VLA for the approach, scripted for contact.** Let the policy bring the
-   gripper near the object (it is good at the "where and how to approach"
-   part), then hand over to a guarded scripted grasp/press.
-2. **Scripted for the approach, VLA for manipulation** of awkward objects
-   (crumpled bag handles, cups), with the locator's 3D target as a sanity bound.
-3. **VLM as the planner/perception helper**: a VLM reads button labels, picks
-   which handle, or answers "is the door open?" as a verifier.
-4. **Fine-tune** Octo, SmolVLA or pi0 (via LeRobot) on sim rollouts of the scripted skills + teleop
-   demos from the real chair, evaluated in `scripts/eval_sim.py` before hardware.
-
-## 4. Milestones
-
-| # | Milestone | Done when | Depends on |
-|---|---|---|---|
-| M0 | Scaffold (this repo) | 72 offline tests pass; 3 sim skills run end to end | — |
-| M1 | Real perception in sim | OWLv2/GDINO + SAM on rendered frames replaces the oracle; `make eval` ≥ 90% on the elevator with real detector + labelled button textures + OCR | M0 |
-| M2 | Sim realism | Real xArm6 + gripper meshes; domain randomisation; `eval-hard` (sway + noise) ≥ 90% elevator/bag | M0 |
-| M3 | Door v2 | Hinge from door-edge detection; compliant turn/swing; lever ≥ 80% with estimated hinge; knob working | M1 |
-| M4 | Bench hardware | xArm6 on a table + Viam: `ViamRobot` passes the same skill tests against the arcade-button panel and the bag (PROPS.md); F/T sensor wired | M0 |
-| M5 | Voice | Whisper + LLM intent + spoken confirmations; "stop" latency < 300 ms | M0 |
-| M6 | On the chair | Arm on the chair mount, keep-out boxes measured, mannequin trials, risk assessment | M2-M5 |
-| M7 | VLA track | Octo/pi0 fine-tuned on sim + teleop data, scored by `eval_sim.py` with zero user contacts | M2 |
-
-## 5. Hackathon-sized MVP (one weekend, 3-5 people)
-
-The MVP is the flagship fetch in section 0, scripts 1 and 2 first, 3 and 4 if
-time allows. The wheelchair skills appear as sim videos (button, bag, door)
-plus the `eval_sim.py` table. Hour by hour:
-
-* Before the event: everything in the pre-event checklist in `docs/COMPUTE.md`
-  (JetPack flashed, TensorRT engines built, librealsense with aligned depth,
-  viam-server + xArm driver tested on the Jetson, weights on a USB stick);
-  the "ahead" items in the PROPS.md shopping list bought, measured into
-  their sim twins and packed per its packing plan.
-* On arrival: buy the "near venue" items (groceries, bin, drawer unit), then
-  the 30-minute prop setup checklist in PROPS.md.
-* Hour 0-2: `make setup && make test` on every laptop; Viam machine with xArm6
-  + gripper + RealSense; `make viam-check`; ChArUco hand-eye calibration.
-* Hour 2-8: live overlay: detection + SAM mask + 3D centroid drawn on the
-  camera feed for any typed phrase. In parallel: intent LLM → JSON with the
-  schema check and the rule fallback.
-* Hour 8-14: top-down PCA grasp + Viam motion + grip check; 5 real picks of
-  the YCB-style set. In parallel: MediaPipe open-palm detection on the sidecar.
-* Hour 14-20: handover (hover at palm, release on pull / "got it"); the
-  "which one?" clarification; placement in the bin.
-* Hour 20+: unrehearsed objects; record the backup video; rehearse the 90 s.
-
-See `docs/WORKSTREAMS.md` for who does what.
+With fewer people: (1+4), (2+3), (5+6), sharing 7 and 8. See `docs/WORKSTREAMS.md`.
