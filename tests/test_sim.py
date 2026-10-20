@@ -16,13 +16,22 @@ from assistive_arm.skills import DoorParams, SkillContext  # noqa: E402
 YES = SkillContext(confirm=lambda m: True)
 
 
-@pytest.fixture(scope="module")
-def elevator():
+@pytest.fixture(scope="session")
+def rendering():
+    """Skip camera-based tests where there is no OpenGL context (e.g. a CI box
+    without MUJOCO_GL=osmesa/egl set up). Physics-only tests still run."""
     r = SimRobot("elevator")
     try:
         r.get_frames(["wrist"])
-    except Exception as e:  # no OpenGL context (headless CI): skip rendering tests
+    except Exception as e:
         pytest.skip(f"rendering unavailable: {e}")
+    finally:
+        r.close()
+
+
+@pytest.fixture(scope="module")
+def elevator(rendering):
+    r = SimRobot("elevator")
     yield r
     r.close()
 
@@ -69,7 +78,7 @@ def test_press_button_end_to_end(elevator, utterance, label):
     assert "user_contact" not in elevator.events
 
 
-def test_grab_bag_end_to_end():
+def test_grab_bag_end_to_end(rendering):
     r = SimRobot("bag")
     log = Executor(r, Locator(r.oracle_detector()), YES).run(parse("grab the shopping bag"))
     assert log.result.status == "success", (log.result, log.notes)
@@ -78,7 +87,7 @@ def test_grab_bag_end_to_end():
     assert r.gripper_state().holding
 
 
-def test_open_lever_door_with_known_hinge():
+def test_open_lever_door_with_known_hinge(rendering):
     r = SimRobot("door_lever")
     hinge = r._base_world().inverse().transform_point([0.78, -1.10, 0.95])
     ex = Executor(r, Locator(r.oracle_detector()), YES, door_defaults=DoorParams(hinge_side="right", hinge_point=hinge))
@@ -87,7 +96,7 @@ def test_open_lever_door_with_known_hinge():
     assert r.scene_state()["door"] > np.deg2rad(15)
 
 
-def test_door_never_reports_success_it_did_not_achieve():
+def test_door_never_reports_success_it_did_not_achieve(rendering):
     """With an estimated hinge the arc is a few cm off. Whatever happens, a
     'success' must mean the door really is open."""
     r = SimRobot("door_lever")
@@ -108,7 +117,7 @@ def test_sim_stops_on_contact_with_the_user():
         assert r.move_to_pose(r.get_tcp_pose()).reason == "stopped"
 
 
-def test_wheelchair_sway_is_tolerated_by_guarded_press():
+def test_wheelchair_sway_is_tolerated_by_guarded_press(rendering):
     r = SimRobot("elevator", sway=0.004)
     log = Executor(r, Locator(r.oracle_detector()), YES).run(parse("press button 5 on the elevator"))
     assert log.result.status == "success", (log.result, log.notes)
