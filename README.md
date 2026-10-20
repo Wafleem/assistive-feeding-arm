@@ -97,13 +97,16 @@ make viewer       # interactive MuJoCo viewer
 make todo         # list every TODO by section
 ```
 
-New here? Read [CONTRIBUTING.md](CONTRIBUTING.md), then [docs/PLAN.md](docs/PLAN.md),
-then [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md), then your section's README.
+New here? Read [AGENTS.md](AGENTS.md) (the rules: plans before code, modularity, safety),
+then [CONTRIBUTING.md](CONTRIBUTING.md), [docs/PLAN.md](docs/PLAN.md),
+[docs/WORKSTREAMS.md](docs/WORKSTREAMS.md), and your section's README. Every folder has a
+README with its plan; `src/assistive_arm/README.md` maps the packages.
 
 ## Docs
 
 | Doc | What |
 |---|---|
+| [AGENTS.md](AGENTS.md) | how to implement anything here: modularity and import rules, interfaces, safety, tests, git (CLAUDE.md imports it) |
 | [docs/PLAN.md](docs/PLAN.md) | architecture, 90-second demo, milestones, risks, team roles |
 | [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) | one stream per section: contracts, first tasks, done-when |
 | [docs/SIMULATION.md](docs/SIMULATION.md) | developing everything in MuJoCo first |
