@@ -1,4 +1,7 @@
-"""Run a vision-language-action policy (OpenVLA, Octo, pi0, ...) inside the safety envelope.
+"""Run a vision-language-action policy (SmolVLA, pi0, OpenVLA, ...) inside the safety envelope.
+
+This runner works today (with ScriptedPolicy). A real VLA for bite acquisition is
+the STRETCH goal: see grasping/README.md for when it helps and the data plan.
 
 A VLA outputs small end-effector deltas at 3-15 Hz. We never send those to
 the arm raw: every step is clamped in size, checked against the keep-out
@@ -18,7 +21,7 @@ import numpy as np
 
 from ..geometry import Pose, axis_angle_to_mat
 from ..robot_iface.base import RobotInterface
-from .base import SafetyRefusal, SkillContext, SkillResult, guarded_linear
+from ..motion.primitives import SafetyRefusal, SkillContext, SkillResult, guarded_linear
 
 
 @dataclass

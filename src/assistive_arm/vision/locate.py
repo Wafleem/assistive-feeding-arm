@@ -2,10 +2,10 @@
 
 Two cameras, two roles:
 
-* the off-arm camera (``mount='base'``, on the wheelchair) gives the coarse
+* the fixed camera (``mount='base'``, on a post at the table) gives the coarse
   location from a stable viewpoint the arm does not move;
 * the wrist camera refines it from ~25 cm away just before contact, which
-  also absorbs wheelchair sway and calibration error ("look before every move").
+  also absorbs calibration error ("look before every move").
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ class Locator:
                support_query: str | None = None) -> Target3D | None:
         """Try cameras in order; return the first confident 3D fix.
 
-        ``support_query`` names the surface the target sits on ("door",
-        "elevator panel"). Its plane gives the approach normal, which a thin
-        lever or a small knob cannot give reliably on its own."""
+        ``support_query`` names the surface the target sits on ("face",
+        "plate"). Its plane gives the approach normal, which a small target
+        (the mouth opening, a grape) cannot give reliably on its own."""
         names = cameras or list(robot.cameras())
         frames = robot.get_frames(names)
         for name in names:
@@ -52,6 +52,21 @@ class Locator:
             if t is not None:
                 return t
         return None
+
+    def locate_all(self, robot: "RobotInterface", query: str, cameras: list[str] | None = None,
+                   support_query: str | None = None) -> list[Target3D]:
+        """Every instance of ``query`` from the first camera that sees any, best first."""
+        names = cameras or list(robot.cameras())
+        frames = robot.get_frames(names)
+        for name in names:
+            frame = frames.get(name)
+            if frame is None:
+                continue
+            dets = sorted(self.detector.detect(frame, query), key=lambda d: d.score, reverse=True)
+            found = [t for t in (self._target(robot, frame, query, d, support_query) for d in dets) if t is not None]
+            if found:
+                return found
+        return []
 
     def _support_normal(self, frame, depth, support_query, center) -> np.ndarray | None:
         dets = self.detector.detect(frame, support_query)
@@ -64,11 +79,11 @@ class Locator:
         return fit_plane(pts)[1]
 
     def _locate_in_frame(self, robot, frame, query, support_query=None) -> Target3D | None:
-        p = self.params
         dets = sorted(self.detector.detect(frame, query), key=lambda d: d.score, reverse=True)
-        if not dets:
-            return None
-        det = dets[0]
+        return self._target(robot, frame, query, dets[0], support_query) if dets else None
+
+    def _target(self, robot, frame, query, det, support_query=None) -> Target3D | None:
+        p = self.params
         depth = np.where(frame.depth < p.max_range, frame.depth, 0)
         pts = mask_points(depth, mask_or_box(det, depth.shape), frame.intrinsics)
         if len(pts) < p.min_points:
@@ -93,5 +108,7 @@ class Locator:
             score=det.score,
             camera=frame.camera,
             n_points=len(pts),
-            extras={"normal_source": source},
+            # The object's own 3D points (base frame) feed grasp planning (PCA axes, width).
+            extras={"normal_source": source, "bbox": det.bbox, "mask": det.mask,
+                    "points": pts @ cam.rot.T + cam.position, **det.extras},
         )

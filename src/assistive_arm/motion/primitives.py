@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from ..geometry import Pose
-from ..planning.safety import SafetyEnvelope
+from .safety import SafetyEnvelope
 from ..robot_iface.base import MoveResult, RobotInterface
 
 Status = Literal["success", "partial", "failed", "aborted", "refused"]
@@ -15,7 +15,7 @@ Status = Literal["success", "partial", "failed", "aborted", "refused"]
 @dataclass
 class SkillContext:
     safety: SafetyEnvelope = field(default_factory=SafetyEnvelope)
-    # Ask the seated user a yes/no question (voice or a big touchscreen button).
+    # Ask the user a yes/no question (voice, a big touchscreen button, or a nod).
     # Must return False on timeout. Tests pass ``lambda msg: True``.
     confirm: Callable[[str], bool] = lambda msg: False
     log: Callable[[str], None] = lambda msg: None
@@ -55,7 +55,7 @@ def guarded_linear(
         raise SafetyRefusal("; ".join(map(str, violations)))
     c = ctx.safety.config
     speed = min(speed or c.contact_speed, c.contact_speed, ctx.safety.speed_limit(pose.position))
-    limit = min(max_force, max(c.max_contact_force, c.door_pull_force))
+    limit = min(max_force, c.max_contact_force)
     ctx.log(f"guarded_linear {pose} @ {speed:.3f} m/s, max {limit:.1f} N")
     return robot.move_linear(pose, speed, max_force=limit)
 

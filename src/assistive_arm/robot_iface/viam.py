@@ -1,4 +1,4 @@
-"""Real hardware through Viam: xArm6 + xArm Gripper + RealSense cameras (+ optional F/T sensor).
+"""Real hardware through Viam: the venue's xArm6 + parallel gripper + RealSense-class cameras.
 
 UNTESTED against hardware (none yet). Written against the Python viam-sdk
 API (``RobotClient``, ``Arm``, ``Gripper``, ``Camera``, ``Sensor``,
@@ -7,11 +7,11 @@ API (``RobotClient``, ``Arm``, ``Gripper``, ``Camera``, ``Sensor``,
 Expected machine config (component names are constructor arguments):
 
 * ``arm``     - ``viam:ufactory:xArm6`` (frame parent: ``world``; put the
-                wheelchair mount offset in the frame system, not in code)
+                table mount offset in the frame system, not in code)
 * ``gripper`` - xArm gripper module, frame parent ``arm``
 * ``wrist-cam`` / ``scene-cam`` - ``viam:camera:realsense`` with depth; the
                 wrist camera's frame parent is ``gripper`` (hand-eye
-                calibration), the scene camera's is ``world`` (on the chair)
+                calibration), the scene camera's is ``world`` (on a post at the table)
 * ``ft``      - optional sensor returning force_x/y/z in N (UFACTORY 6-axis
                 F/T sensor via a small module, or joint-current estimates)
 * ``builtin`` motion service with the keep-out boxes passed as obstacles
@@ -31,8 +31,8 @@ import threading
 import numpy as np
 
 from ..geometry import Pose, interpolate_poses
-from ..perception.types import CameraIntrinsics, CameraSpec, RGBDFrame
-from ..planning.safety import SafetyConfig
+from ..vision.types import CameraIntrinsics, CameraSpec, RGBDFrame
+from ..motion.safety import SafetyConfig
 from .base import GripperState, MoveResult, RobotInterface, Wrench
 from .viam_convert import pose_to_viam_dict, viam_dict_to_pose
 
@@ -87,18 +87,30 @@ class ViamRobot(RobotInterface):
 
         return VPose(**pose_to_viam_dict(p))
 
+    def update_world(self, zones) -> None:
+        """Moving obstacles (the tracked head, the plate) added to the next motion plan."""
+        self._dynamic_zones = tuple(zones)
+
     def _obstacles(self):
-        """Keep-out boxes as Viam obstacles so the motion planner avoids the user."""
-        from viam.proto.common import Geometry, GeometriesInFrame, Pose as VPose, RectangularPrism, Vector3, WorldState
+        """Keep-out zones as Viam obstacles so the motion planner avoids the user.
+
+        TODO(feeding): also send the carried item/utensil as a geometry attached to
+        the gripper frame (WorldState transforms), as the pick-and-place project did.
+        """
+        from viam.proto.common import (
+            Geometry, GeometriesInFrame, Pose as VPose, RectangularPrism, Sphere, Vector3, WorldState,
+        )
 
         geoms = []
-        for b in self.safety.keep_out:
-            c, s = b.center * 1000, b.size * 1000
-            geoms.append(Geometry(
-                center=VPose(x=c[0], y=c[1], z=c[2], o_z=1, theta=0),
-                box=RectangularPrism(dims_mm=Vector3(x=s[0], y=s[1], z=s[2])),
-                label=b.name,
-            ))
+        for z in tuple(self.safety.keep_out) + getattr(self, "_dynamic_zones", ()):
+            if hasattr(z, "radius"):
+                c = np.asarray(z.center) * 1000
+                geoms.append(Geometry(center=VPose(x=c[0], y=c[1], z=c[2], o_z=1, theta=0),
+                                      sphere=Sphere(radius_mm=z.radius * 1000), label=z.name))
+            else:
+                c, s = z.center * 1000, z.size * 1000
+                geoms.append(Geometry(center=VPose(x=c[0], y=c[1], z=c[2], o_z=1, theta=0),
+                                      box=RectangularPrism(dims_mm=Vector3(x=s[0], y=s[1], z=s[2])), label=z.name))
         return WorldState(obstacles=[GeometriesInFrame(reference_frame="world", geometries=geoms)])
 
     # RobotInterface ---------------------------------------------------------------
@@ -179,7 +191,7 @@ class ViamRobot(RobotInterface):
     def camera_pose(self, name: str) -> Pose:
         from viam.proto.common import Pose as VPose, PoseInFrame
 
-        # The frame system knows both the static chair mount and the hand-eye offset.
+        # The frame system knows both the static camera mount and the hand-eye offset.
         origin = PoseInFrame(reference_frame=self._cam_names[name], pose=VPose(o_z=1))
         p = self._io.run(self.client.transform_pose(origin, "world")).pose
         # Assumes the camera frame is configured with OpenCV optical axes (+z forward, +y down).

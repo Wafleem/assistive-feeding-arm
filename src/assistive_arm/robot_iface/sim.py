@@ -8,22 +8,24 @@
   for Viam's motion planner.
 * Force: a 3-axis force sensor between the flange and the gripper, standing
   in for the UFACTORY F/T sensor. Guarded moves stop on it.
-* Cameras: "wrist" (on the gripper) and "scene" (on a mast on the wheelchair),
+* Cameras: "wrist" (on the gripper) and "scene" (fixed on a post at the table),
   rendered as RGB + metric depth + geom segmentation (the segmentation feeds
   the oracle detector only).
-* World: the wheelchair can sway (``sway=`` metres) to rehearse a moving base;
-  scene hooks run elevator-button latches and the door latch.
+* World: scene-specific behaviour (scripted head motion, the jaw, bite
+  detection) plugs in through ``hooks``: callables run every 20 ms tick.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
 from ..geometry import Pose, interpolate_poses
-from ..perception.detectors import SegmentationOracleDetector
-from ..perception.types import CameraIntrinsics, CameraSpec, RGBDFrame
+from ..vision.detectors import SegmentationOracleDetector
+from ..vision.types import CameraIntrinsics, CameraSpec, RGBDFrame
 from .base import GripperState, MoveResult, RobotInterface, Wrench
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -34,16 +36,14 @@ ARM_JOINTS = [f"joint{i}" for i in range(1, 7)]
 HOME_Q = np.array([0.0, -0.186, 0.081, 0.0, -1.466, 0.0])
 CONTROL_DT = 0.02
 
-# Geom-name prefixes -> perception query, for the oracle detector.
-ORACLE_QUERIES = {
-    "button_": lambda n: f"elevator button {n.split('_', 1)[1]}",
-    "bag_handle": lambda n: "shopping bag handle",
-    "bag_body": lambda n: "shopping bag",
-    "lever_bar": lambda n: "door handle",
-    "knob": lambda n: "door handle" if n == "knob" else None,
-    "door_panel": lambda n: "door",
-    "panel_plate": lambda n: "elevator panel",
-}
+# Geoms whose names start with these belong to the person; any arm contact with
+# them latches a stop (the sim's stand-in for the arm's collision detection).
+USER_PREFIXES = ("user_", "head_", "face", "lip_", "jaw", "chin")
+
+
+def oracle_label(geom_name: str) -> str:
+    """'grape_2' -> 'grape', 'melon_cube_1' -> 'melon cube', 'mouth' -> 'mouth'."""
+    return re.sub(r"_\d+$", "", geom_name).replace("_", " ")
 
 
 def scene_path(name: str) -> Path:
@@ -52,8 +52,8 @@ def scene_path(name: str) -> Path:
 
 
 class SimRobot(RobotInterface):
-    def __init__(self, scene: str = "elevator", image_size=(320, 240), sway: float = 0.0,
-                 sway_hz: float = 0.4, depth_noise: float = 0.0, seed: int = 0, viewer: bool = False):
+    def __init__(self, scene: str = "feeding", image_size=(320, 240), depth_noise: float = 0.0,
+                 seed: int = 0, viewer: bool = False, hooks: list[Callable[["SimRobot"], None]] | None = None):
         import mujoco
 
         self.mj = mujoco
@@ -73,9 +73,8 @@ class SimRobot(RobotInterface):
         self.base_body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "arm_base")
         s = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "ft_force")
         self.ft_adr = m.sensor_adr[s]
-        self.chair_act = [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, n) for n in ("chair_x", "chair_y", "chair_yaw")]
         self.n_substeps = max(1, int(round(CONTROL_DT / m.opt.timestep)))
-        self.sway, self.sway_hz = sway, sway_hz
+        self.hooks = list(hooks or [])
         self.depth_noise = depth_noise
         self.rng = np.random.default_rng(seed)
         self.w, self.h = image_size
@@ -83,16 +82,10 @@ class SimRobot(RobotInterface):
         self._tare = np.zeros(3)
         self._stopped = False
         self.events: set[str] = set()
-        self.user_geoms = {i for i in range(m.ngeom) if (self._geom_name(i) or "").startswith("user_")}
+        self.user_geoms = {i for i in range(m.ngeom) if (self._geom_name(i) or "").startswith(USER_PREFIXES)}
         body_ids = {mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
                     for b in ("link1", "link2", "link3", "link4", "link5", "link6", "gripper", "finger_l", "finger_r")}
         self.arm_geoms = {i for i in range(m.ngeom) if m.geom_bodyid[i] in body_ids}
-        self._latch = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, "door_latch")
-        self._buttons = {}
-        for j in range(m.njnt):
-            n = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or ""
-            if n.startswith("button_"):
-                self._buttons[n.split("_", 1)[1]] = m.jnt_qposadr[j]
         self.viewer = None
         self.reset()
         if viewer:
@@ -119,26 +112,8 @@ class SimRobot(RobotInterface):
 
     # simulation loop -------------------------------------------------------------------
     def _scene_hooks(self):
-        d = self.data
-        if self.sway > 0:
-            t = d.time
-            w = 2 * np.pi * self.sway_hz
-            d.ctrl[self.chair_act] = [self.sway * np.sin(w * t), 0.5 * self.sway * np.sin(1.3 * w * t + 1.0),
-                                      0.3 * self.sway * np.sin(0.7 * w * t)]
-        for label, adr in self._buttons.items():
-            if d.qpos[adr] > 0.004:
-                self.events.add(f"pressed:{label}")
-        if self._latch >= 0:
-            handle = self._joint_q("lever")
-            if handle is None:
-                handle = self._joint_q("knob")
-            door = self._joint_q("door")
-            if abs(handle) > 0.5:
-                d.eq_active[self._latch] = 0
-            elif door < 0.005 and abs(handle) < 0.2:
-                d.eq_active[self._latch] = 1
-            if door > 0.05:
-                self.events.add("door:unlatched")
+        for hook in self.hooks:
+            hook(self)
 
     def _user_contact(self) -> bool:
         d = self.data
@@ -406,19 +381,24 @@ class SimRobot(RobotInterface):
         self._stopped = True
         self._hold()
 
+    def now(self) -> float:
+        return float(self.data.time)
+
+    def wait(self, seconds: float) -> None:
+        self._step(seconds)
+
     # sim-only helpers ------------------------------------------------------------------
     def oracle_detector(self) -> SegmentationOracleDetector:
-        q2g: dict[str, list[int]] = {}
+        """Ground-truth instance masks: one instance per body, labelled by ``oracle_label``."""
+        instances: dict[tuple[str, int], list[int]] = {}
         for i in range(self.model.ngeom):
             n = self._geom_name(i)
-            if not n:
-                continue
-            for prefix, fn in ORACLE_QUERIES.items():
-                if n.startswith(prefix):
-                    q = fn(n)
-                    if q:
-                        q2g.setdefault(q, []).append(i)
-        return SegmentationOracleDetector(q2g)
+            if n:
+                instances.setdefault((oracle_label(n), int(self.model.geom_bodyid[i])), []).append(i)
+        out: dict[str, list[list[int]]] = {}
+        for (label, _), geoms in sorted(instances.items()):
+            out.setdefault(label, []).append(geoms)
+        return SegmentationOracleDetector(out)
 
     def body_pose(self, name: str) -> Pose:
         b = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY, name)
@@ -430,12 +410,22 @@ class SimRobot(RobotInterface):
         return self._base_world().inverse().transform_point(self.data.geom_xpos[g])
 
     def scene_state(self) -> dict:
-        out = {f"button_{k}": float(self.data.qpos[a]) for k, a in self._buttons.items()}
-        for j in ("door", "lever", "knob"):
-            v = self._joint_q(j)
-            if v is not None:
-                out[j] = v
+        """Every scalar joint that isn't the arm's (head slides, jaw, ...)."""
+        out = {}
+        for j in range(self.model.njnt):
+            if int(self.model.jnt_type[j]) in (int(self.mj.mjtJoint.mjJNT_SLIDE), int(self.mj.mjtJoint.mjJNT_HINGE)):
+                name = self.mj.mj_id2name(self.model, self.mj.mjtObj.mjOBJ_JOINT, j)
+                if name and name not in ARM_JOINTS and not name.startswith("finger"):
+                    out[name] = float(self.data.qpos[self.model.jnt_qposadr[j]])
         return out
+
+    def site_pose(self, name: str) -> Pose:
+        sid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_SITE, name)
+        w = Pose.from_matrix(self.data.site_xpos[sid], self.data.site_xmat[sid].reshape(3, 3))
+        return self._base_world().inverse() @ w
+
+    def actuator(self, name: str) -> int:
+        return self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_ACTUATOR, name)
 
     def close(self):
         if self._renderer is not None:

@@ -1,0 +1,102 @@
+<!--
+  Assisted-eating scene: the table-mounted arm, a plate of finger foods, a cup
+  with a straw, a utensil rest with a spoon, and a FAKE HEAD with a moving base
+  and an opening jaw (the stand-in for the mannequin head prop, docs/PROPS.md).
+
+  Frames: world = arm base frame, z = 0 is the table top.
+  The head sits at the +y side of the table facing -y (toward the plate and
+  the arm). Its base has x/y/z slides and a yaw hinge driven by position
+  actuators, so assistive_arm.sim.feeding_world can script head motion
+  (still, slow drift, turn away). The jaw hinge opens the mouth.
+
+  Geom names are the oracle detector's vocabulary: "grape_1" is an instance of
+  "grape", "melon_cube_1" of "melon cube", and so on (name minus a trailing
+  _<n>, underscores as spaces). Measure the real props and update the sizes.
+
+  Collision bits: head geoms are contype=8/conaffinity=2, so they collide with
+  the arm (contype 2) but not with the table, the torso or the food.
+-->
+<mujoco model="feeding">
+  <include file="../models/xarm6_table.xml"/>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.82 0.82 0.80" rgb2="0.74 0.74 0.72" width="256" height="256"/>
+    <material name="floor" texture="grid" texrepeat="8 8"/>
+  </asset>
+  <default>
+    <default class="food">
+      <geom friction="1.2 0.02 0.005" condim="6" solref="0.004 1"/>
+    </default>
+    <default class="head">
+      <geom contype="8" conaffinity="2" rgba="0.86 0.74 0.66 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0.3 0.1 1.6" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="-0.4 -0.6 1.2" dir="0.5 0.5 -1" diffuse="0.4 0.4 0.4"/>
+    <geom name="floor" type="plane" pos="0 0 -0.75" size="3 3 0.1" material="floor"/>
+    <geom name="table" type="box" pos="0.35 0.15 -0.02" size="0.48 0.48 0.02" rgba="0.62 0.55 0.45 1"/>
+
+    <!-- plate: 22 cm diameter, food on top at z = 0.01 -->
+    <body name="plate" pos="0.38 0.015 0.005">
+      <geom name="plate" type="cylinder" size="0.11 0.005" rgba="0.95 0.95 0.93 1"/>
+    </body>
+
+    <!-- finger foods (free bodies), >= 6 cm apart so open fingers clear the neighbours -->
+    <body name="grape_1" pos="0.32 -0.04 0.021"><freejoint/>
+      <geom name="grape_1" class="food" type="sphere" size="0.011" mass="0.006" rgba="0.45 0.75 0.30 1"/></body>
+    <body name="grape_2" pos="0.44 -0.04 0.021"><freejoint/>
+      <geom name="grape_2" class="food" type="sphere" size="0.011" mass="0.006" rgba="0.45 0.75 0.30 1"/></body>
+    <body name="strawberry_1" pos="0.32 0.07 0.024"><freejoint/>
+      <geom name="strawberry_1" class="food" type="ellipsoid" size="0.014 0.014 0.014" mass="0.012" rgba="0.85 0.12 0.12 1"/></body>
+    <body name="melon_cube_1" pos="0.44 0.07 0.022"><freejoint/>
+      <geom name="melon_cube_1" class="food" type="box" size="0.011 0.011 0.011" mass="0.010" rgba="0.98 0.70 0.40 1"/></body>
+    <body name="cracker_1" pos="0.38 0.015 0.015"><freejoint/>
+      <geom name="cracker_1" class="food" type="box" size="0.022 0.022 0.004" mass="0.004" rgba="0.90 0.78 0.50 1"/></body>
+
+    <!-- cup with a straw (drinking stub): 70 mm diameter, fits the 85 mm gripper -->
+    <body name="cup" pos="0.58 -0.02 0.046"><freejoint/>
+      <geom name="cup" type="cylinder" size="0.035 0.045" mass="0.20" rgba="0.55 0.75 0.95 1" friction="1.2 0.02 0.001"/>
+      <geom name="cup_straw" type="capsule" fromto="0.010 0 0.03 0.020 0.012 0.11" size="0.003" mass="0.001" rgba="0.95 0.95 0.95 1"/>
+    </body>
+
+    <!-- utensil rest with a spoon (utensil acquisition stub). Static for now. -->
+    <body name="utensil_rest" pos="0.52 0.18 0.0" euler="0 0 0.5">
+      <geom name="utensil_rest" type="box" pos="0 0 0.012" size="0.05 0.02 0.012" rgba="0.3 0.3 0.32 1"/>
+      <geom name="spoon_handle" type="capsule" fromto="-0.06 0 0.028 0.07 0 0.028" size="0.004" rgba="0.75 0.75 0.78 1"/>
+      <geom name="spoon_bowl" type="ellipsoid" pos="0.09 0 0.012" size="0.022 0.016 0.006" rgba="0.75 0.75 0.78 1"/>
+    </body>
+
+    <!-- the user: static torso, moving head -->
+    <geom name="user_torso" type="box" pos="0.30 0.61 -0.065" size="0.18 0.19 0.285" rgba="0.55 0.45 0.75 1" contype="8" conaffinity="2"/>
+    <body name="head_base" pos="0.30 0.40 0.35" gravcomp="1">
+      <joint name="head_x" type="slide" axis="1 0 0" range="-0.12 0.12" damping="20"/>
+      <joint name="head_y" type="slide" axis="0 1 0" range="-0.12 0.12" damping="20"/>
+      <joint name="head_z" type="slide" axis="0 0 1" range="-0.10 0.10" damping="20"/>
+      <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.2 1.2" damping="2"/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.02 0.02 0.02"/>
+      <geom name="head_skull" class="head" type="sphere" pos="0 0.01 0.02" size="0.085"/>
+      <geom name="face" class="head" type="ellipsoid" pos="0 -0.055 -0.01" size="0.07 0.04 0.09"/>
+      <geom name="head_neck" class="head" type="capsule" fromto="0 0.02 -0.08 0 0.05 -0.20" size="0.045"/>
+      <geom name="lip_upper" class="head" type="capsule" fromto="-0.024 -0.094 -0.015 0.024 -0.094 -0.015" size="0.006" rgba="0.75 0.40 0.40 1"/>
+      <!-- the dark mouth opening the detector looks for -->
+      <geom name="mouth" type="cylinder" pos="0 -0.096 -0.033" euler="1.5708 0 0" size="0.022 0.002"
+            contype="0" conaffinity="0" rgba="0.25 0.05 0.05 1"/>
+      <!-- lips centre, +z = out of the face (the approach is along -z) -->
+      <site name="mouth" pos="0 -0.100 -0.033" quat="0.7071 0.7071 0 0" size="0.005" rgba="1 0 1 1" group="4"/>
+      <body name="jaw" pos="0 -0.04 -0.035" gravcomp="1">
+        <joint name="jaw" type="hinge" axis="1 0 0" range="0 0.35" damping="0.05"/>
+        <inertial pos="0 -0.03 -0.02" mass="0.2" diaginertia="0.0005 0.0005 0.0005"/>
+        <geom name="lip_lower" class="head" type="capsule" fromto="-0.024 -0.055 -0.010 0.024 -0.055 -0.010" size="0.006" rgba="0.75 0.40 0.40 1"/>
+        <geom name="head_chin" class="head" type="ellipsoid" pos="0 -0.035 -0.035" size="0.045 0.03 0.025"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="head_x" joint="head_x" kp="3000" kv="300"/>
+    <position name="head_y" joint="head_y" kp="3000" kv="300"/>
+    <position name="head_z" joint="head_z" kp="3000" kv="300"/>
+    <position name="head_yaw" joint="head_yaw" kp="300" kv="30"/>
+    <position name="jaw" joint="jaw" kp="5" kv="0.3"/>
+  </actuator>
+</mujoco>

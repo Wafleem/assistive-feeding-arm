@@ -11,11 +11,11 @@ import numpy as np
 #   wrist - rigidly on the gripper; pose = TCP pose x hand-eye calibration.
 #           Best close-up view, but it moves (re-capture after every move) and
 #           sees nothing while the gripper is against a surface.
-#   base  - on the wheelchair (mast, headrest or armrest). Fixed in the arm
-#           base frame, so its extrinsic is a one-off calibration and it keeps
-#           watching while the arm works (contact checks, user keep-out zone).
+#   base  - fixed in the arm base frame (a clamp-on post at the table). Its
+#           extrinsic is a one-off calibration and it keeps watching the face
+#           and the plate while the arm works.
 #   world - fixed in the environment (e.g. a lab tripod). Needs the
-#           wheelchair's pose in the world (AprilTag on the chair or mocap).
+#           arm base's pose in the world (AprilTag or measured).
 CameraMount = Literal["wrist", "base", "world"]
 
 

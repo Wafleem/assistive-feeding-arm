@@ -6,8 +6,8 @@ Conventions used everywhere in this package:
   converts to Viam's millimetres / degrees.
 * Quaternions are ``(w, x, y, z)`` (MuJoCo order).
 * Every pose handed to a skill is in the **arm base frame** (``base``): origin
-  at the xArm6 base flange, +x forward of the wheelchair, +y toward the seated
-  user (arm mounted on the right armrest), +z up.
+  at the xArm6 base flange on the table, z = 0 at the table top (feeding demo
+  layout: +x across the table, +y toward the user's side, +z up).
 * The tool frame's +z axis points out of the gripper (the approach direction),
   the fingers close along tool +/-y.
 * Camera poses use the OpenCV optical convention (+z forward, +y down).

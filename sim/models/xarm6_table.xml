@@ -1,16 +1,16 @@
 <!--
-  Placeholder xArm6 + parallel gripper on a wheelchair, for development before
-  hardware. Kinematics follow the UFACTORY xArm6 dimensions (d1 = 267 mm,
+  Placeholder xArm6 + parallel gripper, table-mounted (the venue provides the
+  arm), for development before hardware. Kinematics follow the UFACTORY xArm6 dimensions (d1 = 267 mm,
   upper arm 289.5 mm with a 53.5 mm offset, 77.5 mm elbow offset, forearm
   342.5 mm, wrist 76 mm + 97 mm); geometry is capsules, masses are rough.
   Swap in real meshes from UFACTORY's xarm_ros2 (xarm_description) URDF when
   visuals or self-collision matter; see docs/SIMULATION.md.
 
-  Frames: the arm base body "arm_base" IS the base frame used by the code.
-  The wheelchair has small x/y/yaw joints driven by position actuators so the
-  sim can make the base sway like a chair on soft tyres.
+  Frames: the arm base body "arm_base" IS the base frame used by the code, and
+  it sits at the world origin on the table top (z = 0 is the table surface).
+  The previous wheelchair-mounted version is at git tag v0-wheelchair-skills.
 -->
-<mujoco model="xarm6_wheelchair">
+<mujoco model="xarm6_table">
   <compiler angle="radian" autolimits="true"/>
   <!-- elliptic cones + impratio + noslip: without them held objects creep out of a pinch grasp -->
   <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10" noslip_iterations="4"/>
@@ -20,7 +20,7 @@
 
   <!-- Collision bits: arm geoms are contype=2/conaffinity=1, so the arm never
        collides with itself but does collide with everything else (default 1/1).
-       Scene parts that only the arm may touch (buttons) use contype=4/conaffinity=2. -->
+       Scene parts only the arm may touch use contype=4/conaffinity=2. -->
   <default>
     <default class="arm">
       <joint damping="2" armature="0.1"/>
@@ -38,29 +38,12 @@
   </default>
 
   <worldbody>
-    <body name="wheelchair" pos="0 0 0">
-      <joint name="chair_x" type="slide" axis="1 0 0" range="-0.05 0.05" damping="400"/>
-      <joint name="chair_y" type="slide" axis="0 1 0" range="-0.05 0.05" damping="400"/>
-      <joint name="chair_yaw" type="hinge" axis="0 0 1" range="-0.05 0.05" damping="200"/>
-      <inertial pos="0 0 0.3" mass="80" diaginertia="8 8 8"/>
-      <!-- chair: seat, backrest, armrest under the arm, wheels -->
-      <geom name="seat" type="box" pos="-0.05 0 0.48" size="0.25 0.25 0.04" rgba="0.15 0.15 0.18 1"/>
-      <geom name="backrest" type="box" pos="-0.32 0 0.85" size="0.03 0.24 0.35" rgba="0.15 0.15 0.18 1"/>
-      <geom name="armrest_r" type="box" pos="-0.05 -0.29 0.64" size="0.22 0.04 0.02" rgba="0.3 0.3 0.32 1"/>
-      <geom name="wheel_r" class="visual" type="cylinder" pos="-0.12 -0.33 0.30" euler="1.5708 0 0" size="0.30 0.02" rgba="0.1 0.1 0.1 1"/>
-      <geom name="wheel_l" class="visual" type="cylinder" pos="-0.12 0.33 0.30" euler="1.5708 0 0" size="0.30 0.02" rgba="0.1 0.1 0.1 1"/>
-      <geom name="footrest" type="box" pos="0.38 0 0.10" size="0.08 0.20 0.015" rgba="0.3 0.3 0.32 1"/>
-      <!-- seated user (collision geoms so the sim counts any contact with them) -->
-      <geom name="user_torso" type="capsule" fromto="-0.18 0 0.55 -0.15 0 1.05" size="0.17" rgba="0.55 0.45 0.75 0.6"/>
-      <geom name="user_head" type="sphere" pos="-0.13 0 1.25" size="0.11" rgba="0.55 0.45 0.75 0.6"/>
-      <geom name="user_thigh" type="capsule" fromto="-0.05 0 0.58 0.30 0 0.58" size="0.13" rgba="0.55 0.45 0.75 0.6"/>
-      <geom name="user_shin" type="capsule" fromto="0.32 0 0.55 0.38 0 0.16" size="0.08" rgba="0.55 0.45 0.75 0.6"/>
-      <!-- mast for the off-arm (scene) camera: behind the arm, above the armrest -->
-      <geom name="mast" class="visual" type="cylinder" fromto="0.05 -0.40 0.66 0.05 -0.40 1.20" size="0.012" rgba="0.3 0.3 0.3 1"/>
-      <camera name="scene" pos="0.05 -0.40 1.22" xyaxes="0 -1 0 0.42 0 0.91" fovy="58"/>
-      <site name="scene_cam_mount" pos="0.05 -0.40 1.22" size="0.01" group="4"/>
+    <!-- Fixed RGB-D camera on a clamp-on post at the table corner, looking at
+         the plate and the user's face (mount="base": fixed in the arm base frame). -->
+    <geom name="cam_post" class="visual" type="cylinder" fromto="-0.12 0.12 0 -0.12 0.12 0.6" size="0.012" rgba="0.3 0.3 0.3 1"/>
+    <camera name="scene" pos="-0.12 0.12 0.62" xyaxes="0.1713 -0.9852 0.0000 0.7201 0.1252 0.6825" fovy="58"/>
 
-      <body name="arm_base" pos="0.20 -0.30 0.70">
+    <body name="arm_base" pos="0 0 0">
         <geom class="visual" type="cylinder" size="0.06 0.04" pos="0 0 0.04" rgba="0.85 0.85 0.88 1"/>
         <body name="link1" gravcomp="1" pos="0 0 0.267" childclass="arm">
           <inertial pos="0 0 -0.05" mass="2.4" diaginertia="0.006 0.006 0.005"/>
@@ -113,11 +96,10 @@
           </body>
         </body>
       </body>
-    </body>
+    
   </worldbody>
 
   <contact>
-    <exclude body1="wheelchair" body2="link1"/>
     <exclude body1="link1" body2="link2"/>
     <exclude body1="link5" body2="gripper"/>
     <exclude body1="link6" body2="gripper"/>
@@ -137,9 +119,6 @@
     <position name="joint5" class="arm" joint="joint5" kp="600" forcerange="-30 30"/>
     <position name="joint6" class="arm" joint="joint6" kp="300" forcerange="-20 20"/>
     <position name="gripper" class="finger" joint="finger_l" ctrlrange="0 0.0425"/>
-    <position name="chair_x" joint="chair_x" kp="20000" kv="2000"/>
-    <position name="chair_y" joint="chair_y" kp="20000" kv="2000"/>
-    <position name="chair_yaw" joint="chair_yaw" kp="20000" kv="2000"/>
   </actuator>
 
   <sensor>

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..geometry import Pose, interpolate_poses, normalize
-from ..perception.types import CameraSpec, RGBDFrame
+from ..vision.types import CameraSpec, RGBDFrame
 from .base import GripperState, MoveResult, RobotInterface, Wrench
 
 
@@ -24,7 +24,7 @@ class SpringSurface:
     point: np.ndarray
     normal: np.ndarray  # out of the surface, toward free space
     radius: float = 0.03
-    k_soft: float = 500.0  # N/m (an elevator button needs ~2-5 N)
+    k_soft: float = 500.0  # N/m (a soft contact, e.g. a button or a piece of food)
     travel: float = 0.006
     k_hard: float = 3000.0  # bottomed-out button + fingertip compliance
     name: str = "surface"
@@ -53,6 +53,7 @@ class Graspable:
 
 class FakeRobot(RobotInterface):
     collision_force = 60.0  # unguarded contact above this is reported as a collision
+    _speed = 0.1
 
     def __init__(self, start: Pose | None = None, surfaces=None, graspables=None, reachable_radius=0.75):
         self.pose = start or Pose([0.30, 0.0, 0.30], [0.0, 1.0, 0.0, 0.0])  # tool pointing down
@@ -64,6 +65,7 @@ class FakeRobot(RobotInterface):
         self._tare = np.zeros(3)
         self.history: list[Pose] = [self.pose]
         self.stopped = False
+        self.t = 0.0  # virtual clock: advanced by moves (1 mm per 0.05 s at 2 cm/s) and wait()
 
     # motion -------------------------------------------------------------------
     def get_tcp_pose(self) -> Pose:
@@ -83,6 +85,7 @@ class FakeRobot(RobotInterface):
         dist = float(np.linalg.norm(target.position - self.pose.position))
         steps = max(1, int(np.ceil(dist / 0.001)))
         start, peak, travelled = self.pose, 0.0, 0.0
+        self.t += dist / max(self._speed, 1e-3)
         for p in interpolate_poses(start, target, steps):
             f = float(np.linalg.norm(self._raw_force(p.position) - self._tare))
             travelled += float(np.linalg.norm(p.position - self.pose.position))
@@ -96,10 +99,18 @@ class FakeRobot(RobotInterface):
         return MoveResult(True, "", self.pose, peak, travelled)
 
     def move_to_pose(self, pose: Pose, speed: float = 0.10) -> MoveResult:
+        self._speed = speed
         return self._path(pose, None)
 
     def move_linear(self, pose: Pose, speed: float = 0.03, max_force: float | None = None) -> MoveResult:
+        self._speed = speed
         return self._path(pose, max_force)
+
+    def now(self) -> float:
+        return self.t
+
+    def wait(self, seconds: float) -> None:
+        self.t += seconds
 
     # gripper ------------------------------------------------------------------
     def open_gripper(self, width: float | None = None) -> GripperState:
