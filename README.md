@@ -74,9 +74,12 @@ mannequin.
 
 ## Quick start
 
+New to the team? Start with [CONTRIBUTING.md](CONTRIBUTING.md) (setup, branch and PR rules) and
+find your workstream in [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md).
+
 ```bash
 make setup        # .venv with Python 3.12, numpy, mujoco, pytest (uses uv if present)
-make test         # 72 tests, ~15 s, offline
+make test         # ~70 tests, ~15 s, offline
 make demo         # "press button 7 on the elevator" in MuJoCo, prints every step
 make demo SCENE=bag SAY="grab the shopping bag"
 make eval         # success-rate table: world-verified success, false claims, user contacts
