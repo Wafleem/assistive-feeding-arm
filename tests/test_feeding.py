@@ -32,3 +32,16 @@ def test_nothing_may_get_closer_than_the_standoff_or_enter_the_head():
     assert check_near_face(MOUTH.position + 0.01 * N, MOUTH, CFG)  # 1 cm from the lips: too close
     assert check_near_face(MOUTH.position + np.array([0.08, 0.06, 0.0]), MOUTH, CFG)  # beside the cheek
     assert not check_near_face(MOUTH.position + 0.05 * N, MOUTH, CFG)  # in the corridor, 5 cm out
+
+
+@todo
+def test_printed_mouth_mode_places_the_bite_just_inside_the_opening():
+    from dataclasses import replace
+
+    cfg = replace(CFG, target="printed_mouth")
+    p = final_pose(MOUTH, cfg)
+    assert np.isclose(np.dot(p.position - MOUTH.position, N), -cfg.insertion_depth, atol=1e-6)  # inside
+
+
+def test_person_mode_is_the_default():
+    assert CFG.target == "person"

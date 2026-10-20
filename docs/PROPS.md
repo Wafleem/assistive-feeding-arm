@@ -13,16 +13,17 @@ ESP32), in the same form as the sim's events, so the dashboard and the eval
 compare like with like:
 
 ```json
-{"prop": "mouth", "jaw": 0.8, "t": 12.4}
-{"prop": "mouth", "event": "bite_taken", "t": 15.1}
+{"prop": "mouth", "event": "bite_in_cup", "t": 15.1}
 ```
+
+(The printed mouth needs no electronics; the catch-cup sensor is optional.)
 
 ## The props
 
 | Prop | Kind | What to use | Sensor / signal | Sim twin | Status |
 |---|---|---|---|---|---|
-| **Fake mouth** | A + small B | Mannequin head or wig/display head (beauty-supply, Amazon), **or** a printed face on foam board. Cut a mouth opening ~5×3 cm. Optional **servo jaw**: a hobby servo + a flat printed lower-lip plate inside the opening, so the "open/closed" ready gate can be tested. ArUco tag (~30 mm) on the forehead; matte paint; red lip ring for colour fallback. | ESP32 drives the servo on command or a scripted schedule and reports `jaw` and `bite_taken` (a light gate or switch inside the mouth) | `head_base` + `jaw` in feeding.xml; `mouth` site at the measured lips centre | sim done; prop TODO |
-| **Moving base for the head** (stretch) | B | Head on a camera slider or a small pan servo base, so turn-away is repeatable | ESP32 scripts the motion | head_x/y/z/yaw actuators | TODO |
+| **Fake mouth** | B (3D-printed, flat parts) | A **3D-printed face plate** (PLA/PETG, matte, light colour) with an **always-open opening** ~50 × 40 mm, printed in parts that fit the print bed and bolt together. Behind it, a **removable catch cup** (printed, or a small bought plastic cup) that bites drop into; **dump it after every use**. An ArUco tag (~30-40 mm, paper in a recess) at a known offset from the opening, and a contrasting lip-colour ring around the opening. Clamps to the table at mouth height (~35-40 cm above the table) on a printed or 2020-extrusion stand. | Optional: a ToF or break-beam sensor in the catch cup on an ESP32 reports `bite_in_cup`; otherwise the camera/gripper check is enough | `sim/scenes/feeding.xml` still has a jaw head: **TODO** replace it with this face plate + catch cup from the same CAD (sim/README.md) | to design + print |
+| **Moving the mouth** (for retreat tests) | — | Slide or turn the printed mouth's stand by hand during an approach; optionally a lazy-susan or slider base for repeatable moves | — | head base x/y/z + yaw actuators | — |
 | **Plate / tray** | A | Matte, light-coloured plate (not shiny white porcelain if depth struggles), non-slip tray mat | — | `plate` | measure |
 | **Foods** | A, near venue | Grapes (firm), strawberries (firm, hulled), melon or cheese cubes (~2 cm), small cracker cubes; yogurt cup for the scoop stretch | camera re-detection | `grape_*`, `strawberry_*`, `melon_cube_*`, `cracker_*` | measure on arrival |
 | **Cup with straw** (stretch) | A | Lidded kids' cup or tumbler with a straw, 60-80 mm diameter (fits the 85 mm gripper) | — | `cup`, `cup_straw` | measure |
@@ -34,8 +35,9 @@ compare like with like:
 
 | Item | Where (store: department) | Approx. price | When |
 |---|---|---|---|
-| Mannequin / display head | Amazon or beauty supply: wig heads | $15-40 | ahead (measure, modify) |
-| Hobby servo, ESP32, micro switch or IR break-beam, jumper wires | Amazon / Micro Center: electronics | $20-35 | ahead |
+| PLA/PETG filament (matte, light colour), M3/M4 screws for the face-plate parts | Amazon / Micro Center: 3D printing | $20-30 | ahead (print and test-fit) |
+| Small plastic cups for the catch cup (spares) | Target: party supplies | $3-5 | either |
+| (optional) ESP32 + ToF or IR break-beam for the catch cup | Amazon / Micro Center: electronics | $10-20 | ahead |
 | Matte plate, non-slip mat | Target / IKEA: kitchen & dining | $5-15 | ahead (measure) |
 | Lidded cup with straw | Target: kitchen / kids' cups | $5-12 | ahead (measure) |
 | Adaptive spoon or foam grip tubing | Amazon / pharmacy: daily living aids | $8-20 | ahead |
@@ -46,17 +48,19 @@ compare like with like:
 
 ## Packing and setup
 
-* **Carry-on (electronics):** Jetsons + power, RealSense camera(s) + cables, ESP32 +
-  servo (pre-wired into the head), USB hub, cables, USB stick.
-* **Checked bag / trunk:** mannequin head (wrapped), camera post, clamps, plate, cup,
+* **Carry-on (electronics):** the AGX Orin + power, RealSense camera(s) + cables,
+  network switch + cables, USB hub, USB stick (optional catch-cup ESP32).
+* **Checked bag / trunk:** the printed mouth (face-plate parts flat, catch cups, stand), camera post, clamps, plate, cup,
   spoon, ChArUco board (flat), tool kit (hex keys, screwdrivers, zip ties, gaffer
   tape, spare screws, multimeter).
 * **Buy near venue:** the food, wipes, gloves.
 
-**30-minute setup:** clamp the camera post (5) → place and clamp the head, plug in the
-ESP32, check the jaw moves and reports (5) → plate, cut food, cup, spoon rest (5) →
+**30-minute setup:** clamp the camera post (5) → bolt the face plate together, clamp the
+printed mouth at mouth height, empty catch cup in place, check the tag is detected (5) →
+plate, cut food, cup, spoon rest (5) →
 calibration check with the ChArUco board (10) → one dry run with no food at reduced
 speed (5).
 
-**Food safety:** gloves for handling, keep food covered until the demo, discard after,
-nothing is eaten by a person from the robot at the hackathon.
+**Food safety and cleanup:** gloves for handling, keep food covered until the demo, **empty
+and wipe the catch cup after every bite**, discard the food; nothing is eaten by a person
+from the robot at the hackathon.

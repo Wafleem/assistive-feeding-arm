@@ -37,9 +37,10 @@ mark: from then on the test must pass. CI runs everything on each push.
 ## 1. Mouth perception — owner: tracking lead
 **Owns** `mouth_perception/`. **First task:** implement `ConstantVelocityKF` and
 `MouthTracker` against `tests/test_mouth_perception.py` (pure numpy, no hardware).
-**Then:** sim oracle and camera detectors on the feeding scene; ArUco detector on the
-real mannequin; MediaPipe on a real face; Viam vision service on the Orin Nano.
-**Done when:** mouth tracked within 5 mm at ≥ 30 Hz; turn-away detected within 150 ms.
+**Then:** the ArUco detector on the printed mouth (the demo path); sim detectors once the
+printed-mouth scene exists; a Viam vision service on the Viam machine; MediaPipe later.
+**Done when:** the printed mouth is tracked within 5 mm at ≥ 30 Hz; moving it by hand
+triggers a retreat within 150 ms.
 
 ## 2. Food perception — owner: perception
 **Owns** `food_perception/`, the detector wrappers in `vision/detectors.py`.
@@ -60,8 +61,9 @@ in `food_perception/README.md`).
 `check_near_face` against `tests/test_feeding.py`. **Then:** `deliver_bite` with a
 scripted tracker on FakeRobot; the moving face zone sent to the planner; all sim
 head scenarios; measure stop latency on the real arm.
-**Done when:** 0 head contacts, delivery within 1 cm of the standoff point, retreat on
-every turn-away, timeout on every never-opens; 10/10 on the real fake mouth.
+**Done when:** 0 face-plate contacts; the bite lands in the catch cup; a retreat on every
+moved-away scenario; 10/10 on the real printed mouth. Both delivery modes are specified
+and reviewed with the safety lead.
 
 ## 5. Language — owner: interaction
 **Owns** `language/`, the dashboard. **First task:** `FeedIntent` validation + `rules.parse`
@@ -77,18 +79,22 @@ cycle in sim; dashboard; on the Linux PC with viam-server.
 
 ## 7. Simulation — owner: integration (shared)
 **Owns** `sim/`, `src/assistive_arm/sim/`, `robot_iface/sim.py`, `scripts/`.
-**First task:** the `FeedingWorld` hook: head scenarios, jaw, "bite taken", metrics.
+**First task:** replace the jaw head in `sim/scenes/feeding.xml` with the printed mouth
+(face plate + catch cup, from the same CAD as the print); then the `FeedingWorld` hook:
+scenarios, "bite in cup", metrics.
 **Then:** `scripts/eval_feeding.py`, domain randomisation, real meshes, measured props.
 **Done when:** the eval table runs in CI and every section reports its numbers with it.
 
 ## 8. Props — owner: integration (shared)
 **Owns** `docs/PROPS.md`, `props/` (to create: measurements, CAD, firmware).
-**First task:** buy and measure the mannequin head and the foods; update the sim scene.
+**First task:** design and print the fake mouth (face plate with an always-open opening,
+removable catch cup, ArUco recess, stand); share the CAD with sim; buy and measure the foods.
 **Done when:** everything packs per the packing plan and sets up in ≤ 30 minutes.
 
 ## Integration points
 
 1. **Week -2:** sections 1, 3, 4, 5 have their first specs passing; 7 has the head scenarios.
-2. **Week -1:** full bite cycle in sim (6 + all); Jetsons serve the models as Viam services.
+2. **Week -1:** full bite cycle in the printed-mouth sim scene (6 + all); the AGX serves the
+   models as Viam services (a remote part of the Viam machine).
 3. **Day 1:** real arm: calibration, overlay, picks, approach to the fake mouth.
 4. **Day 2:** voice, confirmations, retreat demo, rehearsal, backup video.

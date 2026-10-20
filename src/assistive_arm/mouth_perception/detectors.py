@@ -2,10 +2,12 @@
 
 | Backend | Status | Use |
 |---|---|---|
+| ``FiducialMouthDetector`` | TODO | **the demo path**: ArUco tag on the printed face + the CAD tag->opening offset |
+| ``CameraSegMouthDetector`` | TODO | the vision path (mask + depth + face plane), testable on sim renders |
 | ``SimOracleMouthDetector`` | TODO | sim ground truth (+ optional noise/dropouts/delay) |
-| ``CameraSegMouthDetector`` | TODO | the real 3D path (mask + depth + face plane), testable on sim renders |
-| ``MediaPipeMouthDetector`` | TODO | real faces: MediaPipe Face Landmarker on the Orin Nano |
-| ``FiducialMouthDetector`` | TODO | the fake mouth: ArUco tag on the mannequin + measured offset; colour-blob fallback |
+| ``MediaPipeMouthDetector`` | TODO, later | real faces: MediaPipe Face Landmarker (not needed for the printed mouth) |
+
+The printed mouth is always open: detectors for it report ``open_ratio = 1.0``.
 """
 
 from __future__ import annotations
@@ -27,30 +29,32 @@ class OracleNoise:
 
 
 class SimOracleMouthDetector:
-    """Ground truth from the MuJoCo scene: the "mouth" site (position, +z = face normal)
-    and the "jaw" joint (open_ratio = jaw / jaw_open_rad), with optional noise,
-    dropouts and delay to rehearse real-detector behaviour.
+    """Ground truth from the MuJoCo scene: the "mouth" site (centre of the opening on the
+    face plane, +z = face normal), open_ratio = 1.0 (the printed mouth is always open),
+    with optional noise, dropouts and delay to rehearse real-detector behaviour.
 
-    TODO(mouth_perception): implement with ``robot.site_pose("mouth")``,
-    ``robot.scene_state()["jaw"]`` and ``robot.now()``.
+    TODO(mouth_perception): implement with ``robot.site_pose("mouth")`` and ``robot.now()``.
     """
 
-    def __init__(self, noise: OracleNoise | None = None, seed: int = 0, jaw_open_rad: float = 0.30):
+    def __init__(self, noise: OracleNoise | None = None, seed: int = 0):
         self.noise = noise or OracleNoise()
         self.rng = np.random.default_rng(seed)
-        self.jaw_open_rad = jaw_open_rad
 
     def observe(self, robot) -> MouthObservation | None:
         raise NotImplementedError("TODO(mouth_perception): SimOracleMouthDetector.observe")
 
 
 class CameraSegMouthDetector:
-    """The camera path: find "mouth" with any vision detector (sim: segmentation oracle),
-    use the "face" plane as the approach normal. open_ratio comes from ``open_ratio_fn``
-    until a landmark model provides it.
+    """The vision path: find "mouth" with any detector (sim: segmentation oracle) and use
+    the "face" plane as the approach normal.
+
+    Expected pitfall with the printed mouth: depth inside the opening is the catch cup
+    behind it, several cm behind the face. Project the mouth centre onto the face plane
+    before reporting it (verify in sim once the printed-mouth scene exists).
 
     TODO(mouth_perception): implement with ``Locator.locate(robot, "mouth", cameras,
-    support_query="face")``; confidence from the number of depth points.
+    support_query="face")`` + the projection; confidence from the number of depth points;
+    open_ratio from ``open_ratio_fn`` (1.0 for the printed mouth).
     """
 
     def __init__(self, locator: Locator, cameras=("scene", "wrist"), open_ratio_fn=None):
@@ -62,7 +66,8 @@ class CameraSegMouthDetector:
 
 
 class MediaPipeMouthDetector:
-    """Real faces with MediaPipe Face Landmarker (runs at 30+ fps on the Orin Nano CPU/GPU).
+    """Real faces with MediaPipe Face Landmarker (30+ fps on the AGX Orin). LATER: not
+    needed for the printed mouth, but it is the "works on a person" story.
 
     TODO(mouth_perception):
       1. ``mediapipe.tasks.vision.FaceLandmarker`` on the RGB frame (VIDEO mode, 1 face).
@@ -73,7 +78,7 @@ class MediaPipeMouthDetector:
          face normal = plane fit to forehead/cheek/chin landmarks (e.g. 10, 234, 454, 152),
          oriented toward the camera.
       5. Confidence from the landmarker's face presence score and depth validity.
-      6. Publish as a Viam vision service on the Orin Nano (see docs/COMPUTE.md).
+      6. Publish as a Viam vision service on the AGX Orin (see docs/COMPUTE.md).
     """
 
     def __init__(self, *args, **kwargs):
@@ -84,16 +89,17 @@ class MediaPipeMouthDetector:
 
 
 class FiducialMouthDetector:
-    """The fake mouth: an ArUco tag on the mannequin's forehead + a measured tag->mouth offset.
+    """THE DEMO PATH. The printed face carries an ArUco tag at a known offset from the
+    opening (both come from the same CAD file), so the mouth pose = tag pose x offset.
 
     TODO(mouth_perception):
-      1. ``cv2.aruco.ArucoDetector`` (DICT_4X4_50), tag ~30 mm, pose via ``solvePnP``
-         with the RealSense intrinsics; refine translation with depth.
-      2. mouth pose = tag pose x fixed offset (measure on the prop; store in props/).
-      3. open_ratio from the servo jaw command (the prop reports it over serial) or a
-         second tag on the jaw.
-      4. Fallback: colour blob (red lips ring) + depth.
-      This is the most robust option for the demo; MediaPipe is the "real face" story.
+      1. ``cv2.aruco.ArucoDetector`` (DICT_4X4_50), tag ~30-40 mm printed on paper and
+         glued into a recess on the face plate; pose via ``solvePnP`` with the RealSense
+         intrinsics, translation refined with depth on the tag's flat paper.
+      2. mouth pose = tag pose x the CAD offset (store it in props/fake_mouth/).
+      3. open_ratio = 1.0 (always open); confidence from the reprojection error.
+      4. Fallback: the contrasting lip-colour ring + depth on the face plate (never
+         inside the opening, where depth is the catch cup).
     """
 
     def __init__(self, *args, **kwargs):

@@ -9,9 +9,11 @@ at every meal costs dignity and a carer's time. This project builds a robot arm
 that feeds a person **at their pace, on their words**: "feed me the
 strawberries", "a sip of water", "slower", "I'm done".
 
-For the hackathon the person is a **fake mouth**: a mannequin head with an
-opening (and a servo jaw) on a table. The arm is the venue's UFACTORY **xArm6**
-with a standard parallel gripper, driven through **Viam**.
+For the hackathon the person is a **fake mouth**: a 3D-printed face with an
+always-open mouth and a catch cup behind it that is dumped after every bite.
+The arm is the venue's UFACTORY **xArm6** with a standard parallel gripper, driven
+through the venue's **Viam** machine. A **Jetson AGX Orin** adds the AI compute
+that machine may not have.
 
 **Status: scaffold.** The shared core already works: the robot API, a MuJoCo
 scene with a moving fake head, the cameras, the safety envelope and the Viam
@@ -46,10 +48,14 @@ The arm works at a person's face. These rules don't change, in priority order:
    * an e-stop within reach of the user and of a carer;
    * the xArm's collision detection at its most sensitive setting;
    * reduced-mode speed limits set on the arm's controller.
-2. **The robot never puts anything in the mouth.** The bite stops **3 cm in front
-   of the lips**, and the person closes the gap.
+2. **Two delivery modes, never mixed up:**
+   * With the printed mouth (the demo), the arm releases the bite just inside the
+     opening, into the catch cup.
+   * With a real person (future work, and the code's default), the bite stops
+     **3 cm in front of the lips** and the person closes the gap; nothing enters the mouth.
 3. **Ask before every bite** in demo mode: "Ready for a strawberry?" No answer means no.
-4. **Only approach a ready mouth:** open and still for 0.5 s, and tracked with confidence.
+4. **Only approach a ready mouth:** still for 0.5 s and tracked with confidence (and
+   open, for a real face; the printed one is always open).
 5. **Slow, and along the face normal:** at most 2 cm/s on the final approach, and at most
    3 cm/s anywhere within 15 cm of the face.
 6. **Leave at once** on any of: head motion, "stop" or "wait", any force over 3 N near
@@ -60,7 +66,7 @@ The arm works at a person's face. These rules don't change, in priority order:
 
 This is not a certified safety case. Before a real person, the team needs a
 written risk assessment (ISO 10218, ISO/TS 15066 and ISO 13482 as references)
-and trials with a mannequin only.
+and trials with the printed mouth only.
 
 ## Sections (one package, one owner each)
 
@@ -69,11 +75,11 @@ and trials with a mannequin only.
 | 1 | Mouth perception: detect, track (Kalman filter), predict, ready gate, retreat triggers | `src/assistive_arm/mouth_perception/` | [README](src/assistive_arm/mouth_perception/README.md) |
 | 2 | Food perception: open-vocabulary detection + masks + depth; VLM; VLA discussion | `src/assistive_arm/food_perception/` | [README](src/assistive_arm/food_perception/README.md) |
 | 3 | Grasping & acquisition: PCA + AnyGrasp/Contact-GraspNet; pinch / utensil / cup | `src/assistive_arm/grasping/` | [README](src/assistive_arm/grasping/README.md) |
-| 4 | Feeding motion & safety: staging, servoed final approach, standoff, retreat | `src/assistive_arm/feeding/` | [README](src/assistive_arm/feeding/README.md) |
+| 4 | Feeding motion & safety: staging, servoed final approach, release into the printed mouth (or standoff for a person), retreat | `src/assistive_arm/feeding/` | [README](src/assistive_arm/feeding/README.md) |
 | 5 | Language layer: speech, LLM router → validated intents, rules, dialogue | `src/assistive_arm/language/` | [README](src/assistive_arm/language/README.md) |
 | 6 | Orchestration: the bite-cycle state machine with timeouts and aborts | `src/assistive_arm/orchestration/` | [README](src/assistive_arm/orchestration/README.md) |
 | 7 | Simulation: feeding scene, head scripts, metrics, eval | `src/assistive_arm/sim/`, `sim/` | [README](src/assistive_arm/sim/README.md) |
-| 8 | Props: fake mouth, plate, foods, utensils (store-bought or flat-pack) | — | [docs/PROPS.md](docs/PROPS.md) |
+| 8 | Props: 3D-printed mouth with catch cup, plate, foods, utensils (store-bought or flat-pack) | — | [docs/PROPS.md](docs/PROPS.md) |
 
 **Shared core** (works now, used by every section):
 * `geometry.py`
@@ -101,5 +107,5 @@ then [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md), then your section's README.
 | [docs/PLAN.md](docs/PLAN.md) | architecture, 90-second demo, milestones, risks, team roles |
 | [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) | one stream per section: contracts, first tasks, done-when |
 | [docs/SIMULATION.md](docs/SIMULATION.md) | developing everything in MuJoCo first |
-| [docs/COMPUTE.md](docs/COMPUTE.md) | what runs on the AGX Orin, Orin Nano, venue PC and Mac |
-| [docs/PROPS.md](docs/PROPS.md) | the fake mouth and food props: shopping and packing lists |
+| [docs/COMPUTE.md](docs/COMPUTE.md) | what runs on the venue's Viam machine, the AGX Orin and the Mac |
+| [docs/PROPS.md](docs/PROPS.md) | the 3D-printed mouth and food props: shopping and packing lists |

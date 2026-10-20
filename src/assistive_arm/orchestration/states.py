@@ -1,7 +1,8 @@
 """The feeding task state machine: states, events and transitions (data, so it can be drawn and tested).
 
 IDLE -> SELECT_ITEM -> ACQUIRE -> VERIFY_GRASP -> WAIT_READY -> APPROACH -> DELIVER
-     -> WAIT_BITE -> RETREAT -> (next bite: SELECT_ITEM | DONE)
+     -> (printed mouth: release into the opening | person: WAIT_BITE) -> RETREAT
+     -> (next bite: SELECT_ITEM | DONE)
 Any state --stop--> ABORT (halt, then retreat if near the face) ; PAUSED on "wait".
 Every state has a timeout and an abort path (see TIMEOUTS).
 """
@@ -45,7 +46,8 @@ TRANSITIONS: dict[tuple[S, str], S] = {
     (S.WAIT_READY, "timeout"): S.RETREAT,
     (S.APPROACH, "arrived"): S.DELIVER,
     (S.APPROACH, "head_moved"): S.RETREAT,
-    (S.DELIVER, "presented"): S.WAIT_BITE,
+    (S.DELIVER, "released"): S.RETREAT,  # printed_mouth: bite dropped into the catch cup
+    (S.DELIVER, "presented"): S.WAIT_BITE,  # person: hold at the standoff for the bite
     (S.WAIT_BITE, "bite_taken"): S.RETREAT,
     (S.WAIT_BITE, "timeout"): S.RETREAT,
     (S.RETREAT, "clear"): S.IDLE,

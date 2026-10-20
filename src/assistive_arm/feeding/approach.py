@@ -10,9 +10,13 @@ PLAN (deliver_bite)
    LATENCY-COMPENSATED mouth state, target = mouth + standoff * normal (minus the bite
    offset), step toward it at <= final_speed and <= speed_cap; guarded at
    max_force_near_face. Any monitor failure, "stop", or force => retreat immediately.
-5. Hold until bite taken (mouth closes after being open near the bite, pull detected by
-   F/T or gripper current, or "got it"), up to bite_timeout. Finger food: open the
-   gripper when the bite is taken.
+5. Deliver, by cfg.target:
+   * "printed_mouth" (hackathon): continue insertion_depth past the face plane into the
+     opening, open the gripper, the bite drops into the catch cup; check the gripper is
+     empty (width/current) and, optionally, the prop's catch-cup sensor.
+   * "person" (future): hold at the standoff until the bite is taken (mouth closes after
+     being open near the bite, pull detected by F/T or gripper current, or "got it"),
+     up to bite_timeout; finger food: open the gripper when the bite is taken.
 6. Retreat along +normal at retreat_speed to staging, then to the park pose.
 Log DeliveryResult metrics every time.
 """
@@ -33,7 +37,8 @@ def staging_pose(s: MouthState, cfg: FeedingConfig, bite_offset: float = 0.0) ->
 
 
 def final_pose(s: MouthState, cfg: FeedingConfig, bite_offset: float = 0.0) -> Pose:
-    """TCP pose with the bite point cfg.standoff in front of the lips (NEVER closer)."""
+    """TCP pose for delivery. person: bite point cfg.standoff in front of the lips (never
+    closer). printed_mouth: bite point cfg.insertion_depth inside the opening."""
     raise NotImplementedError("TODO(feeding): final_pose")
 
 
