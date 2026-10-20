@@ -55,3 +55,6 @@ class FeedIntent:
     @staticmethod
     def json_schema() -> dict:
         raise NotImplementedError("TODO(language): JSON schema for the LLM's structured output")
+
+
+Intent = FeedIntent  # the router's public name for it

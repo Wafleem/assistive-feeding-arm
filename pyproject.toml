@@ -14,6 +14,8 @@ sim = ["mujoco>=3.1"]
 dev = ["pytest>=8", "mujoco>=3.1"]
 viam = ["viam-sdk>=0.40"]
 vision = ["torch", "transformers>=4.44", "pillow"]
+# Optional cloud LLM backends for the language layer (the default is a local model; tests never need these)
+llm-cloud = ["anthropic", "openai"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

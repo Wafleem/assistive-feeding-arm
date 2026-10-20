@@ -65,7 +65,7 @@ every turn-away, timeout on every never-opens; 10/10 on the real fake mouth.
 
 ## 5. Language — owner: interaction
 **Owns** `language/`, the dashboard. **First task:** `FeedIntent` validation + `rules.parse`
-for every example in `tests/test_language.py`. **Then:** local LLM router on the AGX,
+for every example in `tests/test_language.py`. **Then:** the provider-agnostic `IntentRouter` (local backend on the AGX by default, optional Claude/OpenAI API backends),
 faster-whisper, browser TTS, dialogue preferences.
 **Done when:** ≥ 95% correct intents on 100 recorded utterances; "stop" never waits on the LLM.
 

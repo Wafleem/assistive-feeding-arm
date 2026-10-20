@@ -22,7 +22,7 @@ Nano and the PC is then a config change.
 | Mouth detection + Kalman tracker + ready gate + head-motion monitor | **Orin Nano** (camera plugged in) | short, predictable latency; it's the safety-critical loop; MediaPipe/ArUco are light |
 | Food detection (NanoOWL; OWLv2/GDINO fallback) + masks (NanoSAM; SAM 2) | **AGX Orin** | TensorRT engines, 32 GB |
 | Grasp model (AnyGrasp / Contact-GraspNet) | AGX or Linux PC (if it has a GPU) | CUDA |
-| Local LLM (small quantised, Ollama / llama.cpp) + faster-whisper | **AGX Orin** | runs offline, no venue-network dependency |
+| Intent LLM: local small quantised model (Ollama / llama.cpp) + faster-whisper | **AGX Orin** (default backend) | private and offline; optional Claude / OpenAI **API** backends as fallbacks (API keys, not subscriptions; see `language/README.md`) |
 | VLM attribute questions (small Qwen-VL / SmolVLM class) | AGX Orin | only at decision points |
 | VLA (stretch: SmolVLA / pi0) | AGX inference; training elsewhere | treat any published latency figures as self-reported until measured |
 | viam-server, motion service, orchestration, feeding servo loop, dashboard | **venue Linux PC** | next to the arm |
@@ -39,7 +39,7 @@ Mac or the Linux PC.
 - [ ] TensorRT engines built in advance (NanoOWL, NanoSAM; 10-30 min each)
 - [ ] librealsense with aligned depth on the Nano (and AGX if it has a camera)
 - [ ] MediaPipe Face Landmarker and the ArUco detector running on the Nano at ≥ 30 fps
-- [ ] Local LLM + faster-whisper on the AGX, offline
+- [ ] Local LLM + faster-whisper on the AGX, offline; if using cloud fallbacks, API keys in `.env` on the machine running the router (never in git)
 - [ ] Each model reachable as a Viam service from a test machine config
 - [ ] A USB stick with weights, engines, recorded frames, the backup video
 - [ ] Our own network switch/router and cables (no venue Wi-Fi dependency)
