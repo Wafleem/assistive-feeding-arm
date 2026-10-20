@@ -12,13 +12,14 @@ collision-checked by the implementation.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from ..geometry import Pose
-from ..perception.types import CameraSpec, RGBDFrame
+from ..vision.types import CameraSpec, RGBDFrame
 
 
 @dataclass
@@ -96,6 +97,16 @@ class RobotInterface(ABC):
     def stop(self) -> None:
         """Software stop: halt motion now. Not a substitute for the hardware e-stop."""
 
+    # Time -------------------------------------------------------------------------
+    # Trackers, gates and timeouts use the robot's clock, so the same code runs in
+    # real time on hardware and in simulated time in MuJoCo/FakeRobot.
+    def now(self) -> float:
+        return time.monotonic()
+
+    def wait(self, seconds: float) -> None:
+        """Hold position for ``seconds`` (sim: step physics; real: sleep)."""
+        time.sleep(seconds)
+
     # Optional hooks -----------------------------------------------------------
     def gripper_state(self) -> GripperState | None:
         """Current jaw state without commanding anything (None if unknown)."""
@@ -103,6 +114,10 @@ class RobotInterface(ABC):
 
     def joint_positions(self) -> np.ndarray | None:
         return None
+
+    def update_world(self, zones) -> None:
+        """Tell the motion planner about moving obstacles (tracked head, plate).
+        No-op where the world is physical (sim) or unknown (fake)."""
 
     def oracle_detector(self):
         """Ground-truth detector, only available in simulation."""

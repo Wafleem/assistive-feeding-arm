@@ -6,10 +6,9 @@ can be developed and regression-tested before any model is downloaded.
 The model-backed detectors are thin, lazily-imported wrappers around
 Hugging Face ``transformers``; they are not exercised by the offline tests.
 
-Reading digits ("button 7") is not what open-vocabulary detectors are good
-at: they find *buttons* reliably and *which* button poorly. The intended
-recipe is: detect every "elevator button" box, read each crop with an OCR
-or a small VLM (``LabelReader``), keep the one whose text matches.
+Open-vocabulary detectors are good at "grape" or "cup" and weaker at
+fine-grained or state questions ("the ripe strawberry", "is the spoon
+loaded?"). Those go to a VLM on the crop (``food_perception.vlm``).
 """
 
 from __future__ import annotations
@@ -26,31 +25,35 @@ class Detector(Protocol):
     def detect(self, frame: RGBDFrame, query: str) -> list[Detection]: ...
 
 
-class LabelReader(Protocol):
-    def read(self, rgb_crop: np.ndarray) -> str: ...
-
-
 class SegmentationOracleDetector:
-    """Ground truth from sim: ``query -> geom ids`` (built by ``SimRobot``)."""
+    """Ground truth from sim: ``label -> [instance geom ids, ...]`` (built by ``SimRobot``).
 
-    def __init__(self, query_to_geoms: dict[str, list[int]]):
-        self.query_to_geoms = {k.lower(): v for k, v in query_to_geoms.items()}
+    Returns one detection per visible instance, like a real detector would.
+    Labels are matched case-insensitively, and a trailing plural "s" is
+    forgiven ("grapes" finds "grape")."""
+
+    def __init__(self, label_to_instances: dict[str, list[list[int]]]):
+        self.instances = {k.lower(): v for k, v in label_to_instances.items()}
 
     def known_queries(self) -> list[str]:
-        return sorted(self.query_to_geoms)
+        return sorted(self.instances)
+
+    def _lookup(self, query: str):
+        q = query.lower().strip()
+        return self.instances.get(q) or self.instances.get(q.rstrip("s")) or self.instances.get(q[:-2] if q.endswith("es") else q)
 
     def detect(self, frame: RGBDFrame, query: str) -> list[Detection]:
         if frame.segmentation is None:
             return []
-        ids = self.query_to_geoms.get(query.lower())
-        if not ids:
-            return []
-        mask = np.isin(frame.segmentation, ids)
-        if mask.sum() < 4:
-            return []  # occluded or out of view
-        vs, us = np.nonzero(mask)
-        bbox = (float(us.min()), float(vs.min()), float(us.max() + 1), float(vs.max() + 1))
-        return [Detection(query, 1.0, bbox, mask)]
+        out = []
+        for k, geoms in enumerate(self._lookup(query) or []):
+            mask = np.isin(frame.segmentation, geoms)
+            if mask.sum() < 4:
+                continue  # occluded or out of view
+            vs, us = np.nonzero(mask)
+            bbox = (float(us.min()), float(vs.min()), float(us.max() + 1), float(vs.max() + 1))
+            out.append(Detection(query, 1.0, bbox, mask, extras={"instance": k}))
+        return out
 
 
 class NoisyDetector:

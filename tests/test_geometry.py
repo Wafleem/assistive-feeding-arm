@@ -5,8 +5,8 @@ from assistive_arm.geometry import (
     Pose, arc_waypoints, axis_angle_to_mat, interpolate_poses, look_rotation, mat_to_quat, quat_to_mat,
     tool_pose_facing,
 )
-from assistive_arm.perception.geometry import deproject, fit_plane, mask_points, project
-from assistive_arm.perception.types import CameraIntrinsics
+from assistive_arm.vision.geometry import deproject, fit_plane, mask_points, project
+from assistive_arm.vision.types import CameraIntrinsics
 from assistive_arm.robot_iface.viam_convert import mat_to_ov, ov_to_mat, pose_to_viam_dict, viam_dict_to_pose
 
 rng = np.random.default_rng(0)
