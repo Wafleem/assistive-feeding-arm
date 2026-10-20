@@ -45,6 +45,7 @@ def test_head_and_jaw_are_actuated():
     assert np.allclose(r.site_pose("mouth").z_axis, [0, -1, 0], atol=0.05)  # face normal toward the table
 
 
+@todo
 def test_fixed_camera_sees_every_item_and_the_mouth(robot):
     loc = Locator(robot.oracle_detector())
     for q, n in [("grape", 2), ("strawberry", 1), ("melon cube", 1), ("cup", 1), ("mouth", 1)]:

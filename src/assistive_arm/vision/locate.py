@@ -55,18 +55,14 @@ class Locator:
 
     def locate_all(self, robot: "RobotInterface", query: str, cameras: list[str] | None = None,
                    support_query: str | None = None) -> list[Target3D]:
-        """Every instance of ``query`` from the first camera that sees any, best first."""
-        names = cameras or list(robot.cameras())
-        frames = robot.get_frames(names)
-        for name in names:
-            frame = frames.get(name)
-            if frame is None:
-                continue
-            dets = sorted(self.detector.detect(frame, query), key=lambda d: d.score, reverse=True)
-            found = [t for t in (self._target(robot, frame, query, d, support_query) for d in dets) if t is not None]
-            if found:
-                return found
-        return []
+        """Every instance of ``query`` (e.g. all grapes), best first.
+
+        PLAN: like ``locate``, but keep ALL detections from the first camera that sees any
+        and turn each into a Target3D with ``_target``; put the object's own 3D points
+        (base frame) in ``extras["points"]`` so grasp planning can use them.
+        TODO(food_perception): implement (needed by FoodPerception.find).
+        """
+        raise NotImplementedError("TODO(food_perception): Locator.locate_all")
 
     def _support_normal(self, frame, depth, support_query, center) -> np.ndarray | None:
         dets = self.detector.detect(frame, support_query)
@@ -108,7 +104,5 @@ class Locator:
             score=det.score,
             camera=frame.camera,
             n_points=len(pts),
-            # The object's own 3D points (base frame) feed grasp planning (PCA axes, width).
-            extras={"normal_source": source, "bbox": det.bbox, "mask": det.mask,
-                    "points": pts @ cam.rot.T + cam.position, **det.extras},
+            extras={"normal_source": source, "bbox": det.bbox, "mask": det.mask, **det.extras},
         )
