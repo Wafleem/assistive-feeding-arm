@@ -3,35 +3,38 @@
 ## First 15 minutes
 
 ```bash
-git clone <this repo> && cd physical-ai-hackaton
+git clone git@github.com:Wafleem/open-vocab-helper-arm.git && cd open-vocab-helper-arm
 make setup      # .venv with Python 3.12 + numpy, mujoco, pytest (uses uv if installed)
-make test       # ~70 tests, ~15 s, no robot or GPU needed
-make demo       # "press button 7 on the elevator" in MuJoCo, every step printed
-make viewer     # watch it (macOS runs the viewer under mjpython automatically)
+make test       # passing tests + xfail specs for sections not implemented yet
+make render     # what the cameras see in the MuJoCo feeding scene (out/)
+make todo       # every TODO, by section
 ```
 
-Then read, in order: `README.md` → `docs/PLAN.md` §0 (the flagship demo) →
-`docs/WORKSTREAMS.md` (find your stream and its first task) → whichever of
-`docs/SIMULATION.md`, `docs/COMPUTE.md`, `docs/PROPS.md` your stream uses.
+Then read `README.md` → `docs/PLAN.md` → `docs/WORKSTREAMS.md` → your section's
+`src/assistive_arm/<section>/README.md`.
 
-Python 3.12 is the tested version. If `make setup` fails, install
-[uv](https://docs.astral.sh/uv/) and run it again, or create a Python 3.12
-venv yourself and `pip install -e ".[dev]"`.
+## Implementing a section
+
+1. Pick a `TODO(<section>)` from `make todo` (or your section README's checklist).
+2. Implement it behind the existing interface (`types.py`); don't change a frozen
+   contract without a separate small PR (see WORKSTREAMS.md).
+3. Remove the `@todo` mark from the matching spec test in `tests/`; it must now pass.
+4. Add tests for anything new; use `FakeRobot` for logic and `SimRobot("feeding")` for physics/vision.
 
 ## How we work
 
-* **One workstream per branch:** `ws-<letter>/<short-topic>`, e.g.
-  `ws-b/owlv2-recorded-frames`, `ws-c/fetch-skill`. Open a PR into `main`;
+* **One section per branch:** `s<N>/<short-topic>`, e.g.
+  `s1/kalman-tracker`, `s3/pca-grasp`. Open a PR into `main`;
   the PR template has the checklist.
 * **`make test` green on every PR.** CI runs the same tests on GitHub.
 * **Frozen contracts** (`docs/WORKSTREAMS.md`): `intent/schema.py`,
-  `robot_iface/base.py`, `perception/types.py`, `skills/base.py`,
-  `planning/safety.py`, the world checks in `scripts/eval_sim.py`. Changing one
+  every section's `types.py`/`schema.py`/`states.py`, `robot_iface/base.py`,
+  and the safety numbers in `motion/safety.py` and `feeding/config.py`. Changing one
   is its own small PR, reviewed by every stream that uses it.
 * **Safety numbers** (speeds, forces, keep-out boxes) change only with the
   safety lead's review.
-* **Behaviour changes come with numbers:** paste the `make eval` table into
-  the PR. "FALSE" (false success claims) and "user hit" must stay at 0.
+* **Behaviour changes come with numbers:** once `scripts/eval_feeding.py` exists,
+  paste its table into the PR. Head contacts and false "delivered" claims must stay at 0.
 * **Own your paths:** each stream owns the directories listed in
   WORKSTREAMS.md; tell the owner before editing theirs.
 * **Track work as issues** with the "Workstream task" template, labelled by
@@ -50,10 +53,12 @@ venv yourself and `pip install -e ".[dev]"`.
 
 | I work on... | Start in |
 |---|---|
-| speech, intent, confirmations | `src/assistive_arm/intent/`, `tests/test_intent.py` |
-| detection, masks, 3D | `src/assistive_arm/perception/` |
-| skills, planner, safety | `src/assistive_arm/skills/`, `planning/`, `executor.py`, `tests/test_skills.py` |
-| simulation, scenes, eval | `sim/`, `src/assistive_arm/robot_iface/sim.py`, `scripts/`, `tests/test_sim.py` |
-| real arm through Viam | `src/assistive_arm/robot_iface/viam.py`, `viam_convert.py` |
-| VLA policies | `src/assistive_arm/skills/vla.py` |
-| props | `docs/PROPS.md`, `props/` (to create) |
+| 1 mouth tracking | `src/assistive_arm/mouth_perception/`, `tests/test_mouth_perception.py` |
+| 2 food detection | `src/assistive_arm/food_perception/`, `src/assistive_arm/vision/` |
+| 3 grasping | `src/assistive_arm/grasping/`, `tests/test_grasping.py` |
+| 4 feeding motion & safety | `src/assistive_arm/feeding/`, `src/assistive_arm/motion/` |
+| 5 language | `src/assistive_arm/language/`, `tests/test_language.py` |
+| 6 orchestration | `src/assistive_arm/orchestration/` |
+| 7 simulation | `sim/`, `src/assistive_arm/sim/`, `src/assistive_arm/robot_iface/sim.py`, `scripts/` |
+| 8 props | `docs/PROPS.md`, `props/` (to create) |
+| the real arm through Viam | `src/assistive_arm/robot_iface/viam.py`, `viam_convert.py` |

@@ -1,139 +1,105 @@
-# physical-ai-hackaton: a voice-driven assistive arm for wheelchair users
+# open-vocab-helper-arm: assisted eating with an xArm6
 
-A UFACTORY **xArm6** with a parallel-jaw gripper (the xArm Gripper, 0-85 mm),
-mounted on a power wheelchair, that does the small reach-and-touch jobs a
-seated user often can't:
+> *We used to aim at armor plates. Now we aim a spoon, gently.*
+> — NYU RoboMaster controls leads, "Physical AI for Good"
 
-> "Hand me the blue water bottle." · "Grab the mug." – "Which one?" – "The left one." ·
-> "Put it in the bin." · "Press button 7 on the elevator." · "Grab the shopping bag." ·
-> "Grab the door handle and open it." · "Stop." · "Let go."
+Many people need help to eat, for example after a stroke, with ALS, MS, a
+spinal cord injury or cerebral palsy, or in old age. Being fed by someone else
+at every meal costs dignity and a carer's time. This project builds a robot arm
+that feeds a person **at their pace, on their words**: "feed me the
+strawberries", "a sip of water", "slower", "I'm done".
 
-**Flagship demo:** open-vocabulary "hand me ___": any object a judge names is
-found, picked, and handed to the user's open palm; look-alikes are numbered
-on screen and resolved by asking. The wheelchair skills (button, bag, door)
-are built on the same pipeline and come next. Script, pipeline and event
-milestones: [docs/PLAN.md §0](docs/PLAN.md).
+For the hackathon the person is a **fake mouth**: a mannequin head with an
+opening (and a servo jaw) on a table. The arm is the venue's UFACTORY **xArm6**
+with a standard parallel gripper, driven through **Viam**.
 
-Speech becomes a validated intent; open-vocabulary vision finds the target in
-3D using a camera **on the wheelchair** plus one **on the wrist**; a small
-library of force-guarded skills does the work through Viam on the real arm,
-or through MuJoCo before there is an arm. Open VLA models (OpenVLA, Octo, pi0)
-plug in as an optional skill that runs inside the same safety envelope.
+**Status: scaffold.** The shared core already works: the robot API, a MuJoCo
+scene with a moving fake head, the cameras, the safety envelope and the Viam
+backend. Each of the eight sections below is a package with:
+* a plan README,
+* typed interfaces,
+* stubs that raise `NotImplementedError("TODO(...)")`,
+* spec tests marked as expected failures (`xfail`) until someone implements them.
 
-There is no hardware yet. Everything here runs offline: `make setup && make test`
-runs 72 tests, including MuJoCo end-to-end runs where the arm finds and presses an
-elevator button, lifts a 1.2 kg bag and hands it over, and opens a lever door.
+The previous wheelchair-assist version is at git tag `v0-wheelchair-skills`.
 
-## User stories
+## How it works
 
-| As a seated user I want to... | so that... | Skill | Status in sim |
-|---|---|---|---|
-| say "hand me the blue water bottle" | I get things I can't reach, without naming them in advance | `fetch` (planned: detect → SAM mask → PCA grasp → handover to open palm) | not built yet: tabletop + YCB scene and the fetch skill are the first tasks (SIMULATION.md §0) |
-| be asked "which one?" when there are two mugs | it never guesses between look-alikes | clarification | planned |
-| say "press 7" in an elevator | I don't need to ask a stranger to press my floor | `press_button` | works: 10/10 buttons, with and without 4 mm chair sway |
-| say "grab the shopping bag" | I can get my bag from a counter onto my lap | `grasp_handle` | works: grasp, weigh (1.22 kg measured / 1.2 kg true), hand over |
-| say "open the door" | I can get through a pull door alone | `open_door` | lever door works when the hinge is known; with an estimated hinge it stops partway (safe, not yet useful); knob: not yet |
-| say "stop" at any time | the arm freezes immediately | `stop` | software stop wired; hardware e-stop is mandatory on the real chair |
-| say "let go" | I take the item when I'm ready | `release` | works |
-| be asked before the arm touches anything | nothing happens that I didn't agree to | `confirm` hook | every contact phase asks; alarm/call buttons ask twice |
+```
+ "feed me a strawberry" ──► 5 language ──► 6 orchestration (state machine)
+                                             │
+     ┌───────────────────┬──────────────────┼────────────────────┐
+     ▼                   ▼                  ▼                    ▼
+ 2 food perception   3 grasping &      1 mouth perception    4 feeding motion
+ (open-vocab detect,   acquisition       (track, predict,      & safety (approach,
+  SAM masks, depth)   (pinch / utensil   ready gate, retreat)   stop 3 cm out, retreat)
+                       / cup; open model)
+     └───────────────────┴──────── RobotInterface ─────────────┘
+                     SimRobot (MuJoCo, 7 sim)  |  ViamRobot (xArm6 + gripper + RealSense)
+```
 
 ## Safety framing
 
-A person sits within arm's reach of this robot, often one who cannot move out
-of its way. The design rules, in priority order:
+The arm works at a person's face. These rules don't change, in priority order:
 
-1. **Hardware first.** A hardware e-stop the user can hit (and a wireless one
-   for a carer), the xArm's own collision detection set to its most sensitive
-   level, reduced-mode joint speed limits, and a gripper force limit. Software
-   below is a second layer, never the only one.
-2. **Nothing touches the world without a "yes".** Every skill has a free-space
-   approach, then asks the user (`SkillContext.confirm`, voice or a big
-   button), then does a *guarded* contact move. No answer = no.
-3. **Keep-out zones around the user.** Boxes for torso/head, legs and the chair
-   (`planning/safety.py`) are checked for every target and every straight-line
-   path; the same boxes go to Viam's motion planner as obstacles; in sim the
-   arm is also collision-checked against a body model of the user, and any
-   contact latches a stop.
-4. **Slow near people, slow in contact.** 0.15 m/s free space, 0.05 m/s within
-   20 cm of the user, 0.02 m/s for any contact move.
-5. **Force limits everywhere.** Contact moves stop at 6 N (button), 15 N (generic
-   ceiling), 25 N (handle turn), 30 N (door swing). The real arm needs a wrist
-   F/T sensor (or a calibrated joint-current estimate) for this to be real.
-6. **Claims need evidence.** A skill reports success only if the world agrees:
-   the press met resistance where the button was expected, the gripper stopped
-   on something, the load was weighed, the handle is still in the hand after
-   the swing. The eval harness counts false success claims separately; the
-   target is zero.
-7. **The arm parks out of the way** (low, to the right, tool forward) when not
-   working, which also keeps the wheelchair camera's view clear.
+1. **Hardware first:**
+   * an e-stop within reach of the user and of a carer;
+   * the xArm's collision detection at its most sensitive setting;
+   * reduced-mode speed limits set on the arm's controller.
+2. **The robot never puts anything in the mouth.** The bite stops **3 cm in front
+   of the lips**, and the person closes the gap.
+3. **Ask before every bite** in demo mode: "Ready for a strawberry?" No answer means no.
+4. **Only approach a ready mouth:** open and still for 0.5 s, and tracked with confidence.
+5. **Slow, and along the face normal:** at most 2 cm/s on the final approach, and at most
+   3 cm/s anywhere within 15 cm of the face.
+6. **Leave at once** on any of: head motion, "stop" or "wait", any force over 3 N near
+   the face, lost tracking, or a timeout.
+7. **A moving keep-out zone** around the head is passed to the motion planner every tick.
+8. **Claims need evidence:** a bite counts as delivered only if the world agrees (sim
+   metrics, re-detection, gripper state).
 
-None of this is a certified safety case. Before anyone sits in the chair: a
-risk assessment against ISO 10218 / ISO/TS 15066 (collaborative force and
-speed limits) and the assistive-robot standard ISO 13482, and testing with a
-mannequin.
+This is not a certified safety case. Before a real person, the team needs a
+written risk assessment (ISO 10218, ISO/TS 15066 and ISO 13482 as references)
+and trials with a mannequin only.
+
+## Sections (one package, one owner each)
+
+| # | Section | Package | Plan |
+|---|---|---|---|
+| 1 | Mouth perception: detect, track (Kalman filter), predict, ready gate, retreat triggers | `src/assistive_arm/mouth_perception/` | [README](src/assistive_arm/mouth_perception/README.md) |
+| 2 | Food perception: open-vocabulary detection + masks + depth; VLM; VLA discussion | `src/assistive_arm/food_perception/` | [README](src/assistive_arm/food_perception/README.md) |
+| 3 | Grasping & acquisition: PCA + AnyGrasp/Contact-GraspNet; pinch / utensil / cup | `src/assistive_arm/grasping/` | [README](src/assistive_arm/grasping/README.md) |
+| 4 | Feeding motion & safety: staging, servoed final approach, standoff, retreat | `src/assistive_arm/feeding/` | [README](src/assistive_arm/feeding/README.md) |
+| 5 | Language layer: speech, LLM router → validated intents, rules, dialogue | `src/assistive_arm/language/` | [README](src/assistive_arm/language/README.md) |
+| 6 | Orchestration: the bite-cycle state machine with timeouts and aborts | `src/assistive_arm/orchestration/` | [README](src/assistive_arm/orchestration/README.md) |
+| 7 | Simulation: feeding scene, head scripts, metrics, eval | `src/assistive_arm/sim/`, `sim/` | [README](src/assistive_arm/sim/README.md) |
+| 8 | Props: fake mouth, plate, foods, utensils (store-bought or flat-pack) | — | [docs/PROPS.md](docs/PROPS.md) |
+
+**Shared core** (works now, used by every section):
+* `geometry.py`
+* `robot_iface/`: the Fake, Sim and Viam robots
+* `vision/`: camera types, deprojection, detector wrappers, `Locator`
+* `motion/`: the safety envelope and guarded move primitives
 
 ## Quick start
 
-New to the team? Start with [CONTRIBUTING.md](CONTRIBUTING.md) (setup, branch and PR rules) and
-find your workstream in [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md).
-
 ```bash
-make setup        # .venv with Python 3.12, numpy, mujoco, pytest (uses uv if present)
-make test         # ~70 tests, ~15 s, offline
-make demo         # "press button 7 on the elevator" in MuJoCo, prints every step
-make demo SCENE=bag SAY="grab the shopping bag"
-make eval         # success-rate table: world-verified success, false claims, user contacts
-make viewer       # watch it (macOS: runs under mjpython)
+make setup        # .venv (Python 3.12) with numpy, mujoco, pytest
+make test         # passing tests + "xfail" specs for unimplemented sections
+make render       # PNGs of the feeding scene from the wrist and fixed cameras (out/)
+make viewer       # interactive MuJoCo viewer
+make todo         # list every TODO by section
 ```
 
-## Repo map
+New here? Read [CONTRIBUTING.md](CONTRIBUTING.md), then [docs/PLAN.md](docs/PLAN.md),
+then [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md), then your section's README.
 
-```
-src/assistive_arm/
-  geometry.py            Pose, quaternions, look-at rotations, arc waypoints (SI units, base frame)
-  intent/
-    schema.py            Intent + Task: the validated command schema (also the LLM's JSON schema)
-    parser.py            offline rule-based parser for the example phrases; asks when unsure
-  perception/
-    types.py             CameraSpec (wrist | base | world mount), RGBDFrame, Detection, Target3D
-    detectors.py         Detector protocol; sim oracle; NoisyDetector; OWLv2 + Grounding DINO wrappers
-    geometry.py          deprojection, plane fitting
-    locate.py            detection + depth -> 3D point + approach normal (from the support surface)
-  planning/
-    safety.py            keep-out boxes, reach, speed and force limits
-    task_planner.py      Intent -> inspectable plan (clear view, locate, observe, locate, skill)
-  skills/
-    base.py              SkillContext/SkillResult, safe_move, guarded_linear
-    press_button.py      approach along the normal, confirm, press to a force threshold
-    grasp.py             top-down handle grasp, weigh, carry, hand over; release
-    door.py              grasp, turn lever/knob, swing along the hinge arc
-    vla.py               run any VLA policy step-by-step inside the safety envelope; OpenVLA adapter
-  robot_iface/
-    base.py              RobotInterface: the one API every skill uses
-    fake.py              FakeRobot: kinematics-free, for unit tests
-    sim.py               SimRobot: MuJoCo arm, gripper, F/T sensor, two RGB-D cameras, sway
-    viam.py              ViamRobot: xArm6 + gripper + RealSense + F/T through the Viam SDK (untested)
-    viam_convert.py      mm/deg and orientation-vector conversions (tested)
-  executor.py            runs a plan on any RobotInterface
-sim/
-  models/xarm6_wheelchair.xml   xArm6-dimension arm + parallel gripper on a swaying wheelchair, seated user
-  scenes/{elevator,bag,door_lever,door_knob}.xml
-scripts/sim_demo.py      one request end-to-end, optional viewer / camera PNGs
-scripts/eval_sim.py      benchmark table over seeds, sway, detector noise
-docs/PLAN.md             architecture, skills, modular-vs-VLA, milestones, hackathon MVP
-docs/SIMULATION.md       how to build and test all of it before the arm and chair exist
-docs/WORKSTREAMS.md      the work split into parallel pieces for a team
-docs/COMPUTE.md          what runs on the Jetson AGX / Orin Nano / Linux GPU box / Mac; pre-event checklist
-docs/PROPS.md            props bought ready-made or packed flat, shopping/packing lists, sim twins, self-reporting sensors
-tests/                   intent, geometry, safety, skills, executor, MuJoCo end-to-end
-```
+## Docs
 
-## Lineage
-
-Lessons carried over from the armfarm pick-and-place hackathon project (xArm6 +
-vacuum gripper + wrist D435 + natural-language commands): look before every
-move; collision-checked planning with live obstacles; treat a carried object
-as part of the arm for collision checks; approach, pause and confirm before
-contact; close the loop on the gripper instead of trusting a command; and map
-language to a validated schema, never straight to motion. This is a fresh
-repo, not a fork.
+| Doc | What |
+|---|---|
+| [docs/PLAN.md](docs/PLAN.md) | architecture, 90-second demo, milestones, risks, team roles |
+| [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) | one stream per section: contracts, first tasks, done-when |
+| [docs/SIMULATION.md](docs/SIMULATION.md) | developing everything in MuJoCo first |
+| [docs/COMPUTE.md](docs/COMPUTE.md) | what runs on the AGX Orin, Orin Nano, venue PC and Mac |
+| [docs/PROPS.md](docs/PROPS.md) | the fake mouth and food props: shopping and packing lists |
