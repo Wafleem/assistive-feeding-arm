@@ -42,8 +42,8 @@ Then read `README.md` → `docs/PLAN.md` → `docs/WORKSTREAMS.md` → your sect
 
 ## Never commit
 
-* Credentials: Viam API keys go in environment variables (`VIAM_ADDRESS`,
-  `VIAM_API_KEY`, `VIAM_API_KEY_ID`) or a local `.env` (git-ignored).
+* Credentials: Viam and LLM API keys go in environment variables or a local `.env`
+  (git-ignored; copy `.env.example`). Never commit, print or log a key.
 * Model weights, TensorRT engines, recorded RealSense frames, videos: keep them
   in `data/` (git-ignored) or shared storage, and note where in the PR.
 * Downloaded robot meshes: `sim/assets/` (git-ignored). Commit the script or

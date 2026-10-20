@@ -67,7 +67,7 @@ camera for food when you have it.
 | Soft or wet food slips or bruises | Firm foods (grapes, cheese or melon cubes), low grip force, holding check before the approach |
 | Detection fails on shiny plates or black items | Matte plate, colourful foods, depth validity check |
 | Venue camera or network differs from the plan | Fallback using only the fixed camera; everything wired, no dependence on venue Wi-Fi |
-| LLM slow or wrong | The rule parser handles safety words first and is the fallback; schema validation |
+| LLM slow, wrong or offline | Safety words handled by rules before any model; per-backend timeouts; local → (optional) cloud API → rules fallback chain; schema validation |
 | Spills (cup) | Stretch goal only; lid + straw; never tilt near the face |
 
 ## 5. Team roles
