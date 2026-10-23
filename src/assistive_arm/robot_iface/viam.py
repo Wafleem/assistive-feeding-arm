@@ -220,7 +220,7 @@ async def connect(address: str | None = None):
     return await RobotClient.at_address(address, opts)
 
 # Logitech C270 at 640x480 (~60 deg diagonal FOV) until a checkerboard calibration exists.
-C270_640x480 = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
+C270_640x480 = CameraIntrinsics(772.5, 772.5, 320.0, 240.0, 640, 480)  # = hfov 45 deg, as the depth module assumes
 
 
 def _rgb_and_depth(images):
@@ -273,6 +273,12 @@ class ViamCameraRig:
             try:
                 return kind.from_robot(self.client, name)
             except ResourceNotFoundError:
+                # Over a direct (non-WebRTC) connection the SDK's resource manager can miss
+                # module-provided resources that the machine does list; talk to it directly.
+                if any(r.name == name for r in self.client.resource_names):
+                    from viam.components.camera.client import CameraClient
+
+                    return CameraClient(name, self.client._channel)
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(1.0)

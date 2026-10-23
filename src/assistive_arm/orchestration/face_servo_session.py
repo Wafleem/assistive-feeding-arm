@@ -36,6 +36,7 @@ from ..feeding.face_servo import (
 
 ROLL = 4  # SO-101 wrist roll joint index
 FLEX_J = 3
+from ..mouth_perception.depth_range import DepthRangeCorrector
 from ..mouth_perception.tracker import MouthTracker
 from ..mouth_perception.types import MouthState
 
@@ -99,7 +100,7 @@ class FaceServoSession:
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
-                 allow_extend: bool = True, log_dir=None):
+                 allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -123,6 +124,9 @@ class FaceServoSession:
         self.last_move_end = 0.0
         self.fps = 0.0
         self.allow_extend = allow_extend
+        self.depth_camera, self.depth_det = depth_camera, depth_detector
+        self.depth = DepthRangeCorrector()
+        self.depth_status = "off" if not (depth_camera and depth_detector) else "starting"
         self.track_cfg = TrackConfig()
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.track: LevelTracker | None = None
@@ -139,6 +143,30 @@ class FaceServoSession:
     # ---------------------------------------------------------------- perception
     def start(self) -> None:
         threading.Thread(target=self._perception_loop, daemon=True).start()
+        if self.depth_camera and self.depth_det is not None:
+            threading.Thread(target=self._depth_loop, daemon=True).start()
+
+    def _depth_loop(self, period: float = 0.25) -> None:
+        """Metric depth (a few Hz) teaches the fast face pipeline this person's eye span."""
+        while self._running:
+            t0 = time.monotonic()
+            try:
+                frame = self.robot.get_frames([self.depth_camera]).get(self.depth_camera)
+                if frame is None or frame.depth is None or not np.any(frame.depth > 0):
+                    self.depth_status = "no depth frame"
+                else:
+                    found = self.depth_det.landmarks(frame.rgb, self.robot.now())
+                    if found is None:
+                        self.depth_status = "depth ok, no face in it"
+                    else:
+                        params = getattr(self.det, "params", None)
+                        if params is not None and self.depth.update(found[0], frame.intrinsics, frame.depth, params):
+                            if self.depth.ready:
+                                params.eye_span_m = self.depth.eye_span_m  # the 20 Hz pipeline now ranges metrically
+                        self.depth_status = "ok" if self.depth.ready else f"learning ({len(self.depth.samples)} samples)"
+            except Exception as e:
+                self.depth_status = f"error: {type(e).__name__} {e}"[:160]
+            time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
     def _perception_loop(self) -> None:
         last = time.monotonic()
@@ -623,6 +651,8 @@ class FaceServoSession:
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
             "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
+            "depth": {"status": self.depth_status, **self.depth.last,
+                      "eye_span_mm": round(self.depth.eye_span_m * 1000, 1), "samples": len(self.depth.samples)},
             "level": {"saved_tool_pitch_deg": (self.taught.spoon_level or {}).get("tool_pitch_deg"),
                       "spoon_tilt_now_deg": None if isinstance(joints, str) else round(
                           _tool_pitch(np.array(self._last_joints)) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)), 1),

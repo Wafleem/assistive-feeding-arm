@@ -214,3 +214,15 @@ streamed (`streamed: true`, the teleop path) over the direct cable connection. W
 the camera pose comes from the commanded joints at each frame's time (minus 0.12 s servo lag),
 so moving doesn't skew the face estimate. The loop stops if the real arm falls more than 10°
 behind its commands. Extend still uses the planner and stays off by default.
+
+## Depth Anything 3 corrects the face range (2026-10-23)
+The `depth-anything-3` module (`modules/depth-anything-3`, merged from `core/depth-anything-3`)
+serves `webcam-2-depth`: metric depth aligned to `webcam-2`, at about 5 Hz on the Orin's GPU.
+That's too slow to drive the 20 Hz face loop, so the dashboard uses it to calibrate instead:
+a background thread reads the face's depth (forehead, nose bridge, cheeks; never the mouth)
+about 4×/s and learns this person's eye-corner span (`mouth_perception/depth_range.py`, a
+running median of plausible samples). The fast pipeline then ranges the face with that span,
+so distance, and with it the lips' height, are metric. That was the up/down offset seen
+when the 90 mm average span didn't fit the person. Both cameras use fx = 772.5 px (hfov 45°).
+The dashboard shows the depth distance next to the fast estimate and embeds the module's
+own preview page (tunnelled to `localhost:8766` by `dashboard/run_mac.sh`).
