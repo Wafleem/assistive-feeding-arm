@@ -26,7 +26,7 @@ class FakeSO101:
     def now(self):
         return time.monotonic()
 
-    def joints(self):
+    def joints(self, timeout=None):
         return self.q.copy()
 
     def move_joints(self, q):

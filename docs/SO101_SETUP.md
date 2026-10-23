@@ -142,3 +142,31 @@ Viewing detections:
 - **Venue Wi-Fi:** 300-600 ms pings and failed WebRTC connections made live commands
   (`DoCommand`, `GetImages`) time out, even while the part showed online. Config still got
   through, which is why teleop now uses `auto_start: true`.
+
+## Network: give the Orin the laptop's internet over the USB cable (2026-10-23)
+At its spot the Orin's Wi-Fi was at −80 dBm (6 Mbit/s uplink, 300–600 ms pings), so
+viam-server kept dropping off the cloud: 32 of 45 WebRTC connections failed in 10 minutes,
+and teammates couldn't connect from app.viam.com. Routing its traffic through a laptop on
+the Jetson's USB link fixed it (about 22 ms pings, 6 of 7 connections succeeding, no
+log-upload errors).
+
+1. USB-C cable from the laptop to the Orin's **device-mode port** (next to the 40-pin
+   header). The Orin is `192.168.55.1`, the laptop `192.168.55.100`.
+2. On the laptop (macOS, Wi-Fi on `en0`), once per laptop boot. You run this yourself; it needs your password:
+   ```bash
+   sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on en0 from 192.168.55.0/24 to any -> (en0)" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
+   ```
+   Undo: `sudo pfctl -a com.apple/jetson-share -F all && sudo sysctl -w net.inet.ip.forwarding=0`
+3. On the Orin, once per Orin boot (it doesn't survive a reboot, on purpose):
+   ```bash
+   sudo setsid nohup ~/assistive-arm-servo/scripts/usb_uplink_watchdog.sh >/dev/null 2>&1 </dev/null &
+   ```
+   Every 10 s it checks 1.1.1.1 through the laptop. While that works, the default route goes
+   via the laptop (metric 50) with DNS 1.1.1.1/8.8.8.8. After 3 failures (cable out, laptop
+   asleep, sharing off), it removes that route and the Orin's own Wi-Fi (metric 600) takes over.
+   Its switches are logged under `usb-uplink` in the system log.
+   Stop it with `sudo pkill -f usb_uplink_watchdog.sh` (run from a separate shell, not over
+   an `ssh host '...'` line that contains the same text).
+
+Keep the laptop awake and on the cable while others rely on the machine. SSH to the Orin
+over the cable with `HostKeyAlias=rm-sentry.local`, because every Jetson uses `192.168.55.1`.

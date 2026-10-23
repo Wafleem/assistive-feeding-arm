@@ -135,8 +135,8 @@ class FaceServoSession:
                         self._jpeg = jpeg
                 with self._new_frame:
                     self._new_frame.notify_all()
-            except Exception as e:  # keep the preview alive through network hiccups
-                self._event("perception", f"error: {e}")
+            except Exception as e:  # keep the preview alive through network hiccups (the rig reconnects)
+                self._event("perception", f"error: {type(e).__name__} {e}".strip())
                 time.sleep(0.5)
 
     def jpeg(self) -> bytes | None:
@@ -414,10 +414,12 @@ class FaceServoSession:
             face = face or {}
             face.update({"open": st.is_open, "open_ratio": round(st.open_ratio, 2), "speed_cm_s": round(st.speed * 100, 1),
                          "age_s": round(st.age, 2), "position_mm": [round(float(v) * 1000) for v in st.position]})
-        try:
-            joints = [round(float(v), 1) for v in self.robot.joints()]
+        try:  # short timeout: a slow cloud link must not freeze the page
+            self._last_joints = [round(float(v), 1) for v in self.robot.joints(timeout=1.5)]
+            joints = self._last_joints
         except Exception as e:
-            joints = f"error: {e}"
+            last = getattr(self, "_last_joints", None)
+            joints = f"{last} (stale: {type(e).__name__})" if last else f"unavailable ({type(e).__name__})"
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
