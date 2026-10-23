@@ -99,3 +99,46 @@ Verification (with focus set and the camera streaming):
 Also needed: camera intrinsics (checkerboard capture), which the webcam config doesn't have yet.
 
 Focus: twist the M12 lens until text ~20–30 cm away is sharp (the plate/food distance).
+
+## Gripper camera now: Logitech C270 (`webcam-2`)
+The icSpring wrist module (`arm-camera`) shows up on USB and opens, but sends **zero
+frames** in every mode. That held on the Orin, outside Viam, after a USB reset and after a
+power cycle, so treat it as a hardware fault. It was replaced by a **Logitech C270** taped
+on top of the gripper: centred, lens forward along the spoon (photos IMG_3077-3079,
+2026-10-23). The spoon stays taped in the fixed jaw.
+
+Frame of `webcam-2` (parent `follower-arm`; tool axes: +Z out along the spoon, +X down,
++Y to the gripper's left), estimated from the photos with the C270's 73 mm width as scale:
+
+| | Value | Meaning |
+|---|---|---|
+| translation | (x −21, y −8, z 90) mm | ~28 mm above the spoon handle, ~8 mm right of centre (the lens is off-centre in the C270), lens ~5-10 mm behind the jaw tips |
+| orientation | `ov_degrees (0, 0, 1, −90)` | optical axis along the spoon; image "up" = gripper top |
+| known error | ~6° yaw (top view) and a few degrees of pitch | refine with a hand-eye check |
+
+The live image confirms that orientation: it is upright, and the spoon bowl shows at bottom-left.
+Intrinsics are not calibrated yet; code assumes fx = fy = 780 px at 640×480 (C270, ~60° diagonal).
+
+Viewing detections:
+- **Viam app → CONTROL → `detections-view`**: the C270 feed with YOLOv8 boxes (bowl, cup,
+  spoon, person, ...), from `spoon-detector` running on the Orin.
+- **`scripts/perception_viewer.py`**: the same feed plus the person's face (lips, mouth
+  open/closed, distance, readiness) and bowls with ids and 3D positions. Needs
+  `VIAM_ADDRESS`, `VIAM_API_KEY`, `VIAM_API_KEY_ID` in `.env` (Viam app → CONNECT → API keys).
+
+## Lessons from the camera debugging (2026-10-23)
+- **A module download blocks every config change.** While the 2.9 GB YOLOv8 package was
+  downloading, the Orin applied no new config. Removing the module didn't help; only a
+  viam-server restart did (the download then resumed from where it stopped).
+- **Modules can inherit an open camera.** A module process started while a webcam is
+  open inherits its device file (seen with `find-webcams`, then YOLOv8). When the camera
+  is then reconfigured (even just a `frame` change), the new instance fails with "no
+  queryable drivers ... busy". Fix: restart the module that holds it (`RestartModule`),
+  or restart viam-server. Check with `sudo fuser -v /dev/video*`.
+- **Debug hardware outside Viam.** SSH in (`ultraviolet@rm-sentry.local`, key
+  `~/.ssh/id_ed25519_jetson`) and test the camera directly with `lsusb`,
+  `/dev/v4l/by-id`, `dmesg` and a one-frame OpenCV read. That separates "dead camera"
+  from "bad config".
+- **Venue Wi-Fi:** 300-600 ms pings and failed WebRTC connections made live commands
+  (`DoCommand`, `GetImages`) time out, even while the part showed online. Config still got
+  through, which is why teleop now uses `auto_start: true`.

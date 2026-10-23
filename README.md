@@ -9,13 +9,18 @@ at every meal costs dignity and a carer's time. This project builds a robot arm
 that feeds a person **at their pace, on their words**: "feed me the
 strawberries", "a sip of water", "slower", "I'm done".
 
-For the hackathon the person is a **fake mouth**: a 3D-printed face with an
-always-open mouth and a catch cup behind it that is dumped after every bite.
+For the hackathon the arm feeds a **real person** (a team member) in `person` mode:
+the spoon stops 3 cm in front of the lips, and the person closes the gap. A 3D-printed
+face with an always-open mouth stays available for rehearsals without a person.
+The bench rig right now is an SO-101 arm with a spoon fixed in its gripper and a webcam
+on top, scooping small food from bowls.
 The arm is the venue's UFACTORY **xArm6** with a standard parallel gripper, driven
 through the venue's **Viam** machine. A **Jetson AGX Orin** adds the AI compute
 that machine may not have.
 
-**Status: scaffold.** The shared core already works: the robot API, a MuJoCo
+**Status: scaffold, with perception started.** Mouth tracking for a real face (MediaPipe,
+Kalman filter, ready and retreat gates) and bowl finding and tracking are implemented and
+tested offline; `scripts/perception_viewer.py` shows them live. The shared core already works: the robot API, a MuJoCo
 scene with a moving fake head, the cameras, the safety envelope and the Viam
 backend. Each of the eight sections below is a package with:
 * a plan README,
