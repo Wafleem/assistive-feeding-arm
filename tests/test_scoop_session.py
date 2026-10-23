@@ -13,7 +13,7 @@ from assistive_arm.robot_iface.so101_kinematics import fk, joint_limits
 from test_face_track_session import LOOK, KinArm, SeenFace, level_first, wait
 
 A = np.radians(-25.0)
-BOTTOM = np.r_[pan_axis_xy() + 0.36 * np.array([np.cos(A), np.sin(A)]), 0.008]
+BOTTOM = np.r_[pan_axis_xy() + 0.31 * np.array([np.cos(A), np.sin(A)]), 0.008]
 # 10x the real speeds so a whole scoop streams in a few seconds
 FAST = replace(ScoopConfig(dip_deg=50.0), max_joint_speed_deg=250.0, air_speed=0.6, dip_speed=0.2,
                scoop_speed=0.2, max_rotate_deg_s=300.0)
@@ -31,7 +31,7 @@ def tip_on_the_bottom() -> np.ndarray:
 
 def tip(q):
     T = fk(q)
-    return T[:3, 3] + 0.21 * T[:3, 2]
+    return T[:3, 3] + ScoopConfig().spoon_tip_from_tool * T[:3, 2]
 
 
 def session(arm, tmp_path):

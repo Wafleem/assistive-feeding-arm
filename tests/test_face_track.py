@@ -33,7 +33,7 @@ def test_converges_onto_an_offset_face_level_and_smooth():
     face = face_ahead(Q0, dist=0.6, dx=-0.12, dz=0.08)  # 12 cm to the right, 8 cm up
     tr, qs, vs, errs = run(lambda t: face)
     e = errs[-1]
-    assert e["miss_cm"] <= 1.2 and abs(e["pitch_deg"]) <= 1.0 and abs(e["reach_cm"]) <= 1.0, e
+    assert e["miss_cm"] <= 1.6 and abs(e["pitch_deg"]) <= 1.0 and abs(e["reach_cm"]) <= 1.0, e
     acc = np.abs(np.diff(vs, axis=0)) * tr.cfg.rate_hz
     assert acc.max() <= tr.cfg.max_acc_deg + 1e-6  # no jerks
     assert np.abs(vs[:, :4]).max(axis=0).round(6).tolist() <= list(tr.cfg.max_vel_deg)
@@ -45,7 +45,7 @@ def test_settles_without_hunting():
     tr, qs, vs, errs = run(lambda t: face, seconds=8.0)
     tail = vs[-40:]  # last 2 s
     assert np.abs(tail).max() < 0.5  # at rest, deg/s
-    assert errs[-1]["miss_cm"] <= 1.2
+    assert errs[-1]["miss_cm"] <= 1.6  # centring deadband 1.3 cm
 
 
 def test_follows_a_slowly_moving_face():
@@ -91,21 +91,24 @@ def test_extend_decision_rules():
     c = ExtendConfig(stop_tip_distance=0.20)
     ok = dict(face_seen=True, age=0.05, head_speed=0.0, miss_cm=0.8, tilt_deg=0.5, tip=0.40, travelled=0.0, held_s=0.0)
     assert extend_decision(c, **ok)[0] == 1
-    assert extend_decision(c, **{**ok, "miss_cm": 3.0})[0] == 0  # centre first
+    assert extend_decision(c, **{**ok, "miss_cm": 4.0})[0] == 0  # centre first
     assert extend_decision(c, **{**ok, "tilt_deg": 4.0})[0] == 0  # level first
     assert extend_decision(c, **{**ok, "head_speed": 0.08})[0] == 0  # wait for stillness
     assert extend_decision(c, **{**ok, "head_speed": 0.2, "travelled": 0.05})[0] == -1
-    assert extend_decision(c, **{**ok, "face_seen": False, "travelled": 0.05})[0] == -1
+    assert extend_decision(c, **{**ok, "face_seen": False, "age": 0.6, "travelled": 0.05})[0] == 0  # brief dropout: hold
+    assert extend_decision(c, **{**ok, "face_seen": False, "age": 2.0, "travelled": 0.05})[0] == 0  # holds: Retreat/STOP backs out
     assert extend_decision(c, **{**ok, "face_seen": False})[0] == 0  # nothing to back out of
     assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 1.0})[0] == 0  # holding
-    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 9.0})[0] == -1  # hold over
+    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 11.0})[0] == -1  # 10 s to eat, then back out
+    assert extend_decision(ExtendConfig(stop_tip_distance=0.20, hold_s=8.0),
+                           **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 9.0})[0] == -1  # optional hold timer
     assert extend_decision(c, **{**ok, "tip": 0.15, "travelled": 0.1})[0] == -1  # too close
     with pytest.raises(ValueError):
         ExtendConfig(stop_tip_distance=0.01)
 
 
 def test_tracker_extends_level_to_the_stop_distance_then_backs_out():
-    c = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0)
+    c = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0, spoon_tip_from_tool=0.21)  # geometry of this test
     face = face_ahead(Q0, dist=0.55, dz=0.0)
     tr = LevelTracker(); tr.reset(Q0); tr.set_extending(True)
     dt = 1 / tr.cfg.rate_hz
@@ -120,7 +123,7 @@ def test_tracker_extends_level_to_the_stop_distance_then_backs_out():
             phase, d = "out", -1
         held = held + dt if why.startswith("at the stop") else 0.0
         before = tr.reach0
-        tr.advance(d, dt, c)
+        tr.advance(d, dt, c, room=tip - c.stop_tip_distance)
         assert tr.reach0 - before <= c.approach_speed * dt + 1e-12
         tr.step(face, dt)
         reach.append(tr.travelled); tips.append(tip); pitches.append(tr.last["pitch_deg"])
@@ -175,3 +178,46 @@ def test_jog_yaw_only_turns_the_base():
 def test_jog_out_of_reach_says_so():
     q1, rep = jog_level(Q0, d_z_m=0.5)
     assert not rep["ok"]
+
+
+# --- taught close pose + continuous approach ------------------------------------------------
+from assistive_arm.feeding.face_track import approach_scale  # noqa: E402
+
+
+def test_approach_slows_with_the_miss_instead_of_stop_go():
+    c = ExtendConfig()
+    assert approach_scale(c, 1.0) == 1.0 and approach_scale(c, 3.5) == 0.0
+    assert 0.0 < approach_scale(c, 2.8) < 1.0
+    ok = dict(face_seen=True, age=0.05, head_speed=0.0, tilt_deg=0.0, tip=0.30, travelled=0.05, held_s=0.0)
+    assert extend_decision(c, miss_cm=2.0, **ok)[0] == 1  # keeps moving (slower) while it re-aims
+    assert extend_decision(c, miss_cm=3.8, **ok)[0] == 0
+
+
+def test_taught_close_pose_sets_the_aim_line_and_the_stop():
+    # Teach: lips 4 cm below the tool axis (the spoon hangs low) and 25 cm ahead along it.
+    q_close = Q0.copy()
+    T = fk(q_close)
+    lips_tool = np.array([0.0, 0.0, 0.25])
+    off_base = T[:3, :3] @ np.array([0.0, -0.04, 0.0])  # a tool-frame offset, whatever its direction
+    lips_tool[:2] = (T[:3, :3].T @ off_base)[:2]
+    trc = TrackConfig(aim_offset_m=tuple(lips_tool[:2]))
+    c = ExtendConfig(close_fwd=0.25, close_margin=0.03, hold_s=0.5)
+    # A face 36 cm ahead: centre (the spoon LINE, not the tool axis, goes onto the lips), then extend.
+    face = face_ahead(Q0, dist=0.36, dz=0.0)
+    tr = LevelTracker(trc); tr.reset(Q0); tr.set_extending(True)
+    dt = 1 / tr.cfg.rate_hz
+    for _ in range(150):
+        tr.step(face, dt)
+    assert tr.last["miss_cm"] <= 2.0
+    held, rem = 0.0, []
+    for _ in range(900):
+        e = tr.last
+        r = tr.remaining(face, c)
+        d, why = extend_decision(c, True, 0.05, 0.0, e["miss_cm"], e["pitch_deg"], r, tr.travelled, held)
+        if d < 0:
+            break
+        held = held + dt if why.startswith("at the taught") else 0.0
+        tr.advance(d, dt, c, approach_scale(c, e["miss_cm"]), room=r - c.close_margin)
+        tr.step(face, dt)
+        rem.append(r)
+    assert 0.01 <= min(rem) <= 0.04  # stopped 3 cm short (the floor), not past it

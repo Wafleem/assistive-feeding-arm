@@ -70,7 +70,7 @@ class BowlTarget:
 @dataclass(frozen=True)
 class ScoopConfig:
     # spoon (tool frame: +Z out along the spoon, +X down when level)
-    spoon_tip_from_tool: float = 0.21  # m, as feeding.ExtendConfig. TODO: measure
+    spoon_tip_from_tool: float = 0.133  # m, as feeding.ExtendConfig (from the Viam scene)
     spoon_half_width: float = 0.018  # m, half the spoon bowl's width
     spoon_bowl_length: float = 0.05  # m: the spoon bowl's length back from the tip (wider than the handle)
     handle_half_width: float = 0.006  # m
@@ -102,7 +102,7 @@ class ScoopConfig:
     scoop_speed: float = 0.02  # m/s tip speed (peak) along the bottom
     max_rotate_deg_s: float = 30.0  # deg/s spoon rotation (peak)
     # planning
-    step_m: float = 0.003  # path sample spacing (the 21 cm lever: 1 deg of spoon tilt ~ 4 deg of wrist)
+    step_m: float = 0.003  # path sample spacing (the long lever: 1 deg of spoon tilt ~ 4 deg of wrist)
     step_deg: float = 0.5
     sweep_samples: int = 120
     ik_tol_m: float = 0.002

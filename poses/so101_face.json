@@ -1,5 +1,11 @@
 {
-  "home": null,
+  "home": [
+    7.38,
+    -98.2,
+    74.29,
+    20.92,
+    -1.05
+  ],
   "look": [
     12.04,
     -98.2,
@@ -21,16 +27,47 @@
     ]
   },
   "spoon_level": {
-    "tool_pitch_deg": -4.83,
-    "wrist_roll_deg": -2.81,
+    "tool_pitch_deg": -3.78,
+    "wrist_roll_deg": -2.73,
     "joints": [
-      5.1,
-      -98.29,
-      47.74,
-      55.38,
-      -2.81
+      83.34,
+      -31.38,
+      -49.41,
+      84.57,
+      -2.73
     ],
-    "t": "2026-10-23T17:05:37"
+    "t": "2026-10-23T18:58:49"
   },
-  "notes": {}
+  "close": {
+    "joints": [
+      94.0,
+      9.1,
+      -29.9,
+      16.2,
+      -2.7
+    ],
+    "lips_in_tool_mm": [
+      36.9,
+      14.6,
+      221.6
+    ],
+    "lips_in_tool_measured_mm": [
+      7.0,
+      16.0,
+      224.0
+    ],
+    "raised_cm": 3.0,
+    "lips_base_mm": [
+      22,
+      -484,
+      292
+    ],
+    "spoon_tilt_deg": 9.4,
+    "samples": 86,
+    "t": "2026-10-23T18:07:29",
+    "how": "hand-held pose, median of 86 face fixes; spoon raised 1.5 cm on request"
+  },
+  "notes": {
+    "home": "user's hand-placed home [6.9,-98.7,34.6,71.9,-3.0], flex levelled to 67.9 (tool pitch -3.8); 2026-10-23 19:04"
+  }
 }

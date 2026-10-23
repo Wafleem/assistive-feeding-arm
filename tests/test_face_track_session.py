@@ -123,7 +123,7 @@ def test_auto_center_searches_then_tracks_smoothly_onto_the_lips_with_a_level_sp
         arm.q = np.array([0.0, -89.1, 89.3, -12.7, -7.6])  # straight ahead: the face is out of view
         level_first(s)
         s.command("auto_center")
-        ok = wait(lambda: s.track is not None and s.track.last and s.track.last["miss_cm"] <= 1.2
+        ok = wait(lambda: s.track is not None and s.track.last and s.track.last["miss_cm"] <= 1.6
                   and abs(s.track.last["pitch_deg"]) <= 1.0)
         assert ok, (s.reason, s.track.last if s.track else None)
         assert s.mode == "center" and not arm.teleop
@@ -172,9 +172,12 @@ def test_extend_glides_in_to_the_stop_distance_holds_then_backs_out_level(tmp_pa
         start = np.linalg.norm(fk(arm.q)[:3, 3][:2])
         s.command("extend")
         assert wait(lambda: s.track is not None and s.track.travelled > 0.03, 20), s.reason
-        assert wait(lambda: s.mode == "done", 30), s.reason
-        assert "backed out" in s.reason
-        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.01  # back where it began
+        # backs out, then keeps tracking (no STOP needed before the next Extend)
+        assert wait(lambda: s.mode == "center" and s.track.travelled <= 1e-4, 30), s.reason
+        time.sleep(0.5)
+        # back where it began (1.5 cm: the start was measured sagged, the sag feedback lifts it)
+        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.015
+        s.command("stop")
         q = np.array(arm.streamed)
         assert np.allclose(q[:, 4], q[0, 4])  # roll held
     finally:
@@ -196,12 +199,12 @@ def test_retreat_after_a_stopped_extend_glides_back_out(tmp_path):
         assert np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start > 0.03  # still extended
         s.command("retreat")
         assert wait(lambda: s.mode == "done" and "backed out" in s.reason, 20), s.reason
-        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.01
+        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.015  # sag feedback lifts the sagged start
     finally:
         s.close()
 
 
-def test_extend_toward_an_out_of_reach_face_is_refused_up_front_with_how_much_closer(tmp_path):
+def test_extend_toward_an_out_of_reach_face_goes_as_far_as_it_can_and_says_how_short(tmp_path):
     from assistive_arm.feeding.face_track import ExtendConfig
     arm = KinArm(LOOK)
     s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.75, up=0.0)), poses_path=tmp_path / "p.json", settle=0.0)
@@ -209,15 +212,15 @@ def test_extend_toward_an_out_of_reach_face_is_refused_up_front_with_how_much_cl
     s.start()
     try:
         level_first(s)
-        n = len(arm.streamed)
         s.command("extend")
-        assert wait(lambda: s.mode == "idle" and "out of reach" in s.reason and "closer" in s.reason, 20), s.reason
-        assert len(arm.streamed) == n  # never started stretching out
+        assert wait(lambda: any(("beyond the arm's reach" in e["msg"] or "reach limit" in e["msg"] or "holding here" in e["msg"]) for e in s.log), 20), list(s.log)[:4]
+        assert wait(lambda: s.track is not None and s.track.travelled > 0.0, 20), s.reason
+        s.command("stop")
     finally:
         s.close()
 
 
-def test_level_spoon_button_then_centring_is_allowed_and_tilted_starts_are_refused(tmp_path):
+def test_level_spoon_button_then_centring(tmp_path):
     from assistive_arm.orchestration.face_servo_session import _tool_pitch
     tilted = LOOK.copy(); tilted[3] -= 20.0  # wrist flexed: spoon ~20 deg off level
     arm = KinArm(tilted)
@@ -225,9 +228,6 @@ def test_level_spoon_button_then_centring_is_allowed_and_tilted_starts_are_refus
     s.start()
     try:
         assert abs(s._spoon_tilt()) > 10
-        s.command("center")
-        assert wait(lambda: s.mode == "idle" and "Level spoon first" in s.reason), s.reason
-        assert arm.streamed == []  # nothing moved
         s.command("level_spoon")
         assert wait(lambda: s.mode == "idle" and "spoon level" in s.reason), s.reason
         assert abs(s._spoon_tilt()) < 0.5
@@ -278,5 +278,25 @@ def test_tuning_applies_live_and_the_camera_pose_uses_measured_joints(tmp_path):
         q_seen = s._qm_hist[-1][1]
         assert q_seen[1] - s._q_hist[-1][1][1] == pytest.approx(2.0, abs=0.5)  # pose uses the sagging arm
         s.command("stop")
+    finally:
+        s.close()
+
+
+def test_feed_button_goes_home_sweeps_to_the_person_bites_and_comes_back_home(tmp_path):
+    from assistive_arm.feeding.face_track import ExtendConfig
+    home = LOOK.copy(); home[0] += 50.0  # the person is 50 deg of pan away from home: out of view
+    arm = KinArm(home)
+    s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.48, up=0.0)), poses_path=tmp_path / "p.json",
+                         settle=0.0, log_dir=tmp_path)
+    s.taught.look, s.taught.home = LOOK.tolist(), home.tolist()
+    s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0, spoon_tip_from_tool=0.21)
+    s.start()
+    try:
+        s.command("feed")
+        assert wait(lambda: s.mode == "extend", 30), s.reason  # swept over and found the face
+        assert wait(lambda: s.track is not None and s.track.actual_travelled() > 0.03, 30), s.reason
+        assert wait(lambda: s.mode == "idle" and "feed done" in s.reason, 60), s.reason
+        assert np.max(np.abs(arm.q - home)) < 3.0  # back home
+        assert any("bite done" in e["msg"] for e in s.log)
     finally:
         s.close()
