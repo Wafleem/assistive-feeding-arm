@@ -32,7 +32,7 @@ ROLL = 4
 class TrackConfig:
     rate_hz: float = 20.0
     gain: float = 1.6  # 1/s: errors decay with a ~0.6 s time constant
-    max_vel_deg: tuple = (30.0, 20.0, 20.0, 30.0)  # deg/s: pan, lift, elbow, flex
+    max_vel_deg: tuple = (30.0, 20.0, 20.0, 15.0)  # deg/s: pan, lift, elbow, flex (flex gentle: it swings the camera)
     max_acc_deg: float = 80.0  # deg/s^2 (smoothness)
     deadband_m: float = 0.006  # miss below this: no correction
     taper_m: float = 0.02  # correction ramps in over this much more miss (soft deadband)
@@ -47,6 +47,9 @@ class TrackConfig:
     # the arm base, and only in folded postures). Lips above z_cap: the spoon stays level at the
     # cap and the dashboard reports how far above reach they are.
     z_cap: float = 0.34  # m, base frame (raised from 0.32 on request: ~2 cm under the level-spoon maximum)
+    # Lips above z_cap: the spoon may tip UP (food slides back toward the handle, no spill),
+    # never down, by at most this much to reach higher lips and keep them in view.
+    max_tip_up_deg: float = 12.0
     z_floor: float = 0.04  # m
     # Comfortable posture (deg): pan, lift, elbow, flex (roll is held). Keeps the arm out of the
     # stretched/folded extremes the unconstrained solution drifts toward.
@@ -126,11 +129,19 @@ class LevelTracker:
         hi = np.minimum(self._lim_hi, np.r_[self.cfg.posture_hi, 1e9])
         self.lo, self.hi = np.minimum(lo, self.q), np.maximum(hi, self.q)
 
-    def reachable_face(self, face) -> np.ndarray:
-        """The aim point for a level spoon: the lips, with the height clamped to what a level
-        spoon can reach (z_floor..z_cap)."""
+    def _high(self, face) -> bool:
+        return float(face[2]) > self.cfg.z_cap + self.cfg.spoon_dz
+
+    def reachable_face(self, face, tool_pos=None) -> np.ndarray:
+        """The aim point: the lips, with the height clamped to what the spoon can reach: a
+        level spoon up to z_cap, plus the allowed tip-up tilt over the distance to the lips."""
+        c = self.cfg
         f = np.asarray(face, float).copy()
-        f[2] = float(np.clip(f[2], self.cfg.z_floor + self.cfg.spoon_dz, self.cfg.z_cap + self.cfg.spoon_dz))
+        top = c.z_cap
+        if tool_pos is not None:
+            horiz = float(np.linalg.norm(f[:2] - np.asarray(tool_pos, float)[:2]))
+            top += horiz * np.tan(np.radians(c.max_tip_up_deg))
+        f[2] = float(np.clip(f[2], c.z_floor + c.spoon_dz, top + c.spoon_dz))
         return f
 
     def task_error(self, q, face) -> np.ndarray:
@@ -142,11 +153,14 @@ class LevelTracker:
             pitch = np.arcsin(np.clip(d[2], -1, 1)) - np.radians(self.cfg.pitch_target_deg)
             reach = np.linalg.norm(T[:3, 3][:2]) - self.reach0
             return np.array([0.0, 0.0, self.cfg.pitch_scale * pitch, self.reach_w * reach])
-        v = self.reachable_face(face) - p
+        v = self.reachable_face(face, T[:3, 3]) - p
         v_perp = v - np.dot(v, d) * d
         h = _unit(np.cross(d, [0.0, 0.0, 1.0]))  # sideways, horizontal
         u = np.cross(h, d)  # up, perpendicular to the spoon
         pitch = np.arcsin(np.clip(d[2], -1, 1)) - np.radians(self.cfg.pitch_target_deg)
+        if self._high(face):  # lips above a level spoon's reach: tip-up up to the limit is free
+            up = np.radians(self.cfg.max_tip_up_deg)
+            pitch = min(pitch, 0.0) + max(pitch - up, 0.0)  # penalise only tip-down or too much tip-up
         reach = np.linalg.norm(T[:3, 3][:2]) - self.reach0
         return np.array([np.dot(v_perp, h), np.dot(v_perp, u), self.cfg.pitch_scale * pitch, self.reach_w * reach])
 
@@ -202,9 +216,11 @@ class LevelTracker:
             if face is None:
                 face = self.fk(self.q)[:3, 3]  # for the report only
             self.last = {"lateral_cm": round(e[0] * 100, 1), "vertical_cm": round(e[1] * 100, 1),
-                         "pitch_deg": round(float(np.degrees(e[2] / c.pitch_scale)), 1),  # spoon tilt from level
+                         "pitch_deg": round(float(np.degrees(e[2] / c.pitch_scale)), 1),  # tilt ERROR (0 inside an allowed band)
+                         "tilt_deg": round(float(np.degrees(np.arcsin(np.clip(self.fk(self.q)[2, 2], -1, 1))) - c.pitch_target_deg), 1),
                          "reach_cm": round(e[3] / self.reach_w * 100, 1), "miss_cm": round(float(np.linalg.norm(e[:2])) * 100, 1),
-                         "lips_above_reach_cm": round(max(0.0, float(face[2]) - (c.z_cap + c.spoon_dz)) * 100, 1),
+                         "lips_above_reach_cm": round(max(0.0, float(face[2]) - float(self.reachable_face(face, self.fk(self.q)[:3, 3])[2])) * 100, 1),
+                         "tip_up_allowed": bool(self._high(face)),
                          "lips_below_reach_cm": round(max(0.0, (c.z_floor + c.spoon_dz) - float(face[2])) * 100, 1)}
         dv = np.clip(v_des - self.v, -c.max_acc_deg * dt, c.max_acc_deg * dt)
         self.v = self.v + dv

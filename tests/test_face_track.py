@@ -72,13 +72,12 @@ def test_a_lost_face_decelerates_smoothly_to_a_stop():
     assert np.abs(np.diff(speeds)).max() <= tr.cfg.max_acc_deg / tr.cfg.rate_hz + 1e-6
 
 
-def test_lips_above_reach_keep_the_spoon_level_at_the_cap_without_drifting():
-    face = face_ahead(Q0, dist=0.9, dz=0.33)  # lips ~0.5 m up: higher than a level spoon can go
+def test_lips_far_above_reach_tip_up_within_the_limit_without_drifting():
+    face = face_ahead(Q0, dist=0.9, dz=0.55)  # lips ~0.7 m up: beyond even a tipped-up spoon
     tr, qs, vs, errs = run(lambda t: face, seconds=15.0)
     e = errs[-1]
-    T = fk(qs[-1])
-    assert abs(e["pitch_deg"]) <= 1.0 and e["lips_above_reach_cm"] > 10, e
-    assert abs(T[2, 3] - tr.cfg.z_cap) <= 0.02  # level, at the height cap
+    assert -1.0 <= e["tilt_deg"] <= tr.cfg.max_tip_up_deg + 1.0 and e["tip_up_allowed"], e
+    assert e["lips_above_reach_cm"] > 5, e  # still out of reach: reported, not chased
     tail = np.abs(vs[-40:, :4]).max(axis=1)
     assert tail.max() < 2.0 and tail[-1] <= tail[0]  # slowing to a stop, not drifting into a folded pose
     assert (qs[:, 1:4] >= np.minimum(tr.lo[1:4], Q0[1:4]) - 1e-9).all() and (qs[:, 1:4] <= tr.hi[1:4] + 1e-9).all()
@@ -130,3 +129,20 @@ def test_tracker_extends_level_to_the_stop_distance_then_backs_out():
     assert min(tips) >= c.stop_tip_distance - 0.02 and min(tips) <= c.stop_tip_distance + 0.02  # got there, not past
     assert max(abs(p) for p in pitches) <= 2.5  # spoon stayed level all the way
     assert tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01 and max(reach) > 0.05  # in, then back out
+
+
+
+def test_high_lips_tip_the_spoon_up_never_down_and_keep_the_face_in_view():
+    # The real case: the spoon starts tipped up ~24 deg at lips ~12 cm above the cap.
+    q0 = np.array([61.0, -96.4, 71.8, 6.5, -3.3])
+    T0 = fk(q0)
+    d = T0[:3, 2].copy(); d[2] = 0; d /= np.linalg.norm(d)
+    face = T0[:3, 3] + 0.45 * d + np.array([0, 0, 0.0])
+    face[2] = 0.44  # 10 cm above the 34 cm cap
+    tr, qs, vs, errs = run(lambda t: face, seconds=10.0, q0=q0)
+    tilts = np.array([np.degrees(np.arcsin(fk(q)[2, 2])) for q in qs])
+    assert tilts.min() >= -1.0  # never tipped down below level
+    assert tilts[-1] <= tr.cfg.max_tip_up_deg + 1.0  # within the allowed tip-up
+    offaxis = [np.degrees(np.arccos(np.clip(np.dot(fk(q)[:3, 2], (face - fk(q)[:3, 3]) / np.linalg.norm(face - fk(q)[:3, 3])), -1, 1))) for q in qs]
+    assert max(offaxis) < 17.0  # the lips never leave the C270's vertical field of view (~+-17 deg)
+    assert errs[-1]["miss_cm"] <= 3.0, errs[-1]

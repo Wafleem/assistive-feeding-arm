@@ -96,7 +96,8 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "center", "auto_center", "extend", "retreat")
+    LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
@@ -375,15 +376,22 @@ class FaceServoSession:
         self._event("home", f"at start {np.round(self.home_pose(), 1).tolist()}")
 
     def _do_search(self, step_deg: float = 6.0) -> None:
-        """Pan from start toward the look side in small steps, looking for a face after each;
-        then search around the look pose. Stops at the first face."""
+        """Turn the base from its current heading toward the look pose's, in small steps,
+        looking for a face after each; then search around that heading. Stops at the first face."""
         self._need("look")
-        start, look = self.home_pose(), np.array(self.taught.look, float)
-        n = max(1, int(np.ceil(abs(look[PAN] - start[PAN]) / step_deg)))
-        path = [start + (look - start) * k / n for k in range(n + 1)]
+        # Turn ONLY the base, from where the arm is now to the look pose's heading: the rest of
+        # the posture (and a just-levelled spoon) stays as it is.
+        start = self.robot.joints()
+        look_pan = float(self.taught.look[PAN])
+        n = max(1, int(np.ceil(abs(look_pan - start[PAN]) / step_deg)))
+        path = []
+        for k in range(n + 1):
+            q = start.copy()
+            q[PAN] = start[PAN] + (look_pan - start[PAN]) * k / n
+            path.append(q)
         for d in (8, -8, 16, -16, 24, -24):
-            q = look.copy()
-            q[PAN] += d
+            q = start.copy()
+            q[PAN] = look_pan + d
             path.append(q)
         for q in path:
             self.reason = f"searching at pan {q[PAN]:.0f} deg"
@@ -532,7 +540,7 @@ class FaceServoSession:
                 if extend and ext_reason:
                     self.reason = f"extend: {ext_reason} | travelled {tr.travelled * 100:.1f} cm"
                 elif face is not None and e:
-                    self.reason = "tracking: miss {miss_cm} cm, spoon tilt {pitch_deg} deg".format(**e)
+                    self.reason = "tracking: miss {miss_cm} cm, spoon tilt {tilt_deg} deg".format(**e)
                     if e.get("lips_above_reach_cm"):
                         self.reason += f" | lips {e['lips_above_reach_cm']} cm above a level spoon's reach (spoon held level at the cap)"
                 else:
@@ -557,10 +565,44 @@ class FaceServoSession:
         finally:
             self._pose_fn = None
 
+    def _spoon_tilt(self, q=None) -> float:
+        """Spoon tilt from the saved level (deg, + = tip up)."""
+        q = self.robot.joints() if q is None else q
+        return _tool_pitch(q) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+
+    def _require_level(self) -> None:
+        tilt = self._spoon_tilt()
+        if abs(tilt) > self.LEVEL_TOL_DEG:
+            raise RuntimeError(f"the spoon is {tilt:+.0f} deg from level: press Level spoon first")
+
+    def _do_level_spoon(self, speed_degs: float = 10.0) -> None:
+        """Slowly turn only the wrist flex until the spoon is level (two passes for accuracy)."""
+        try:
+            self.robot.set_speed(speed_degs)
+            for _ in range(2):
+                q = self.robot.joints()
+                tilt = self._spoon_tilt(q)
+                if abs(tilt) < 0.5:
+                    break
+                q1 = q.copy(); q1[FLEX] += 1.0
+                slope = _tool_pitch(q1) - _tool_pitch(q)  # deg of spoon tilt per deg of wrist flex
+                if abs(slope) < 0.2:
+                    raise RuntimeError("the wrist can't level the spoon from this pose")
+                target = q.copy()
+                target[FLEX] = float(np.clip(q[FLEX] - tilt / slope, -92.0, 92.0))
+                self.reason = f"levelling the spoon ({tilt:+.1f} deg)"
+                self._move(target)
+        finally:
+            self.robot.set_speed(self.cfg.joint_speed_degs)
+        self.reason = f"spoon level ({self._spoon_tilt():+.1f} deg)"
+        self._event("level", self.reason)
+
     def _do_center(self) -> None:
+        self._require_level()
         self._track_loop()
 
     def _do_extend(self) -> None:
+        self._require_level()
         self.mode = "extend"
         self._track_loop(extend=True)
 
@@ -574,6 +616,7 @@ class FaceServoSession:
             self._do_search()
             if "face found" not in self.reason:
                 return
+        self._require_level()
         self.mode = "center"
         self._track_loop()
 
