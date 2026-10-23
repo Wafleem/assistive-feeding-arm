@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Face-servo debugging dashboard for the SO-101 rig. Run it ON THE ORIN (next to the camera):
+"""Face-servo debugging dashboard for the SO-101 rig.
 
-    .venv/bin/python dashboard/server.py --local          # viam-server on localhost:8080
-    open http://rm-sentry.local:8090/?token=<printed at start>
+    dashboard/run_mac.sh      # on the Mac: video over the Jetson USB cable, arm via the Viam cloud
+    .venv/bin/python dashboard/server.py --local --host 0.0.0.0   # or on the Orin itself
 
 Thin web layer over ``assistive_arm.orchestration.face_servo_session``:
   GET  /                 the page (dashboard/static/index.html)
@@ -162,6 +162,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--local", action="store_true", help="connect to viam-server on localhost:8080 (run on the Orin)")
+    ap.add_argument("--camera-address", default=os.environ.get("VIAM_CAMERA_ADDRESS", ""),
+                    help="camera-only connection, e.g. localhost:18080 (SSH tunnel over the Jetson USB link)")
+    ap.add_argument("--host", default="127.0.0.1", help="interface to serve on (0.0.0.0 to share on the network)")
     ap.add_argument("--camera", default="webcam-2")
     ap.add_argument("--poses", default=str(ROOT / "poses/so101_face.json"))
     ap.add_argument("--model", default=str(ROOT / "data/models/face_landmarker.task"))
@@ -176,7 +179,7 @@ def main() -> int:
     from assistive_arm.mouth_perception import MediaPipeMouthDetector
     from assistive_arm.robot_iface.viam_so101 import SO101ViamRobot
 
-    robot = SO101ViamRobot(cameras=(args.camera,))
+    robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
     det = MediaPipeMouthDetector(camera=args.camera, model_path=args.model)
     cfg = FaceServoConfig(stop_tip_distance=args.stop_cm / 100, joint_speed_degs=args.speed)
     session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render())
@@ -184,8 +187,9 @@ def main() -> int:
 
     Handler.session = session
     Handler.token = args.token or secrets.token_urlsafe(8)
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    print(f"dashboard: http://<this-machine>:{args.port}/?token={Handler.token}", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    shown = "localhost" if args.host in ("127.0.0.1", "localhost") else "<this-machine>"
+    print(f"dashboard: http://{shown}:{args.port}/?token={Handler.token}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
