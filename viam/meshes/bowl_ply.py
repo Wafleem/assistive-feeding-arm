@@ -4,7 +4,7 @@ Origin at the centre of the bowl's bottom, +z up. Only the sloped wall is meshed
 table obstacle covers the bottom, and an open top lets planned moves put the spoon inside
 (Viam treats meshes as surfaces, not solid volumes).
 
-    python viam/meshes/bowl_ply.py viam/meshes/bowl-150x70.ply 150 100 70   # rim, bottom, height (mm)
+    python viam/meshes/bowl_ply.py viam/meshes/bowl-150x60.ply 150 100 60   # rim, bottom, height (mm)
 """
 import math
 import sys

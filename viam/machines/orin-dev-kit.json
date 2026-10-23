@@ -244,7 +244,7 @@
       "api": "rdk:component:generic",
       "model": "viam:obstacle-pack:obstacle-from-mesh",
       "attributes": {
-        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+        "mesh_path": "/home/ultraviolet/bowl-150x60.ply"
       },
       "frame": {
         "parent": "world",
@@ -269,7 +269,7 @@
       "api": "rdk:component:generic",
       "model": "viam:obstacle-pack:obstacle-from-mesh",
       "attributes": {
-        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+        "mesh_path": "/home/ultraviolet/bowl-150x60.ply"
       },
       "frame": {
         "parent": "world",
