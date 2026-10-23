@@ -234,7 +234,7 @@ def _rgb_and_depth(images):
     depth = next((i for i in images if "dep" in i.mime_type), None)
     if depth is None:  # plain webcam: no depth; detectors fall back to monocular priors
         return rgb, np.zeros(rgb.shape[:2], np.float32)
-    return rgb, depth.bytes_to_depth_array().astype(np.float32) / 1000.0
+    return rgb, np.asarray(depth.bytes_to_depth_array(), dtype=np.float32) / 1000.0  # mm -> m
 
 
 class ViamCameraRig:
