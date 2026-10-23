@@ -6,6 +6,16 @@
 set -u
 DEV=l4tbr0; GW=192.168.55.100; METRIC=50; PROBE=1.1.1.1
 sysctl -qw "net.ipv4.conf.$DEV.ignore_routes_with_linkdown=1"
+# Anything addressed to the Wi-Fi IP (e.g. teammates' SSH from another subnet) answers over Wi-Fi.
+WIFI=$(ip -4 -o route show default | awk '$5 != "'$DEV'" {print $5; exit}')
+if [ -n "$WIFI" ]; then
+  WIP=$(ip -4 -o addr show "$WIFI" | awk '{print $4}' | cut -d/ -f1)
+  WGW=$(ip -4 route show default dev "$WIFI" | awk '{print $3; exit}')
+  WNET=$(ip -4 route show dev "$WIFI" scope link proto kernel | awk '{print $1; exit}')
+  ip route replace default via "$WGW" dev "$WIFI" table 100
+  ip route replace "$WNET" dev "$WIFI" table 100
+  ip rule show | grep -q "from $WIP lookup 100" || ip rule add from "$WIP" table 100 priority 100
+fi
 fails=0
 while true; do
   if ping -c 1 -W 2 -I "$DEV" "$PROBE" >/dev/null 2>&1; then
