@@ -73,7 +73,7 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "calibrate", "center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "calibrate", "center", "auto_center", "extend", "retreat")
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15):
@@ -336,7 +336,7 @@ class FaceServoSession:
         self._event("calibrate", self.reason)
 
     def _controller(self, approach: bool) -> FaceServoController:
-        self._need("look", "near", "jacobian")
+        self._need("look", "jacobian", *(("near",) if approach else ()))
         ctrl = FaceServoController(ImageJacobian.from_dict(self.taught.jacobian), self.cfg, approach)
         q, look = self.robot.joints(), np.array(self.taught.look, float)
         others = [i for i in range(5) if i not in (PAN, FLEX)]
@@ -354,12 +354,13 @@ class FaceServoSession:
             view, state = (s.get("view"), s.get("state")) if s else (None, None)
             cmd = ctrl.step(view, state)
             self.reason = f"{cmd.kind}: {cmd.reason}"
+            near = self.taught.near or self.taught.look  # centring alone never leaves the look pose
             if cmd.kind in ("center", "approach"):
                 self._event(cmd.kind, cmd.reason + (f" (s={ctrl.s:.2f})" if cmd.kind == "approach" else ""))
-                self._move(joint_target(self.taught.look, self.taught.near, ctrl.s, ctrl.offset))
+                self._move(joint_target(self.taught.look, near, ctrl.s, ctrl.offset))
             elif cmd.kind == "retreat":
                 self._event("retreat", cmd.reason)
-                self._move(joint_target(self.taught.look, self.taught.near, 0.0, ctrl.offset))
+                self._move(joint_target(self.taught.look, near, 0.0, ctrl.offset))
             elif cmd.kind == "done":
                 self._event("done", cmd.reason)
                 self.mode = "done"
@@ -370,6 +371,19 @@ class FaceServoSession:
                 self.last_move_end = min(self.last_move_end, self.robot.now())
 
     def _do_center(self) -> None:
+        self._servo(approach=False)
+
+    def _do_auto_center(self) -> None:
+        """One button: find the face (sweep from start toward the look side), calibrate if this
+        rig has no image Jacobian yet, then keep the face centred until STOP."""
+        self._need("look")
+        if self._face_px(2) is None:
+            self._do_search()
+            if "face found" not in self.reason:
+                return
+        if self.taught.jacobian is None:
+            self._do_calibrate()
+        self.mode = "center"
         self._servo(approach=False)
 
     def _do_extend(self) -> None:
