@@ -19,7 +19,7 @@ ping -c 2 192.168.55.1
 **2. Share your internet with it.** You run this yourself; it asks for your password.
 On macOS (it finds your internet interface automatically):
 ```bash
-IF=$(route -n get default | awk '/interface:/{print $2}'); sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on $IF from 192.168.55.0/24 to any -> ($IF)" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
+IF=$(route -n get default | awk '/interface:/{print $2}'); sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on $IF from 192.168.55.0/24 to any -> ($IF) static-port" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
 ```
 On Linux:
 ```bash
