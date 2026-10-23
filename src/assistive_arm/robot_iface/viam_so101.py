@@ -37,6 +37,8 @@ class SO101ViamRobot:
             self.rig = ViamCameraRig(cameras, address=camera_address, io=self._io)
         else:
             self.rig = ViamCameraRig(cameras, client=self.client, io=self._io)
+        self._arm_name = arm
+        self._fast = None  # streamed setpoints go over the direct (camera) connection when there is one
 
     # perception passthrough (so detectors can use this object as their "robot")
     def now(self) -> float:
@@ -77,6 +79,20 @@ class SO101ViamRobot:
                  "theta": float(theta_leeway_deg)}
         pose = Pose(x=p[0], y=p[1], z=p[2], o_x=d[0], o_y=d[1], o_z=d[2], theta=theta)
         self._io.run(self.arm.move_to_position(pose, extra={"pose_cloud": cloud}), timeout=timeout)
+
+    def stream_joints(self, q) -> None:
+        """Non-blocking streamed setpoint (what teleop uses): no servo profile, so the CALLER must
+        keep successive setpoints close together (the face tracker limits speed and acceleration).
+        Sent over the direct connection when available (lower latency than the cloud)."""
+        from viam.proto.component.arm import JointPositions
+
+        if self._fast is None:
+            from viam.components.arm.client import ArmClient
+
+            same = self.rig.client is self.client
+            self._fast = self.arm if same else ArmClient(self._arm_name, self.rig.client._channel)
+        self._io.run(self._fast.move_to_joint_positions(JointPositions(values=[float(v) for v in q]),
+                                                        extra={"wait": False, "streamed": True}), timeout=2.0)
 
     def set_speed(self, degs_per_sec: float) -> float:
         out = self._io.run(self.arm.do_command({"set_speed": float(degs_per_sec)}), timeout=10)

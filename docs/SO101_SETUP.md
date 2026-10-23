@@ -197,3 +197,20 @@ plan is retried once with a 3× wider pose cloud, and the servo stops only after
 row. Every planner call (inputs, target, joints before/after, result, error, timing) is appended
 to `data/logs/face_servo-YYYYMMDD.jsonl` (git-ignored). The test fake now rejects
 out-of-plane targets the way the real arm does.
+
+## Face servo: smooth continuous tracking (2026-10-23)
+**Symptom:** centring was jerky and didn't settle on the mouth. The plan log showed why:
+every tight `MoveToPosition` timed out after about 1 s with no solution, and the wider retry
+"succeeded" in 25 ms without moving (the arm was already inside the looser goal). So each step
+was a 1 s stall followed by nothing, with occasional real moves.
+
+**Now** (`feeding/face_track.py: LevelTracker`): a 20 Hz loop computes the next joint setpoint
+from local forward kinematics (`robot_iface/so101_kinematics.py`, from `Arm.GetKinematics`,
+checked to 0.2 mm / 0.3° against the arm). Each tick it reduces the lips' sideways and
+vertical miss from the spoon line, the spoon's tilt (level = 0) and any reach change, using
+pan, lift, elbow and flex (wrist roll is held). It uses a soft deadband (no hunting),
+per-joint velocity limits (20–30 °/s) and an acceleration limit (80 °/s²). Setpoints are
+streamed (`streamed: true`, the teleop path) over the direct cable connection. While tracking,
+the camera pose comes from the commanded joints at each frame's time (minus 0.12 s servo lag),
+so moving doesn't skew the face estimate. The loop stops if the real arm falls more than 10°
+behind its commands. Extend still uses the planner and stays off by default.

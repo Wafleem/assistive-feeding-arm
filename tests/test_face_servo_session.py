@@ -1,4 +1,5 @@
-"""The dashboard's face-servo sequence end to end on a fake SO-101 and a fake face (offline).
+"""Extend (planner-based, still off by default in the dashboard) end to end on a fake SO-101.
+Centring is the continuous tracker: tests/test_face_track_session.py.
 
 The fake arm aims its tool along (pan, elevation) from the joints; ``move_tool`` stands in for
 the module's planned MoveToPosition. The fake face sits off to the right, is visible within
@@ -137,20 +138,6 @@ def make(tmp_path, **cfg):
     return robot, s
 
 
-def test_auto_center_finds_the_face_and_points_at_it_without_calibration(tmp_path):
-    robot, s = make(tmp_path)
-    try:
-        robot.q = LOOK.copy(); s.command("teach_look")
-        robot.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])  # straight ahead: face out of view
-        s.command("auto_center")
-        assert wait(lambda: angle(direction(robot.q), FACE - robot.pos) <= 3.0), s.reason
-        assert s.mode == "center" and robot.teleop is False
-        s.command("stop")
-        assert s.mode == "idle"
-    finally:
-        s.close()
-
-
 def test_extend_stops_at_the_stop_distance_and_retreats_when_the_face_goes(tmp_path):
     robot, s = make(tmp_path, stop_tip_distance=0.20)
     try:
@@ -178,7 +165,7 @@ def test_a_planned_step_that_swings_a_joint_is_stopped(tmp_path):
     try:
         robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
         robot.flip_next = True  # the "planner" swings the base 60 deg
-        s.command("center")
+        s.command("extend")
         assert wait(lambda: s.mode == "idle" and "planner moved a joint" in s.reason), s.reason
     finally:
         s.close()
@@ -200,8 +187,8 @@ def test_a_failed_plan_is_retried_wider_logged_and_only_stops_after_three(tmp_pa
     try:
         robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
         robot.fail_next = 1  # first attempt fails, the wider retry succeeds
-        s.command("center")
-        assert wait(lambda: angle(direction(robot.q), FACE - robot.pos) <= 3.0), s.reason
+        s.command("extend")
+        assert wait(lambda: len(s.plan_log.read_text().splitlines()) >= 3 if s.plan_log.exists() else False), s.reason
         s.command("stop")
         recs = [json.loads(l) for l in s.plan_log.read_text().splitlines()]
         assert recs[0]["ok"] is False and "zero IK" in recs[0]["error"] and recs[1]["wide"] is True and recs[1]["ok"]
@@ -209,7 +196,7 @@ def test_a_failed_plan_is_retried_wider_logged_and_only_stops_after_three(tmp_pa
 
         robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
         robot.fail_next = 99  # the planner keeps failing
-        s.command("center")
+        s.command("extend")
         assert wait(lambda: s.mode == "idle" and "3 times in a row" in s.reason), s.reason
     finally:
         s.close()
