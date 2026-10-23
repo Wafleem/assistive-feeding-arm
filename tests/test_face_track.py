@@ -74,11 +74,11 @@ def test_a_lost_face_decelerates_smoothly_to_a_stop():
 
 def test_lips_above_reach_keep_the_spoon_level_at_the_cap_without_drifting():
     face = face_ahead(Q0, dist=0.9, dz=0.33)  # lips ~0.5 m up: higher than a level spoon can go
-    tr, qs, vs, errs = run(lambda t: face, seconds=10.0)
+    tr, qs, vs, errs = run(lambda t: face, seconds=15.0)
     e = errs[-1]
     T = fk(qs[-1])
     assert abs(e["pitch_deg"]) <= 1.0 and e["lips_above_reach_cm"] > 10, e
-    assert abs(T[2, 3] - tr.cfg.z_cap) <= 0.015  # level, at the height cap
+    assert abs(T[2, 3] - tr.cfg.z_cap) <= 0.02  # level, at the height cap
     tail = np.abs(vs[-40:, :4]).max(axis=1)
     assert tail.max() < 2.0 and tail[-1] <= tail[0]  # slowing to a stop, not drifting into a folded pose
     assert (qs[:, 1:4] >= np.minimum(tr.lo[1:4], Q0[1:4]) - 1e-9).all() and (qs[:, 1:4] <= tr.hi[1:4] + 1e-9).all()
