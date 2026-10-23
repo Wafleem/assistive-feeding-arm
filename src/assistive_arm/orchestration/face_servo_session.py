@@ -691,6 +691,12 @@ class FaceServoSession:
                         self.ext_cfg, face is not None, st.age if st is not None else 9.9,
                         st.speed if st is not None else 0.0, e0.get("miss_cm", 99.0), e0.get("pitch_deg", 99.0),
                         tip, tr.travelled, held)
+                    if held_since is not None and not backing_out and direction < 0 \
+                            and not ext_reason.startswith("hold time over"):
+                        # Eating: the person's own movement (mouth on the spoon, face hidden,
+                        # head motion, a jumpy range) must not pull the spoon away. Only the hold
+                        # timer, Retreat or STOP end the bite.
+                        direction, ext_reason = 0, f"eating: holding still ({ext_reason.split(':')[0]} ignored)"
                     if direction < 0:
                         backing_out = True
                     if backing_out:  # once backing out, finish backing out (then stop)
