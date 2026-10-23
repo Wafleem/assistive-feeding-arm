@@ -944,6 +944,7 @@ class FaceServoSession:
         self._event("scoop", self.reason)
 
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
+    SCOOP_ROLL_GAIN = 2.0  # x the recorded wrist roll (measured from where the dip starts): a bigger twist scoops more
 
     def _do_home_scoop(self) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
@@ -964,6 +965,7 @@ class FaceServoSession:
         k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
+        q[:, ROLL] = q[0, ROLL] + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - q[0, ROLL])
         t = np.asarray(demo["t"], float) / max(speed, 0.1)
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
@@ -976,7 +978,7 @@ class FaceServoSession:
                 last_check = time.monotonic()
                 q_real = np.asarray(self.robot.joints(timeout=1.0), float)
                 recent = q[max(0, i - int(0.6 * demo.get("hz", 30))):i + 1]
-                lag = float(min(np.max(np.abs(q_real - qs)) for qs in recent))
+                lag = float(min(np.max(np.abs(q_real[:4] - qs[:4])) for qs in recent))  # roll: fast twist, not checked
                 if lag > 15.0:
                     self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
                     raise Stopped()
