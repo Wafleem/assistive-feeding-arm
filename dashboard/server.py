@@ -171,6 +171,7 @@ def main() -> int:
     ap.add_argument("--stop-cm", type=float, default=20.0, help="spoon tip to lips stop distance (first runs: 20)")
     ap.add_argument("--speed", type=float, default=20.0, help="arm speed cap while servoing, deg/s (min 12)")
     ap.add_argument("--token", default="", help="fixed access token (default: random)")
+    ap.add_argument("--allow-extend", action="store_true", help="enable Extend toward the face (off by default)")
     args = ap.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -179,10 +180,19 @@ def main() -> int:
     from assistive_arm.mouth_perception import MediaPipeMouthDetector
     from assistive_arm.robot_iface.viam_so101 import SO101ViamRobot
 
-    robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
+    for attempt in range(1, 7):  # the cloud link can take a few tries (WebRTC through NAT)
+        try:
+            robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
+            break
+        except Exception as e:
+            print(f"connect attempt {attempt}/6 failed: {type(e).__name__} {e}", flush=True)
+            if attempt == 6:
+                raise
+            time.sleep(min(2 * attempt, 8))
     det = MediaPipeMouthDetector(camera=args.camera, model_path=args.model)
     cfg = FaceServoConfig(stop_tip_distance=args.stop_cm / 100, joint_speed_degs=args.speed)
-    session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render())
+    session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render(),
+                               allow_extend=args.allow_extend)
     session.start()
 
     Handler.session = session

@@ -75,7 +75,8 @@ class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "center", "auto_center", "extend", "retreat")
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
-                 cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15):
+                 cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
+                 allow_extend: bool = True):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -98,6 +99,7 @@ class FaceServoSession:
         self._worker: threading.Thread | None = None
         self.last_move_end = 0.0
         self.fps = 0.0
+        self.allow_extend = allow_extend
 
     # ---------------------------------------------------------------- perception
     def start(self) -> None:
@@ -185,6 +187,8 @@ class FaceServoSession:
             return self._event("params", str(fields))
         if action not in self.ACTIONS:
             raise ValueError(f"unknown action {action!r}")
+        if action == "extend" and not self.allow_extend:
+            raise RuntimeError("Extend is disabled (start the dashboard with --allow-extend)")
         self._require_idle()
         self._stop.clear()
         self.mode, self.reason = action, "starting"
@@ -430,5 +434,5 @@ class FaceServoSession:
             "params": {"stop_tip_distance_cm": round(self.pcfg.stop_tip_distance * 100, 1),
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
-            "face": face, "log": list(self.log)[:60],
+            "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
         }
