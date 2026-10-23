@@ -105,6 +105,11 @@
       <h2 style="margin-top:0">Face</h2><table id="face"></table>
       <h2>Arm</h2><table id="arm"></table>
       <h2>Log</h2><div id="log"></div>
+      <h2>Depth view (Depth Anything 3, from the Orin)</h2>
+      <details><summary style="cursor:pointer;color:var(--dim)">show the depth preview</summary>
+        <iframe src="http://localhost:8766" style="width:100%;height:520px;border:1px solid var(--line);border-radius:6px;margin-top:8px;background:#000"></iframe>
+        <div style="color:var(--dim);font-size:12px">The module's own page, tunnelled over the cable by run_mac.sh (port 8766).</div>
+      </details>
     </div>
   </section>
 </main>
@@ -154,6 +159,8 @@ async function poll() {
       "facing camera": f.frontalness, "mouth": f.open == null ? null : (f.open ? "open" : "closed") + ` (${f.open_ratio})`,
       "head speed": f.speed_cm_s != null ? f.speed_cm_s + " cm/s" : null, "fix age": f.age_s != null ? f.age_s + " s" : null,
       "mouth (base, mm)": f.position_mm,
+      "distance from depth": s.depth && s.depth.depth_cm != null ? s.depth.depth_cm + " cm (eye-span guess " + s.depth.eye_span_estimate_cm + " cm)" : null,
+      "depth calibration": s.depth ? s.depth.status + " · eye span " + s.depth.eye_span_mm + " mm (" + s.depth.samples + " samples)" : null,
     });
     rows($("arm"), {
       "joints (deg)": s.joints, "start pose": s.taught.home || "look with pan 0", "look pose": s.taught.look,

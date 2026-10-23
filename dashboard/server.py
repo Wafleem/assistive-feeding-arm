@@ -172,6 +172,8 @@ def main() -> int:
     ap.add_argument("--speed", type=float, default=20.0, help="arm speed cap while servoing, deg/s (min 12)")
     ap.add_argument("--token", default="", help="fixed access token (default: random)")
     ap.add_argument("--allow-extend", action="store_true", help="enable Extend toward the face (off by default)")
+    ap.add_argument("--depth-camera", default="webcam-2-depth",
+                    help="Depth Anything 3 camera that corrects the face range ('' = off)")
     args = ap.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -180,9 +182,17 @@ def main() -> int:
     from assistive_arm.mouth_perception import MediaPipeMouthDetector
     from assistive_arm.robot_iface.viam_so101 import SO101ViamRobot
 
+    cams = (args.camera,) + ((args.depth_camera,) if args.depth_camera else ())
     for attempt in range(1, 7):  # the cloud link can take a few tries (WebRTC through NAT)
         try:
-            robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
+            try:
+                robot = SO101ViamRobot(cameras=cams, camera_address=args.camera_address or None)
+            except Exception as e:
+                if not args.depth_camera or "depth" not in str(e).lower() and args.depth_camera not in str(e):
+                    raise
+                print(f"depth camera {args.depth_camera!r} unavailable ({e}); running without depth", flush=True)
+                args.depth_camera = ""
+                robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
             break
         except Exception as e:
             print(f"connect attempt {attempt}/6 failed: {type(e).__name__} {e}", flush=True)
@@ -191,8 +201,10 @@ def main() -> int:
             time.sleep(min(2 * attempt, 8))
     det = MediaPipeMouthDetector(camera=args.camera, model_path=args.model)
     cfg = FaceServoConfig(stop_tip_distance=args.stop_cm / 100, joint_speed_degs=args.speed)
+    depth_det = MediaPipeMouthDetector(camera=args.depth_camera, model_path=args.model) if args.depth_camera else None
     session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render(),
-                               allow_extend=args.allow_extend, log_dir=ROOT / "data/logs")
+                               allow_extend=args.allow_extend, log_dir=ROOT / "data/logs",
+                               depth_camera=args.depth_camera or None, depth_detector=depth_det)
     session.start()
 
     Handler.session = session

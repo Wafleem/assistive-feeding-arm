@@ -14,4 +14,8 @@ if ! nc -z localhost "$PORT" 2>/dev/null; then
       -i "$KEY" -L "$PORT:localhost:8080" "$JETSON"
   echo "camera tunnel: localhost:$PORT -> $JETSON:8080"
 fi
+if ! nc -z localhost 8766 2>/dev/null; then  # the depth module's preview page (bound to the Orin's localhost)
+  ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o HostKeyAlias="$HOSTKEY_ALIAS" \
+      -i "$KEY" -L "8766:127.0.0.1:8766" "$JETSON" && echo "depth preview tunnel: localhost:8766" || true
+fi
 exec .venv/bin/python dashboard/server.py --camera-address "localhost:$PORT" "$@"
