@@ -145,6 +145,7 @@ async function poll() {
       "aim error": s.servo ? s.servo.aim_error_deg + "°" : null,
       "spoon tip → lips (servo)": s.servo ? s.servo.tip_distance_cm + " cm" : null,
       "extended": s.servo ? s.servo.travelled_cm + " cm" : null,
+      "planner": s.planner ? (s.planner.failures_in_a_row ? s.planner.failures_in_a_row + " failed: " + s.planner.last_error : "ok") : null,
       "stop distance": s.params.stop_tip_distance_cm + " cm (floor " + s.params.floor_cm + ")",
       "speed cap": s.params.joint_speed_degs + " °/s",
     });

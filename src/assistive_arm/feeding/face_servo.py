@@ -231,6 +231,39 @@ def turn_toward(a, b, max_deg: float) -> np.ndarray:
     return _unit((np.sin((1 - t) * w) * a + np.sin(t * w) * b) / np.sin(w))
 
 
+def _rot_z(v, a: float) -> np.ndarray:
+    c, s = np.cos(a), np.sin(a)
+    v = np.asarray(v, float)
+    return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]])
+
+
+def _wrap(a: float) -> float:
+    return float((a + np.pi) % (2 * np.pi) - np.pi)
+
+
+def arm_plane_normal(tool_pos) -> np.ndarray:
+    """Normal of the vertical plane through the base axis and the tool (SO-101: the tool axis
+    always lies in this plane, because the arm has no wrist yaw)."""
+    az = np.arctan2(tool_pos[1], tool_pos[0])
+    return np.array([-np.sin(az), np.cos(az), 0.0])
+
+
+def aim_pan_tilt(tool_pos, tool_z, face, max_pan_deg: float, max_tilt_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Next aiming step that a 5-DOF pan + planar arm (no wrist yaw, like the SO-101) can
+    actually reach: swing the whole tool pose about the base axis toward the face's azimuth
+    (base pan, <= max_pan_deg), then tilt within the arm's vertical plane toward the face
+    (<= max_tilt_deg). Turning sideways while holding the tool position still is
+    impossible for this arm (the planner reports zero IK solutions)."""
+    tool_pos, face = np.asarray(tool_pos, float), np.asarray(face, float)
+    az_plane = np.arctan2(tool_pos[1], tool_pos[0])
+    az_face = np.arctan2(face[1], face[0])
+    d_az = float(np.clip(_wrap(az_face - az_plane), -np.radians(max_pan_deg), np.radians(max_pan_deg)))
+    p_new, z_rot = _rot_z(tool_pos, d_az), _rot_z(_unit(tool_z), d_az)
+    remaining = _wrap(az_face - (az_plane + d_az))
+    face_in_plane = _rot_z(face, -remaining)  # same radius and height, in the new plane
+    return p_new, turn_toward(z_rot, face_in_plane - p_new, max_tilt_deg)
+
+
 class PointingServo:
     def __init__(self, cfg: PointingConfig | None = None, approach: bool = False):
         self.cfg, self.approach = cfg or PointingConfig(), approach
@@ -250,8 +283,9 @@ class PointingServo:
         if tip < c.stop_tip_distance - 0.02:
             return self._fail(f"spoon tip {tip * 100:.0f} cm from the lips: inside the stop distance", tip, ang)
         if ang > c.aligned_deg:
-            new_z = turn_toward(tool_z, d, c.max_turn_deg)
-            return PointCommand("point", tool_pos, new_z, f"re-aim {ang:.1f} deg", ang, tip)
+            p_new, z_new = aim_pan_tilt(tool_pos, tool_z, face, c.max_turn_deg, c.max_turn_deg)
+            pan = np.degrees(_wrap(np.arctan2(p_new[1], p_new[0]) - np.arctan2(tool_pos[1], tool_pos[0])))
+            return PointCommand("point", p_new, z_new, f"re-aim {ang:.1f} deg (pan {pan:+.1f})", ang, tip)
         if not self.approach:
             return PointCommand("hold", reason=f"centred ({ang:.1f} deg)", angle_deg=ang, tip_distance=tip)
         if tip <= c.stop_tip_distance:
@@ -262,6 +296,8 @@ class PointingServo:
                                 tip_distance=tip)
         step = min(c.approach_step, tip - c.stop_tip_distance)
         self.travelled += step
+        n = arm_plane_normal(tool_pos)
+        d = _unit(d - np.dot(d, n) * n)  # stay in the arm's plane (reachable)
         return PointCommand("approach", tool_pos + step * d, d,
                             f"extend {step * 100:.0f} cm (tip {tip * 100:.0f} -> stop at {c.stop_tip_distance * 100:.0f} cm)",
                             ang, tip)
