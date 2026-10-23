@@ -22,8 +22,8 @@ Calibration files live in the module's data directory on the Pi
 ## Moving to `orin-dev-kit` (2026-10-23)
 The hardware moved to the Jetson Orin dev kit (machine `orin-dev-kit`, part id
 `af8aae81-2f68-46bb-a2a0-fdc12ed08ad0`). It has the same components, ports (by-id) and
-names; the leader, both calibration sensors and teleop are **disabled** until the leader is
-plugged in. Snapshots: `viam/machines/`.
+names. Leader, follower and teleop are enabled (teleop `auto_start` off); both calibration
+sensors are disabled until someone recalibrates. Snapshots: `viam/machines/`.
 
 What happened at the move, and what fixed it:
 - **Servo `voltage` errors** on all six follower servos: the wrong power adapter came along
@@ -39,6 +39,8 @@ What happened at the move, and what fixed it:
   directory, not its data folder, so it can't find a relative file that startup loads fine.
   After installing a file, restart the arm component (toggle `disabled`, or edit its config)
   instead of using `reload_calibration`.
+- The leader also read its calibration from its servos on the Orin, matching
+  `viam/calibration/so101_leader_calibration.json` exactly.
 - `pi-arm2` still has the arm components configured, with no arms attached.
 
 ## Teleop

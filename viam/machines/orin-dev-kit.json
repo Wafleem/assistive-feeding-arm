@@ -1,5 +1,5 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. Same SO-101 setup as pi-arm2; leader arm, both calibration sensors and teleop are disabled until the leader is plugged in. No webcam configured yet. No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. Same SO-101 setup as pi-arm2, with leader, follower and teleop enabled (teleop auto_start off). Both calibration sensors are disabled (only needed to recalibrate). No webcam configured yet. Both arms read their calibration back from the servo registers (no calibration files on the Orin). No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
@@ -122,8 +122,7 @@
             "th": 0
           }
         }
-      },
-      "disabled": true
+      }
     },
     {
       "name": "leader-gripper",
@@ -148,8 +147,7 @@
             "th": 0
           }
         }
-      },
-      "disabled": true
+      }
     },
     {
       "name": "leader-calibration",
@@ -184,8 +182,7 @@
         "rate_hz": 100,
         "manage_leader_torque": true,
         "auto_start": false
-      },
-      "disabled": true
+      }
     }
   ],
   "modules": [
