@@ -6,6 +6,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from assistive_arm.geometry import Pose
 from assistive_arm.mouth_perception.types import MouthObservation
@@ -53,6 +54,10 @@ class KinArm:
     def camera_pose(self, name):
         T = fk(self.q)
         return Pose.from_matrix(T[:3, 3], T[:3, :3])
+
+    def arm_command(self, cmd):
+        self.commands = getattr(self, "commands", []) + [cmd]
+        return {"mode": "manual" if cmd.get("command") == "enter_manual_mode" else "auto"}
 
     def set_speed(self, v):
         return v
@@ -117,5 +122,28 @@ def test_auto_center_searches_then_tracks_smoothly_onto_the_lips_with_a_level_sp
         assert np.allclose(q[:, 4], q[0, 4])  # wrist roll never moved
         s.command("stop")
         assert s.mode == "idle"
+    finally:
+        s.close()
+
+
+def test_spoon_level_calibration_nudges_saves_and_becomes_the_trackers_level(tmp_path):
+    from assistive_arm.orchestration.face_servo_session import _tool_pitch
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    s.start()
+    try:
+        s.command("hand_guide_on")
+        assert arm.commands[-1] == {"command": "enter_manual_mode"} and s.hand_guide and not arm.teleop
+        p0 = _tool_pitch(arm.q)
+        s.command("nudge_spoon", deg=5)
+        assert _tool_pitch(arm.q) - p0 == pytest.approx(5.0, abs=0.2)  # tip up = tool pitch up
+        s.command("nudge_spoon", deg=-1)
+        saved = s.command("save_level")
+        lvl = s.taught.spoon_level["tool_pitch_deg"]
+        assert lvl == pytest.approx(_tool_pitch(arm.q), abs=0.01) and "saved" in saved["msg"]
+        assert s.track_cfg.pitch_target_deg == lvl and s.pcfg.level_pitch_deg == lvl
+        assert abs(s.state()["level"]["spoon_tilt_now_deg"]) < 0.1
+        s2 = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json")  # survives a restart
+        assert s2.track_cfg.pitch_target_deg == lvl
     finally:
         s.close()

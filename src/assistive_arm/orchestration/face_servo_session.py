@@ -31,10 +31,11 @@ from ..feeding.face_track import LevelTracker, TrackConfig
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
-    PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
+    FLEX, PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
 )
 
 ROLL = 4  # SO-101 wrist roll joint index
+FLEX_J = 3
 from ..mouth_perception.tracker import MouthTracker
 from ..mouth_perception.types import MouthState
 
@@ -45,6 +46,7 @@ class Taught:
     look: list[float] | None = None
     near: list[float] | None = None
     jacobian: dict | None = None
+    spoon_level: dict | None = None  # {"tool_pitch_deg": ..., "wrist_roll_deg": ...}: tool pose when the SPOON is level
     notes: dict = field(default_factory=dict)
 
     @classmethod
@@ -73,6 +75,11 @@ class _OneFrame:
             override = getattr(self, "pose_fn", None)
             self._pose[name] = override(self.frames[name].timestamp) if override else self.robot.camera_pose(name)
         return self._pose[name]
+
+
+def _tool_pitch(q) -> float:
+    """Tool +Z pitch above horizontal (deg), from local SO-101 kinematics."""
+    return float(np.degrees(np.arcsin(np.clip(so101_fk(q)[2, 2], -1, 1))))
 
 
 def _r(v, n: int = 4):
@@ -121,6 +128,8 @@ class FaceServoSession:
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
         self._pose_fn = None  # camera pose from commanded joints while tracking
         self._q_hist: deque = deque(maxlen=400)
+        self.hand_guide = False
+        self._apply_level()
         self.plan_log = Path(log_dir) / f"face_servo-{time.strftime('%Y%m%d')}.jsonl" if log_dir else None
         self.plan_failures = 0
         self.last_plan_error = ""
@@ -205,6 +214,36 @@ class FaceServoSession:
             setattr(self.taught, action[6:], q)
             self.taught.save(self.path)
             return self._event(action, f"saved {q}")
+        if action in ("hand_guide_on", "hand_guide_off"):
+            self._require_idle()
+            if action == "hand_guide_on":
+                self.robot.stop_teleop()  # the leader must not fight your hand
+                self.robot.arm_command({"command": "enter_manual_mode"})
+                self.hand_guide = True
+                return self._event("level", "hand-guide ON: tilt the wrist by hand until the spoon is level")
+            self.robot.arm_command({"command": "exit_manual_mode"})
+            self.hand_guide = False
+            return self._event("level", "hand-guide off: arm holds its pose")
+        if action == "nudge_spoon":
+            self._require_idle()
+            deg = float(np.clip(float(kw.get("deg", 0.0)), -10.0, 10.0))  # + = spoon tip up
+            self.robot.stop_teleop()
+            q = self.robot.joints()
+            p0 = _tool_pitch(q)
+            q1 = q.copy(); q1[FLEX] += 1.0
+            sign = 1.0 if _tool_pitch(q1) > p0 else -1.0  # which way wrist flex tips the spoon up
+            q1 = q.copy(); q1[FLEX] += sign * deg
+            self.robot.move_joints(q1)
+            self.hand_guide = False  # any motion command ends manual mode
+            return self._event("level", f"spoon tip {'up' if deg > 0 else 'down'} {abs(deg):g} deg (tool pitch {_tool_pitch(q1):+.1f})")
+        if action == "save_level":
+            self._require_idle()
+            q = self.robot.joints()
+            self.taught.spoon_level = {"tool_pitch_deg": round(_tool_pitch(q), 2), "wrist_roll_deg": round(float(q[ROLL]), 2),
+                                       "joints": [round(float(v), 2) for v in q], "t": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self.taught.save(self.path)
+            self._apply_level()
+            return self._event("level", f"saved: spoon is level when the tool pitch is {self.taught.spoon_level['tool_pitch_deg']:+.2f} deg")
         if action == "set_params":
             self._require_idle()
             fields = {k: float(v) for k, v in kw.items() if k in ("stop_tip_distance", "joint_speed_degs")}
@@ -454,6 +493,12 @@ class FaceServoSession:
         except OSError:
             pass
 
+    def _apply_level(self) -> None:
+        """Use the saved spoon-level calibration as "level" for tracking and level aiming."""
+        lvl = (self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)
+        self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), "pitch_target_deg": float(lvl)})
+        self.pcfg = PointingConfig(**{**asdict(self.pcfg), "level_pitch_deg": float(lvl)})
+
     # ---------------------------------------------------------------- continuous tracking
     def _q_at(self, t: float) -> np.ndarray:
         """Commanded joints at time t (robot clock), from the setpoint history."""
@@ -497,8 +542,12 @@ class FaceServoSession:
                 self.robot.stream_joints(q)
                 self._q_hist.append((self.robot.now(), q.copy()))
                 e = tr.last
-                self.reason = ("tracking: miss {miss_cm} cm, spoon tilt {pitch_deg} deg".format(**e)
-                               if face is not None and e else "tracking: waiting for the face (holding still)")
+                if face is not None and e:
+                    self.reason = "tracking: miss {miss_cm} cm, spoon tilt {pitch_deg} deg".format(**e)
+                    if e.get("lips_above_reach_cm"):
+                        self.reason += f" | lips {e['lips_above_reach_cm']} cm above a level spoon's reach (spoon held level at the cap)"
+                else:
+                    self.reason = "tracking: waiting for the face (holding still)"
                 if time.monotonic() - last_check > 0.5:  # is the real arm following?
                     last_check = time.monotonic()
                     lag = float(np.max(np.abs(self.robot.joints(timeout=1.0) - self._q_at(self.robot.now() - 0.3))))
@@ -604,6 +653,10 @@ class FaceServoSession:
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
             "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
+            "level": {"saved_tool_pitch_deg": (self.taught.spoon_level or {}).get("tool_pitch_deg"),
+                      "spoon_tilt_now_deg": None if isinstance(joints, str) else round(
+                          _tool_pitch(np.array(self._last_joints)) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)), 1),
+                      "hand_guide": self.hand_guide},
             "planner": {"failures_in_a_row": self.plan_failures, "last_error": self.last_plan_error[:300],
                         "log_file": str(self.plan_log) if self.plan_log else None},
         }

@@ -205,6 +205,7 @@ class PointingConfig:
     max_dz_step: float = 0.03  # m height change per step
     spoon_dz: float = 0.0  # m: spoon line height above the tool axis (taped in the fixed jaw). TODO: measure
     roll_leeway_deg: float = 4.0  # wrist roll held at its starting value (bowl up) within this
+    level_pitch_deg: float = 0.0  # tool pitch at which the SPOON is level (saved by "Save spoon level")
 
     def __post_init__(self):
         if self.stop_tip_distance < self.min_tip_distance_floor:
@@ -284,7 +285,7 @@ def line_miss(tool_pos, direction, face) -> float:
 
 
 def aim_level(tool_pos, tool_z, face, max_pan_deg: float, max_dz: float, max_tilt_deg: float,
-              spoon_dz: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+              spoon_dz: float = 0.0, level_pitch_deg: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     """Next aiming step that keeps the spoon level: swing about the base axis toward the face's
     azimuth (<= max_pan_deg), move the gripper up/down toward lip height (<= max_dz), and bring
     the spoon axis to horizontal (<= max_tilt_deg per step if it starts tilted). Reachable for
@@ -296,7 +297,8 @@ def aim_level(tool_pos, tool_z, face, max_pan_deg: float, max_dz: float, max_til
     p_new = _rot_z(tool_pos, d_az)
     p_new[2] += float(np.clip(face[2] - (tool_pos[2] + spoon_dz), -max_dz, max_dz))
     az_new = az_plane + d_az
-    level = np.array([np.cos(az_new), np.sin(az_new), 0.0])
+    lp = np.radians(level_pitch_deg)  # the tool pitch at which the spoon itself is level
+    level = np.array([np.cos(az_new) * np.cos(lp), np.sin(az_new) * np.cos(lp), np.sin(lp)])
     return p_new, turn_toward(_rot_z(_unit(tool_z), d_az), level, max_tilt_deg)
 
 
@@ -343,10 +345,11 @@ class PointingServo:
     def _step_level(self, tool_pos, tool_z, face, state, tip, ang) -> PointCommand:
         c = self.cfg
         spoon_pos = tool_pos + np.array([0.0, 0.0, c.spoon_dz])
-        miss, tilt = line_miss(spoon_pos, tool_z, face), spoon_tilt_deg(tool_z)
+        miss, tilt = line_miss(spoon_pos, tool_z, face), spoon_tilt_deg(tool_z) - c.level_pitch_deg
         info = dict(angle_deg=ang, tip_distance=tip)
         if miss > c.aim_tol_m or abs(tilt) > c.level_tol_deg:
-            p_new, z_new = aim_level(tool_pos, tool_z, face, c.max_turn_deg, c.max_dz_step, c.max_turn_deg, c.spoon_dz)
+            p_new, z_new = aim_level(tool_pos, tool_z, face, c.max_turn_deg, c.max_dz_step, c.max_turn_deg, c.spoon_dz,
+                                     c.level_pitch_deg)
             pan = np.degrees(_wrap(np.arctan2(p_new[1], p_new[0]) - np.arctan2(tool_pos[1], tool_pos[0])))
             return PointCommand("point", p_new, z_new, f"aim: miss {miss * 100:.1f} cm, tilt {tilt:+.1f} deg "
                                 f"(pan {pan:+.1f} deg, height {(p_new[2] - tool_pos[2]) * 100:+.1f} cm)", **info)
