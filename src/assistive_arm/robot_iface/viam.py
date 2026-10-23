@@ -204,8 +204,11 @@ class ViamRobot(RobotInterface):
 async def connect(address: str | None = None):
     """RobotClient from VIAM_ADDRESS / VIAM_API_KEY / VIAM_API_KEY_ID.
 
-    ``VIAM_ADDRESS=localhost:8080`` (on the machine itself) dials viam-server directly,
-    without the cloud: use it on the Orin, where the venue Wi-Fi made cloud dialling flaky."""
+    ``VIAM_ADDRESS=localhost:<port>`` dials viam-server directly over TLS, without the cloud:
+    on the Orin itself (port 8080), or from a laptop through an SSH tunnel over the Jetson's
+    USB link (``ssh -L 18080:localhost:8080 ultraviolet@192.168.55.1``, then
+    ``localhost:18080``). The venue Wi-Fi made cloud (WebRTC) dialling unreliable.
+    The SDK skips certificate hostname checks for localhost only."""
     from viam.robot.client import RobotClient
     from viam.rpc.dial import DialOptions
 
@@ -214,8 +217,6 @@ async def connect(address: str | None = None):
     if address.startswith(("localhost", "127.0.0.1")):
         opts.dial_options = DialOptions.with_api_key(os.environ["VIAM_API_KEY"], os.environ["VIAM_API_KEY_ID"])
         opts.dial_options.disable_webrtc = True
-        opts.dial_options.insecure = True
-        opts.dial_options.allow_insecure_with_creds_downgrade = True
     return await RobotClient.at_address(address, opts)
 
 # Logitech C270 at 640x480 (~60 deg diagonal FOV) until a checkerboard calibration exists.
@@ -252,9 +253,26 @@ class ViamCameraRig:
 
         self._io = io or _Loop()
         self.client = client or self._io.run(connect(address))
-        self._cams = {c: Camera.from_robot(self.client, c) for c in cameras}
+        self._cams = {c: self._find(Camera, c) for c in cameras}
         self._k = dict(intrinsics or {})
         self.pose_error: str | None = None
+
+    def _find(self, kind, name: str, wait: float = 15.0):
+        """``kind.from_robot`` that rides out a machine reconfiguring (its resource list is
+        briefly incomplete while a config change applies): refresh and retry for ``wait`` s."""
+        import time
+
+        from viam.errors import ResourceNotFoundError
+
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                return kind.from_robot(self.client, name)
+            except ResourceNotFoundError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(1.0)
+                self._io.run(self.client.refresh(), timeout=10)
 
     def now(self) -> float:
         import time

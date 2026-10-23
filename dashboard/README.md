@@ -23,15 +23,19 @@ Safety (all in `feeding/face_servo.py: FaceServoConfig`; review with the safety 
 - retreat if the face is lost (> 0.4 s), the head moves fast, or turns away during the approach;
 - Extend needs the readiness box ticked; every request needs the server's token.
 
-## Run (on the Orin, next to the camera)
+## Run (on your laptop)
 
 ```bash
-cd ~/assistive-arm-servo && .venv/bin/python dashboard/server.py --local
+dashboard/run_mac.sh
 ```
-Then open the printed URL (`http://rm-sentry.local:8090/?token=...`). `--local` talks to
-viam-server on localhost:8080, so the venue Wi-Fi only carries the page and the video.
-Credentials: `.env` (`VIAM_API_KEY`, `VIAM_API_KEY_ID`). Poses and calibration are
-saved in `poses/so101_face.json`.
+It opens an SSH tunnel over the Jetson's USB link for the **camera only** (plug a USB-C
+cable into the Orin's device-mode port, next to the 40-pin header; the Orin is then
+`192.168.55.1`), and starts the server on `localhost:8090`. Arm and teleop commands
+go through the normal Viam cloud connection (`VIAM_ADDRESS` in `.env`). Open the printed
+`http://localhost:8090/?token=...`.
+
+On the Orin itself instead: `.venv/bin/python dashboard/server.py --local --host 0.0.0.0`
+(needs mediapipe, opencv, viam-sdk installed there).
 
 Logic lives in `src/assistive_arm/orchestration/face_servo_session.py` (sequencing) and
 `src/assistive_arm/feeding/face_servo.py` (decisions); tests: `tests/test_face_servo*.py`.

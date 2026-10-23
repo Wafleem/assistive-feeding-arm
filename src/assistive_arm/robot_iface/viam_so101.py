@@ -21,7 +21,10 @@ from .viam import ViamCameraRig, _Loop, connect
 
 class SO101ViamRobot:
     def __init__(self, address: str | None = None, arm: str = "follower-arm", gripper: str = "follower-gripper",
-                 teleop: str = "teleop", cameras=("webcam-2",)):
+                 teleop: str = "teleop", cameras=("webcam-2",), camera_address: str | None = None):
+        """``camera_address``: a second, camera-only connection (e.g. ``localhost:18080``, an SSH
+        tunnel over the Jetson's USB link) so video doesn't depend on the venue Wi-Fi; arm and
+        teleop commands keep using ``address`` (the normal Viam cloud connection)."""
         from viam.components.arm import Arm
         from viam.services.generic import Generic
 
@@ -30,7 +33,10 @@ class SO101ViamRobot:
         self.arm = Arm.from_robot(self.client, arm)
         self.teleop_name = teleop
         self._teleop = Generic.from_robot(self.client, teleop) if teleop else None
-        self.rig = ViamCameraRig(cameras, client=self.client, io=self._io)
+        if camera_address:
+            self.rig = ViamCameraRig(cameras, io=self._io, client=self._io.run(connect(camera_address)))
+        else:
+            self.rig = ViamCameraRig(cameras, client=self.client, io=self._io)
 
     # perception passthrough (so detectors can use this object as their "robot")
     def now(self) -> float:
