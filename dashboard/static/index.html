@@ -52,6 +52,12 @@
     <div style="color:var(--dim);font-size:12px;margin-top:6px">
       Cyan cross = where the spoon points (tolerance circle). Red dot = lips. Arrow = centring error (green when centred).
     </div>
+    <h2>Depth (Depth Anything 3 on the Orin, a few frames/s)</h2>
+    <img id="depthcam" alt="depth camera" style="width:100%;border-radius:6px;background:#000;aspect-ratio:4/3;object-fit:contain">
+    <div style="color:var(--dim);font-size:12px;margin-top:6px">
+      Red = near, blue = far. White box = the face, with its distance from depth (forehead, nose bridge, cheeks).
+      Cross = distance straight ahead.
+    </div>
   </section>
   <section>
     <div class="card">
@@ -132,6 +138,7 @@
 <script>
 const token = new URLSearchParams(location.search).get("token") || "";
 document.getElementById("cam").src = "/stream.mjpg?token=" + encodeURIComponent(token);
+document.getElementById("depthcam").src = "/depth.mjpg?token=" + encodeURIComponent(token);
 const $ = id => document.getElementById(id);
 let paramsLoaded = false;
 

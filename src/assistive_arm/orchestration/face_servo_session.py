@@ -101,7 +101,8 @@ class FaceServoSession:
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
-                 allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None):
+                 allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None,
+                 depth_render=None):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -128,6 +129,8 @@ class FaceServoSession:
         self.depth_camera, self.depth_det = depth_camera, depth_detector
         self.depth = DepthRangeCorrector()
         self.depth_status = "off" if not (depth_camera and depth_detector) else "starting"
+        self.depth_render = depth_render  # (frame, landmarks or None, session) -> jpeg bytes
+        self._depth_jpeg: bytes | None = None
         self.track_cfg = TrackConfig()
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.track: LevelTracker | None = None
@@ -157,6 +160,10 @@ class FaceServoSession:
                     self.depth_status = "no depth frame"
                 else:
                     found = self.depth_det.landmarks(frame.rgb, self.robot.now())
+                    if self.depth_render is not None:
+                        jpg = self.depth_render(frame, None if found is None else found[0], self)
+                        with self._lock:
+                            self._depth_jpeg = jpg
                     if found is None:
                         self.depth_status = "depth ok, no face in it"
                     else:
@@ -212,6 +219,10 @@ class FaceServoSession:
     def jpeg(self) -> bytes | None:
         with self._lock:
             return self._jpeg
+
+    def depth_jpeg(self) -> bytes | None:
+        with self._lock:
+            return self._depth_jpeg
 
     def latest(self) -> dict:
         with self._lock:
