@@ -945,6 +945,7 @@ class FaceServoSession:
 
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
     SCOOP_ROLL_GAIN = 2.0  # x the recorded wrist roll (measured from where the dip starts): a bigger twist scoops more
+    SCOOP_PRE_ROLL = 25.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
 
     def _do_home_scoop(self) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
@@ -965,7 +966,15 @@ class FaceServoSession:
         k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
-        q[:, ROLL] = q[0, ROLL] + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - q[0, ROLL])
+        r0 = q[0, ROLL]
+        q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
+        # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
+        # spoon sweeps through the whole roll (most area for the cereal)
+        sign = 1.0 if q[:, ROLL].max() - r0 >= r0 - q[:, ROLL].min() else -1.0
+        peak = int(np.argmax(sign * (q[:, ROLL] - r0)))
+        if peak > 0:
+            w = 0.5 - 0.5 * np.cos(np.pi * np.arange(peak + 1) / peak)  # 0 -> 1
+            q[:peak + 1, ROLL] -= sign * self.SCOOP_PRE_ROLL * (1.0 - w)
         t = np.asarray(demo["t"], float) / max(speed, 0.1)
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
