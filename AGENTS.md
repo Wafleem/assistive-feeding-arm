@@ -31,6 +31,7 @@ src/assistive_arm/
   geometry.py  robot_iface/  vision/  motion/            SHARED CORE
   mouth_perception/  food_perception/  grasping/          SECTIONS 1-3
   feeding/  language/  orchestration/  sim/               SECTIONS 4-7
+  pick_place/                                             SECTION 9 (SO-101 bench rig)
 ```
 Section 8 (props) lives in `docs/PROPS.md` (and a future `props/` folder for CAD and firmware).
 
@@ -54,7 +55,7 @@ Section 8 (props) lives in `docs/PROPS.md` (and a future `props/` folder for CAD
 | `vision` | `geometry` (+ `robot_iface` for type hints only, under `TYPE_CHECKING`) |
 | `robot_iface` | `geometry`, `vision`, and, as a documented exception to remove, `motion.safety` in `viam.py` |
 | `motion` | `geometry`, `robot_iface`, `vision` |
-| a section (1-5, 7) | the shared core + other sections' **contract modules** only |
+| a section (1-5, 7, 9) | the shared core + other sections' **contract modules** only |
 | `orchestration` | everything |
 
 - No section imports another section's implementation files (`kalman.py`, `pca.py`,

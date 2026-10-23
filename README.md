@@ -80,6 +80,7 @@ and trials with the printed mouth only.
 | 6 | Orchestration: the bite-cycle state machine with timeouts and aborts | `src/assistive_arm/orchestration/` | [README](src/assistive_arm/orchestration/README.md) |
 | 7 | Simulation: feeding scene, head scripts, metrics, eval | `src/assistive_arm/sim/`, `sim/` | [README](src/assistive_arm/sim/README.md) |
 | 8 | Props: 3D-printed mouth with catch cup, plate, foods, utensils (store-bought or flat-pack) | — | [docs/PROPS.md](docs/PROPS.md) |
+| 9 | Hard-coded pick and place on the SO-101 bench rig (`pi-arm2`): teach poses with the leader arm, replay them | `src/assistive_arm/pick_place/` | [README](src/assistive_arm/pick_place/README.md), [docs/SO101_SETUP.md](docs/SO101_SETUP.md) |
 
 **Shared core** (works now, used by every section):
 * `geometry.py`

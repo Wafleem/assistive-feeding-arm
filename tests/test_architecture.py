@@ -5,7 +5,7 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parents[1] / "src" / "assistive_arm"
 CORE = {"geometry", "vision", "robot_iface", "motion"}
-SECTIONS = {"mouth_perception", "food_perception", "grasping", "feeding", "language", "sim"}
+SECTIONS = {"mouth_perception", "food_perception", "grasping", "feeding", "language", "sim", "pick_place"}
 CONTRACT_MODULES = {"types", "schema", "config", "vocabulary", "states"}
 CORE_ALLOWED = {
     "geometry": set(),

@@ -8,6 +8,7 @@
 | `fake.py` | `FakeRobot`: no physics; straight-line motion in 1 mm steps, spring "surfaces", graspable points, a virtual clock | works (from the first scaffold) |
 | `sim.py` | `SimRobot`: MuJoCo arm, gripper, F/T sensor, wrist + fixed RGB-D cameras, oracle detector, scene `hooks`, simulated clock | works (from the first scaffold) |
 | `viam.py` | `ViamRobot`: the venue xArm6 + gripper + cameras through the Viam SDK; keep-out zones as motion-planner obstacles | written, **untested on hardware** |
+| `viam_so101.py` | `SO101ViamRobot`: the SO-101 follower + gripper on `pi-arm2` (5 joints, joint-space first, teleop status) | **stub** (section 9) |
 | `viam_convert.py` | metres/quaternions ↔ Viam millimetres/orientation vectors | works, tested |
 
 ## The contract (what every backend must do)
