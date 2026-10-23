@@ -1,4 +1,4 @@
-# SO-101 setup on `pi-arm2` (Viam)
+# SO-101 setup on Viam (`pi-arm2`, then `orin-dev-kit`)
 
 The bench rig the team develops on before the venue xArm6: an SO-101 **follower** arm
 that does the work, and an SO-101 **leader** arm you move by hand to drive it. Both
@@ -18,6 +18,17 @@ run on a Raspberry Pi Viam machine, `pi-arm2`.
 
 Calibration files live in the module's data directory on the Pi
 (`/root/.viam/module-data/<part-id>/devrel_so101-arm/`), not in this repo.
+
+## Moving to `orin-dev-kit` (2026-10-23)
+The hardware moved to the Jetson Orin dev kit (machine `orin-dev-kit`, part id
+`af8aae81-2f68-46bb-a2a0-fdc12ed08ad0`). It has the same components, ports (by-id) and
+names; the leader, both calibration sensors and teleop are **disabled** until the leader is
+plugged in. Snapshots: `viam/machines/`. Open issues at the move:
+- **Servo `voltage` errors** on all six follower servos: check the follower's power adapter.
+- **No calibration file on the Orin:** the follower fell back to default calibration (joint
+  angles wrong). Copy `viam/calibration/so101_follower_calibration.json` into the module data
+  dir (see `viam/README.md`) and `reload_calibration`, or re-run calibration on the Orin.
+- `pi-arm2` still has the arm components configured, with no arms attached.
 
 ## Teleop
 - Start: DoCommand `{"command": "start"}` on `teleop`. Stop: `{"command": "stop"}`.

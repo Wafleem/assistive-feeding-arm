@@ -1,0 +1,205 @@
+{
+  "_note": "Snapshot of the orin-dev-kit (Jetson, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. Same SO-101 setup as pi-arm2; leader arm, both calibration sensors and teleop are disabled until the leader is plugged in. No webcam configured yet. No secrets are stored here.",
+  "components": [
+    {
+      "name": "follower-arm",
+      "api": "rdk:component:arm",
+      "model": "devrel:so101:arm",
+      "attributes": {
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00",
+        "calibration_file": "so101_follower_calibration.json"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "follower-gripper",
+      "api": "rdk:component:gripper",
+      "model": "devrel:so101:gripper",
+      "attributes": {
+        "arm": "follower-arm"
+      },
+      "frame": {
+        "parent": "follower-arm",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "follower-calibration",
+      "api": "rdk:component:sensor",
+      "model": "devrel:so101:calibration",
+      "ui_folder": {
+        "name": "calibration"
+      },
+      "attributes": {
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00",
+        "calibration_file": "so101_follower_calibration.json"
+      },
+      "disabled": true
+    },
+    {
+      "name": "table",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle",
+      "attributes": {
+        "geometries": [
+          {
+            "label": "table",
+            "type": "box",
+            "x": 2000,
+            "y": 2000,
+            "z": 30
+          }
+        ]
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": -15
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "leader-arm",
+      "api": "rdk:component:arm",
+      "model": "devrel:so101:arm",
+      "attributes": {
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00",
+        "calibration_file": "so101_leader_calibration.json"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 0,
+          "y": -600,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "leader-gripper",
+      "api": "rdk:component:gripper",
+      "model": "devrel:so101:gripper",
+      "attributes": {
+        "arm": "leader-arm"
+      },
+      "frame": {
+        "parent": "leader-arm",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "leader-calibration",
+      "api": "rdk:component:sensor",
+      "model": "devrel:so101:calibration",
+      "ui_folder": {
+        "name": "calibration"
+      },
+      "attributes": {
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00",
+        "calibration_file": "so101_leader_calibration.json"
+      },
+      "disabled": true
+    }
+  ],
+  "services": [
+    {
+      "name": "discovery-arm",
+      "api": "rdk:service:discovery",
+      "model": "devrel:so101:discovery",
+      "attributes": {}
+    },
+    {
+      "name": "teleop",
+      "api": "rdk:service:generic",
+      "model": "devrel:so101:teleop",
+      "attributes": {
+        "leader_arm": "leader-arm",
+        "follower_arm": "follower-arm",
+        "leader_gripper": "leader-gripper",
+        "follower_gripper": "follower-gripper",
+        "rate_hz": 100,
+        "manage_leader_torque": true,
+        "auto_start": false
+      },
+      "disabled": true
+    }
+  ],
+  "modules": [
+    {
+      "type": "registry",
+      "name": "devrel_so101-arm",
+      "module_id": "devrel:so101-arm",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_obstacle-pack",
+      "module_id": "viam:obstacle-pack",
+      "version": "latest"
+    }
+  ]
+}
