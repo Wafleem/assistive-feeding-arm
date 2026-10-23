@@ -177,3 +177,23 @@ the watchdog adds a source rule (table 100) so anything addressed to the Wi-Fi I
 
 Keep the laptop awake and on the cable while others rely on the machine. SSH to the Orin
 over the cable with `HostKeyAlias=rm-sentry.local`, because every Jetson uses `192.168.55.1`.
+
+## Face servo: "zero IK solutions" errors (2026-10-23), found and fixed
+**Symptom:** Auto center worked for small corrections, then failed with `move to position failed
+with the caller-supplied pose_cloud: ... zero IK solutions produced, goal positions appears
+to be physically unreachable`. This happened when the person shifted sideways: the aim error
+jumped to 14-15° and the next 8° turn failed. Small turns also never quite converged (3-5° left over).
+
+**Cause:** the SO-101 has 5 joints and **no wrist yaw**. Its tool axis always lies in the
+vertical plane through the base axis, so aiming left or right *requires* the base pan, which
+carries the whole gripper sideways (about 2.8 cm for 8° at a 20 cm reach). The servo asked
+the planner to turn the tool sideways while holding its position within ±8 mm. That pose doesn't
+exist for this arm, so the IK was right to find no solution.
+
+**Fix** (`feeding/face_servo.py: aim_pan_tilt`): every target is reachable by construction.
+The tool pose is swung about the base axis toward the face's azimuth (≤ 8°/step), then tilted
+inside the arm's plane toward the lips (≤ 8°/step); extend steps stay in that plane. A failed
+plan is retried once with a 3× wider pose cloud, and the servo stops only after 3 failures in a
+row. Every planner call (inputs, target, joints before/after, result, error, timing) is appended
+to `data/logs/face_servo-YYYYMMDD.jsonl` (git-ignored). The test fake now rejects
+out-of-plane targets the way the real arm does.

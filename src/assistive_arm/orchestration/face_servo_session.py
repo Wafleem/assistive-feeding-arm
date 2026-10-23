@@ -67,6 +67,14 @@ class _OneFrame:
         return self._pose[name]
 
 
+def _r(v, n: int = 4):
+    return None if v is None else [round(float(x), n) for x in np.asarray(v, float).ravel()]
+
+
+def _mm(v):
+    return None if v is None else [round(float(x) * 1000, 1) for x in np.asarray(v, float).ravel()]
+
+
 class Stopped(Exception):
     pass
 
@@ -76,7 +84,7 @@ class FaceServoSession:
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
-                 allow_extend: bool = True):
+                 allow_extend: bool = True, log_dir=None):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -100,6 +108,9 @@ class FaceServoSession:
         self.last_move_end = 0.0
         self.fps = 0.0
         self.allow_extend = allow_extend
+        self.plan_log = Path(log_dir) / f"face_servo-{time.strftime('%Y%m%d')}.jsonl" if log_dir else None
+        self.plan_failures = 0
+        self.last_plan_error = ""
 
     # ---------------------------------------------------------------- perception
     def start(self) -> None:
@@ -339,6 +350,7 @@ class FaceServoSession:
 
     def _point_loop(self, approach: bool) -> None:
         self.pointer = ctrl = PointingServo(self.pcfg, approach)
+        self.plan_failures = 0
         self.last_move_end = self.robot.now()
         while True:
             face, st = self._face_target()
@@ -349,8 +361,15 @@ class FaceServoSession:
                 self._event(cmd.kind, cmd.reason)
                 q0 = self.robot.joints()
                 self._check_stop()
-                self.robot.move_tool(cmd.position, cmd.direction, theta, self.pcfg.position_leeway_mm,
-                                     self.pcfg.orientation_leeway)
+                if not self._plan_move(cmd, pos, z, theta, face, q0):
+                    self.plan_failures += 1
+                    self._event("planner", f"no solution ({self.plan_failures}/3): {self.last_plan_error[:160]}")
+                    if self.plan_failures >= 3:
+                        raise RuntimeError("the arm's planner found no solution 3 times in a row: "
+                                           f"{self.last_plan_error[:200]} (log: {self.plan_log})")
+                    self.last_move_end = self.robot.now()
+                    continue
+                self.plan_failures = 0
                 self.last_move_end = self.robot.now()
                 jump = float(np.max(np.abs(self.robot.joints() - q0)))
                 if jump > self.pcfg.max_joint_jump_deg:
@@ -368,6 +387,46 @@ class FaceServoSession:
             else:
                 self._check_stop()
                 time.sleep(0.1)
+
+    def _plan_move(self, cmd, pos, z, theta, face, q0) -> bool:
+        """One planned MoveToPosition; on failure retry once with a 3x wider pose cloud.
+        Every attempt is appended to the JSONL plan log (inputs, result, error, timing)."""
+        for wide in (False, True):
+            lw = self.pcfg.position_leeway_mm * (3.0 if wide else 1.0)
+            ol = self.pcfg.orientation_leeway * (3.0 if wide else 1.0)
+            t0, err = time.monotonic(), ""
+            try:
+                self.robot.move_tool(cmd.position, cmd.direction, theta, lw, ol)
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+            self._log_plan({
+                "kind": cmd.kind, "ok": not err, "error": err, "wide": wide, "duration_s": round(time.monotonic() - t0, 3),
+                "aim_error_deg": round(cmd.angle_deg, 2), "tip_distance_m": round(cmd.tip_distance, 3),
+                "tool_pos_mm": _mm(pos), "tool_z": _r(z), "theta_deg": round(theta, 1),
+                "target_pos_mm": _mm(cmd.position), "target_z": _r(cmd.direction),
+                "leeway_mm": lw, "leeway_orient": ol, "face_mm": _mm(face) if face is not None else None,
+                "joints_before": _r(q0, 1), "joints_after": _r(self._joints_or_none(), 1),
+            })
+            if not err:
+                return True
+            self.last_plan_error = err
+        return False
+
+    def _joints_or_none(self):
+        try:
+            return self.robot.joints(timeout=2.0)
+        except Exception:
+            return None
+
+    def _log_plan(self, rec: dict) -> None:
+        if self.plan_log is None:
+            return
+        try:
+            self.plan_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.plan_log.open("a") as f:
+                f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), **rec}) + "\n")
+        except OSError:
+            pass
 
     def _do_center(self) -> None:
         self._point_loop(approach=False)
@@ -435,4 +494,6 @@ class FaceServoSession:
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
             "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
+            "planner": {"failures_in_a_row": self.plan_failures, "last_error": self.last_plan_error[:300],
+                        "log_file": str(self.plan_log) if self.plan_log else None},
         }

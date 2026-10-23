@@ -99,32 +99,45 @@ def angle(a, b):
     return np.degrees(np.arccos(np.clip(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
 
 
-def test_pointing_turns_toward_the_face_in_limited_steps_then_holds():
+def reachable(pos, z, tol_deg=0.5):
+    """The SO-101 constraint: the tool axis lies in the vertical plane through the base axis."""
+    from assistive_arm.feeding.face_servo import arm_plane_normal
+    return abs(np.degrees(np.arcsin(np.dot(z / np.linalg.norm(z), arm_plane_normal(pos))))) <= tol_deg
+
+
+def test_pointing_turns_toward_a_sideways_face_with_reachable_steps_then_holds():
     p = PointingServo(PointingConfig(max_turn_deg=8.0))
-    z = np.array([1.0, 0.0, 0.0])
-    for _ in range(10):
-        cmd = p.step(TOOL, z, FACE, mstate())
+    pos, z = TOOL.copy(), np.array([1.0, 0.0, 0.0])  # facing straight ahead; the face is 25 deg right
+    for _ in range(20):
+        cmd = p.step(pos, z, FACE, mstate())
         if cmd.kind != "point":
             break
-        assert angle(z, cmd.direction) <= 8.0 + 1e-6 and np.allclose(cmd.position, TOOL)
-        z = cmd.direction
-    assert cmd.kind == "hold" and angle(z, FACE - TOOL) <= 3.0
+        assert reachable(cmd.position, cmd.direction), "a target the 5-DOF arm can't reach"
+        assert abs(np.linalg.norm(cmd.position[:2]) - np.linalg.norm(pos[:2])) < 1e-9  # same reach
+        assert abs(cmd.position[2] - pos[2]) < 1e-9  # same height
+        pos, z = cmd.position, cmd.direction
+    assert cmd.kind == "hold" and angle(z, FACE - pos) <= 3.0
 
 
 def test_pointing_tolerates_short_dropouts_but_not_long_ones():
     p = PointingServo()
-    assert p.step(TOOL, FACE - TOOL, FACE, mstate(age=0.3)).kind == "hold"  # still centred
-    assert "lost" in p.step(TOOL, FACE - TOOL, FACE, mstate(age=1.0)).reason
+    az = np.arctan2(FACE[1], FACE[0])
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    assert p.step(pos, FACE - pos, FACE, mstate(age=0.3)).kind == "hold"  # still centred
+    assert "lost" in p.step(pos, FACE - pos, FACE, mstate(age=1.0)).reason
 
 
 def test_extend_moves_along_the_line_and_stops_at_the_stop_distance():
     cfg = PointingConfig(stop_tip_distance=0.20, approach_step=0.05)
     p = PointingServo(cfg, approach=True)
-    pos, z = TOOL.copy(), FACE - TOOL
-    for _ in range(40):
+    az = np.arctan2(FACE[1], FACE[0])  # a reachable start: the arm already swung toward the face
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    z = FACE - pos
+    for _ in range(60):
         cmd = p.step(pos, z, FACE, mstate())
-        if cmd.kind != "approach":
+        if cmd.kind not in ("approach", "point"):
             break
+        assert reachable(cmd.position, cmd.direction)
         pos, z = cmd.position, cmd.direction
     assert cmd.kind == "done"
     tip = np.linalg.norm(FACE - pos) - cfg.spoon_tip_from_tool
@@ -133,7 +146,9 @@ def test_extend_moves_along_the_line_and_stops_at_the_stop_distance():
 
 def test_extend_retreats_when_the_face_is_lost_after_moving():
     p = PointingServo(approach=True)
-    assert p.step(TOOL, FACE - TOOL, FACE, mstate()).kind == "approach"
+    az = np.arctan2(FACE[1], FACE[0])
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    assert p.step(pos, FACE - pos, FACE, mstate()).kind == "approach"
     assert p.step(TOOL, FACE - TOOL, None, None).kind == "retreat"
 
 

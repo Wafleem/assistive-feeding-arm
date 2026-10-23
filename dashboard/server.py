@@ -192,7 +192,7 @@ def main() -> int:
     det = MediaPipeMouthDetector(camera=args.camera, model_path=args.model)
     cfg = FaceServoConfig(stop_tip_distance=args.stop_cm / 100, joint_speed_degs=args.speed)
     session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render(),
-                               allow_extend=args.allow_extend)
+                               allow_extend=args.allow_extend, log_dir=ROOT / "data/logs")
     session.start()
 
     Handler.session = session

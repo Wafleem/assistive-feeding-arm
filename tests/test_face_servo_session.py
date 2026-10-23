@@ -17,7 +17,6 @@ from assistive_arm.vision.types import CameraIntrinsics, RGBDFrame
 
 K = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
 FACE = np.array([0.60, -0.60, 0.30])  # 45 deg to the right of straight ahead
-TOOL = np.array([0.15, 0.0, 0.20])
 LOOK = np.array([-40.0, -90.0, 80.0, 20.0, 0.0])
 
 
@@ -31,12 +30,29 @@ def angle(a, b):
 
 
 class FakeSO101:
+    """SO-101-like: the tool sits at (reach r, height h) in the vertical plane at the base pan,
+    and its axis can only point within that plane (no wrist yaw). Targets outside that plane
+    fail like the real module's planner does."""
+
     def __init__(self):
         self.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])
-        self.pos = TOOL.copy()
+        self.r, self.h = 0.15, 0.20
         self.moves = 0
         self.teleop = True
         self.flip_next = False
+        self.fail_next = 0  # make the next N plans fail (planner trouble)
+        self.plans = []
+
+    @property
+    def pos(self):
+        pan = np.radians(self.q[0])
+        return np.array([self.r * np.cos(pan), self.r * np.sin(pan), self.h])
+
+    @pos.setter
+    def pos(self, p):
+        p = np.asarray(p, float)
+        self.r, self.h = float(np.linalg.norm(p[:2])), float(p[2])
+        self.q[0] = np.degrees(np.arctan2(p[1], p[0]))
 
     def now(self):
         return time.monotonic()
@@ -51,10 +67,16 @@ class FakeSO101:
     def tool_pose(self, timeout=None):
         return self.pos.copy(), direction(self.q), 0.0
 
-    def move_tool(self, position, d, theta=0.0, *a, **k):
-        d = np.asarray(d, float)
-        self.pos = np.asarray(position, float).copy()
-        self.q[0] = np.degrees(np.arctan2(d[1], d[0])) + (60.0 if self.flip_next else 0.0)
+    def move_tool(self, position, d, theta=0.0, leeway_mm=8.0, leeway_orient=0.03):
+        p, d = np.asarray(position, float), np.asarray(d, float) / np.linalg.norm(d)
+        az = np.arctan2(p[1], p[0])
+        out_of_plane = abs(np.dot(d, [-np.sin(az), np.cos(az), 0.0]))
+        self.plans.append((leeway_mm, leeway_orient))
+        if self.fail_next > 0 or out_of_plane > 1.5 * leeway_orient:
+            self.fail_next = max(0, self.fail_next - 1)
+            raise RuntimeError("zero IK solutions produced, goal positions appears to be physically unreachable")
+        self.pos = p
+        self.q[0] += 60.0 if self.flip_next else 0.0
         self.q[3] = np.degrees(np.arcsin(np.clip(d[2], -1, 1))) + 20.0
         self.moves += 1
 
@@ -110,7 +132,7 @@ def wait(until, timeout=10.0):
 def make(tmp_path, **cfg):
     robot = FakeSO101()
     s = FaceServoSession(robot, FakeFace(robot), poses_path=tmp_path / "p.json",
-                         cfg=FaceServoConfig(**cfg), settle=0.0)
+                         cfg=FaceServoConfig(**cfg), settle=0.0, log_dir=tmp_path / "logs")
     s.start()
     return robot, s
 
@@ -142,7 +164,7 @@ def test_extend_stops_at_the_stop_distance_and_retreats_when_the_face_goes(tmp_p
         assert wait(lambda: s.mode == "idle")
         assert np.allclose(robot.q, LOOK)
 
-        robot.pos = TOOL.copy()
+        robot.r = 0.15
         s.command("extend")
         assert wait(lambda: s.pointer is not None and s.pointer.travelled > 0.05)
         s.det.present = False  # the person leaves mid-approach
@@ -169,5 +191,26 @@ def test_auto_center_without_a_face_or_a_look_pose_explains_itself(tmp_path):
         s.command("auto_center")
         assert wait(lambda: s.mode == "idle" and "teach the look pose" in s.reason), s.reason
         assert robot.moves == 0
+    finally:
+        s.close()
+
+
+def test_a_failed_plan_is_retried_wider_logged_and_only_stops_after_three(tmp_path):
+    import json
+    robot, s = make(tmp_path)
+    try:
+        robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
+        robot.fail_next = 1  # first attempt fails, the wider retry succeeds
+        s.command("center")
+        assert wait(lambda: angle(direction(robot.q), FACE - robot.pos) <= 3.0), s.reason
+        s.command("stop")
+        recs = [json.loads(l) for l in s.plan_log.read_text().splitlines()]
+        assert recs[0]["ok"] is False and "zero IK" in recs[0]["error"] and recs[1]["wide"] is True and recs[1]["ok"]
+        assert all(r["target_pos_mm"] and r["joints_before"] for r in recs)
+
+        robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
+        robot.fail_next = 99  # the planner keeps failing
+        s.command("center")
+        assert wait(lambda: s.mode == "idle" and "3 times in a row" in s.reason), s.reason
     finally:
         s.close()
