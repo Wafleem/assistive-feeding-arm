@@ -280,3 +280,23 @@ def test_tuning_applies_live_and_the_camera_pose_uses_measured_joints(tmp_path):
         s.command("stop")
     finally:
         s.close()
+
+
+def test_feed_button_goes_home_sweeps_to_the_person_bites_and_comes_back_home(tmp_path):
+    from assistive_arm.feeding.face_track import ExtendConfig
+    home = LOOK.copy(); home[0] += 50.0  # the person is 50 deg of pan away from home: out of view
+    arm = KinArm(home)
+    s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.48, up=0.0)), poses_path=tmp_path / "p.json",
+                         settle=0.0, log_dir=tmp_path)
+    s.taught.look, s.taught.home = LOOK.tolist(), home.tolist()
+    s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0, spoon_tip_from_tool=0.21)
+    s.start()
+    try:
+        s.command("feed")
+        assert wait(lambda: s.mode == "extend", 30), s.reason  # swept over and found the face
+        assert wait(lambda: s.track is not None and s.track.actual_travelled() > 0.03, 30), s.reason
+        assert wait(lambda: s.mode == "idle" and "feed done" in s.reason, 60), s.reason
+        assert np.max(np.abs(arm.q - home)) < 3.0  # back home
+        assert any("bite done" in e["msg"] for e in s.log)
+    finally:
+        s.close()
