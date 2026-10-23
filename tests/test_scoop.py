@@ -20,7 +20,7 @@ def bowl_at(r, az_deg=0.0, rim=0.06, depth=0.04, z=0.008):
     return BowlTarget(np.r_[pan_axis_xy() + r * np.array([np.cos(a), np.sin(a)]), z], rim, depth)
 
 
-BOWL = bowl_at(0.36, -25.0)
+BOWL = bowl_at(0.31, -25.0)
 
 
 @pytest.fixture(scope="module")
@@ -106,9 +106,9 @@ def test_the_deepest_reachable_dip_is_used_when_90_deg_is_out_of_reach():
 
 
 @pytest.mark.parametrize("bowl, why", [
-    (bowl_at(0.20), "out of the arm's reach"),  # too close for a 21 cm spoon
-    (bowl_at(0.36, rim=0.025), "too small"),
-    (bowl_at(0.36, depth=0.10), "rim"),  # too deep: the handle can't get under the rim
+    (bowl_at(0.20), "out of the arm's reach"),  # too close for the spoon
+    (bowl_at(0.31, rim=0.025), "too small"),
+    (bowl_at(0.31, depth=0.10), "rim"),  # too deep: the handle can't get under the rim
 ])
 def test_impossible_bowls_are_refused_before_anything_moves(bowl, why):
     p = plan_scoop(LOOK, bowl, ScoopConfig(dip_deg=50.0, min_dip_deg=40.0), LEVEL_PITCH)

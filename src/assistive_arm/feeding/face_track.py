@@ -31,9 +31,13 @@ ROLL = 4
 @dataclass(frozen=True)
 class TrackConfig:
     rate_hz: float = 30.0  # setpoints per second (more = finer steps = smoother on the servos)
-    gain: float = 1.6  # 1/s: errors decay with a ~0.6 s time constant
-    max_vel_deg: tuple = (30.0, 20.0, 20.0, 15.0)  # deg/s: pan, lift, elbow, flex (flex gentle: it swings the camera)
-    max_acc_deg: float = 80.0  # deg/s^2 (smoothness)
+    gain: float = 2.5  # 1/s while extending: errors decay with a ~0.4 s time constant
+    # Centring (not extending) is calmer: the face estimate jitters by a cm or two, and a fast
+    # loop chasing it wiggles the arm. Lower gain + a wider deadband there.
+    center_gain: float = 1.6
+    center_deadband_m: float = 0.013
+    max_vel_deg: tuple = (120.0, 80.0, 80.0, 60.0)  # deg/s: pan, lift, elbow, flex (4x the first tuning)
+    max_acc_deg: float = 320.0  # deg/s^2 (smoothness)
     deadband_m: float = 0.010  # miss below this: no correction (above the face estimate's ~1 cm jitter: no hunting)
     taper_m: float = 0.02  # correction ramps in over this much more miss (soft deadband)
     pitch_scale: float = 0.5  # m per rad: weight of spoon level vs. aim (level wins)
@@ -42,36 +46,51 @@ class TrackConfig:
     reach_weight: float = 0.3  # centring: holding the reach is a soft preference (aim and level first)
     reach_weight_extend: float = 1.0  # extend/retreat: the reach IS the commanded motion
     spoon_dz: float = 0.0  # m: spoon line above the tool axis. TODO: measure
-    limit_margin_deg: float = 3.0  # stay this far inside the joint limits
+    # Where the spoon line really is, in the TOOL frame (x, y; m): measured by teaching the close
+    # pose (the lips' offset from the tool axis there). Replaces the spoon_dz guess when taught.
+    aim_offset_m: tuple = (0.0, 0.0)
+    limit_margin_deg: float = 1.0  # stay this far inside the module's joint limits
     # Where a LEVEL spoon can comfortably go (SO-101 FK: a level spoon tops out at ~0.37 m above
     # the arm base, and only in folded postures). Lips above z_cap: the spoon stays level at the
     # cap and the dashboard reports how far above reach they are.
-    z_cap: float = 0.34  # m, base frame (raised from 0.32 on request: ~2 cm under the level-spoon maximum)
+    z_cap: float = 0.36  # m, base frame: just under the highest a LEVEL spoon can physically go (~0.37 m)
     # Lips above z_cap: the spoon may tip UP (food slides back toward the handle, no spill),
     # never down, by at most this much to reach higher lips and keep them in view.
     max_tip_up_deg: float = 12.0
-    z_floor: float = 0.04  # m
+    z_floor: float = 0.02  # m
     # Comfortable posture (deg): pan, lift, elbow, flex (roll is held). Keeps the arm out of the
     # stretched/folded extremes the unconstrained solution drifts toward.
-    posture_lo: tuple = (-100.0, -97.0, -60.0, -60.0)
-    posture_hi: tuple = (100.0, 10.0, 93.0, 80.0)
+    # Relaxed on request to the module's own joint limits (no extra software caps).
+    posture_lo: tuple = (-110.0, -100.0, -97.0, -95.0)
+    posture_hi: tuple = (110.0, 100.0, 97.0, 95.0)
 
 
 @dataclass(frozen=True)
 class ExtendConfig:
     """Moving the spoon in toward the lips with the tracker (every number: safety lead review)."""
 
-    approach_speed: float = 0.015  # m/s the reach target moves in
-    retreat_speed: float = 0.025  # m/s back out (gentle: a fast back-out after a slow approach looked jumpy)
+    approach_speed: float = 0.12  # m/s the reach target moves in (far from the face)
+    near_m: float = 0.08  # ... within this of the stop, at most near_speed
+    near_speed: float = 0.04  # m/s
+    retreat_speed: float = 0.12  # m/s back out
+    reach_accel: float = 0.25  # m/s^2: the reach speed ramps (no jerk when it starts, pauses or turns back)
     stop_tip_distance: float = 0.20  # m spoon tip to lips: stop here. FIRST RUNS: 0.20
     min_tip_distance_floor: float = 0.03  # hard floor (person mode, AGENTS.md section 4)
-    spoon_tip_from_tool: float = 0.21  # m from the tool frame to the spoon tip. TODO: measure
-    aim_ok_cm: float = 1.5  # only move in while the lips are this close to the spoon line
+    # m from the tool frame to the spoon tip: the Viam config's "spoon" obstacle (orin-dev-kit) is a
+    # 143 mm box centred 61.5 mm out along the gripper frame -> tip at 61.5 + 71.5 = 133 mm.
+    spoon_tip_from_tool: float = 0.133
+    aim_ok_cm: float = 2.0  # full approach speed while the lips are this close to the spoon line
+    aim_pause_cm: float = 3.5  # ... slowing to a pause at this miss (the tracker keeps aiming throughout)
     level_ok_deg: float = 2.0  # ... and the spoon is this level
     max_head_speed: float = 0.05  # m/s: faster => pause
     retreat_head_speed: float = 0.12  # m/s: faster => back out
-    max_face_age: float = 0.4  # s without a face fix => back out
-    hold_s: float = 8.0  # s at the stop distance, then back out
+    max_face_age: float = 0.4  # s without a face fix => hold still (close in, the face often drops out briefly)
+    lost_backout_s: float = float("inf")  # s without a face fix => back out (inf: hold until Retreat/STOP)
+    hold_s: float = 10.0  # s at the stop (the person eats), then back out and keep tracking
+    # With a taught close pose (its aim line), Extend measures along the spoon: close_fwd = where
+    # the spoon tip is (spoon_tip_from_tool), close_margin = the gap to leave, spoon tip to lips.
+    close_fwd: float | None = None
+    close_margin: float = 0.03  # m spoon tip to lips at the stop (never below the 3 cm floor)
 
     def __post_init__(self):
         if self.stop_tip_distance < self.min_tip_distance_floor:
@@ -81,23 +100,42 @@ class ExtendConfig:
 
 def extend_decision(c: ExtendConfig, face_seen: bool, age: float, head_speed: float, miss_cm: float,
                     tilt_deg: float, tip: float, travelled: float, held_s: float) -> tuple[int, str]:
-    """+1 move in, 0 hold, -1 back out; with a reason for the dashboard."""
+    """+1 move in, 0 hold, -1 back out; with a reason for the dashboard.
+
+    ``tip``: with a taught close pose, the distance still to go to it (see ``remaining``);
+    otherwise the estimated spoon-tip-to-lips distance."""
+    if c.close_fwd is not None:
+        return _decide(c, face_seen, age, head_speed, miss_cm, tilt_deg, tip, travelled, held_s,
+                       max(c.close_margin, c.min_tip_distance_floor), "the stop", "spoon tip to lips")
+    return _decide(c, face_seen, age, head_speed, miss_cm, tilt_deg, tip, travelled, held_s,
+                   c.stop_tip_distance, "the stop distance", "from the lips")
+
+
+def approach_scale(c: ExtendConfig, miss_cm: float) -> float:
+    """Approach speed factor: 1 when well aimed, tapering to 0 at ``aim_pause_cm`` (no stop-go)."""
+    return float(np.clip((c.aim_pause_cm - miss_cm) / max(c.aim_pause_cm - c.aim_ok_cm, 1e-6), 0.0, 1.0))
+
+
+def _decide(c, face_seen, age, head_speed, miss_cm, tilt_deg, tip, travelled, held_s, stop, at, unit):
     out = -1 if travelled > 1e-4 else 0
     if not face_seen or age > c.max_face_age:
-        return out, "face lost: backing out" if out else "face lost: waiting"
+        if out and age > c.lost_backout_s:
+            return out, f"face lost {age:.1f} s: backing out"
+        return 0, f"face lost {min(age, 99):.1f} s: holding still" if out else "face lost: waiting"
     if head_speed > c.retreat_head_speed:
         return out, f"head moving fast ({head_speed:.2f} m/s): backing out"
-    if tip < c.stop_tip_distance - 0.02:
-        return -1, f"spoon tip {tip * 100:.0f} cm from the lips: too close, backing out"
-    if tip <= c.stop_tip_distance + 0.005:
+    if tip < stop - 0.02:
+        return -1, f"{-(tip - stop) * 100:.0f} cm past {at}: too close, backing out"
+    if tip <= stop + 0.005:
         if held_s < c.hold_s:
-            return 0, f"at the stop distance ({tip * 100:.0f} cm), holding {held_s:.0f}/{c.hold_s:.0f} s"
+            left = "" if c.hold_s == float("inf") else f" {held_s:.0f}/{c.hold_s:.0f} s"
+            return 0, f"at {at} ({tip * 100:.0f} cm), holding{left} (Retreat or STOP backs out)"
         return -1, "hold time over: backing out"
-    if miss_cm > c.aim_ok_cm or abs(tilt_deg) > c.level_ok_deg:
+    if miss_cm > c.aim_pause_cm or abs(tilt_deg) > c.level_ok_deg:
         return 0, f"re-centring before moving in (miss {miss_cm:.1f} cm, tilt {tilt_deg:+.1f} deg)"
     if head_speed > c.max_head_speed:
         return 0, f"waiting for a still head ({head_speed:.2f} m/s)"
-    return 1, f"moving in: spoon tip {tip * 100:.0f} cm -> stop at {c.stop_tip_distance * 100:.0f} cm"
+    return 1, f"moving in: {tip * 100:.0f} cm {unit} -> stop at {stop * 100:.0f} cm"
 
 
 def _unit(v) -> np.ndarray:
@@ -115,6 +153,8 @@ class LevelTracker:
         self.q = None
         self.v = np.zeros(5)
         self.reach0 = None
+        self.reach_v = 0.0  # m/s: how fast the reach target is moving (ramped)
+        self.extending = False
         self.reach_w = self.cfg.reach_weight
         self.last = {}
 
@@ -124,6 +164,7 @@ class LevelTracker:
         p = self.fk(self.q)[:3, 3]
         self.reach0 = float(np.linalg.norm(p[:2]))  # the reach target (extend moves it)
         self.reach_start = self.reach0
+        self.reach_v = 0.0
         # Comfort limits, but never a jump: a start outside them only stops motion further out.
         lo = np.maximum(self._lim_lo, np.r_[self.cfg.posture_lo, -1e9])
         hi = np.minimum(self._lim_hi, np.r_[self.cfg.posture_hi, 1e9])
@@ -148,7 +189,7 @@ class LevelTracker:
         """[lateral miss, vertical miss, scaled pitch error, reach error] at joints q.
         ``face`` None: no aim terms (used to back out level when the face is lost)."""
         T = self.fk(q)
-        p, d = T[:3, 3] + np.array([0.0, 0.0, self.cfg.spoon_dz]), T[:3, 2]
+        p, d = self._line_origin(T), T[:3, 2]
         if face is None:
             pitch = np.arcsin(np.clip(d[2], -1, 1)) - np.radians(self.cfg.pitch_target_deg)
             reach = np.linalg.norm(T[:3, 3][:2]) - self.reach0
@@ -164,13 +205,28 @@ class LevelTracker:
         reach = np.linalg.norm(T[:3, 3][:2]) - self.reach0
         return np.array([np.dot(v_perp, h), np.dot(v_perp, u), self.cfg.pitch_scale * pitch, self.reach_w * reach])
 
+    def _line_origin(self, T) -> np.ndarray:
+        """A point on the spoon line: the tool origin, moved by the taught aim offset (tool frame)."""
+        ox, oy = self.cfg.aim_offset_m
+        return T[:3, 3] + T[:3, :3] @ np.array([ox, oy, 0.0]) + np.array([0.0, 0.0, self.cfg.spoon_dz])
+
+    def ahead(self, face, q=None) -> float:
+        """How far the lips are ahead of the tool along the spoon (m), at the setpoint or ``q``."""
+        T = self.fk(self.q if q is None else q)
+        return float(np.dot(np.asarray(face, float) - self._line_origin(T), T[:3, 2]))
+
+    def remaining(self, face, c: "ExtendConfig") -> float:
+        """Distance still to go along the spoon to the taught close pose (m; < 0 = past it)."""
+        return self.ahead(face) - c.close_fwd
+
     def _soft(self, e: np.ndarray) -> np.ndarray:
         """Soft deadband on the aim part (lateral, vertical): 0 inside, ramps to full outside."""
         c = self.cfg
+        db = c.deadband_m if self.extending else max(c.deadband_m, c.center_deadband_m)
         miss = float(np.linalg.norm(e[:2]))
-        w = np.clip((miss - c.deadband_m) / c.taper_m, 0.0, 1.0)
+        w = np.clip((miss - db) / c.taper_m, 0.0, 1.0)
         out = e.copy()
-        out[:2] *= w * (miss - c.deadband_m) / miss if miss > c.deadband_m else 0.0
+        out[:2] *= w * (miss - db) / miss if miss > db else 0.0
         return out
 
     @property
@@ -184,17 +240,38 @@ class LevelTracker:
 
     def set_extending(self, on: bool) -> None:
         self.reach_w = self.cfg.reach_weight_extend if on else self.cfg.reach_weight
+        self.extending = bool(on)
+        # Reaching out IS the motion when extending: the shoulder may use its full range (the
+        # comfort cap on it only stops centring from drifting into a stretched posture).
+        # Same for elbow and wrist flex: the comfort caps stopped the spoon rising to the lips.
+        if on:
+            self.lo[1:4], self.hi[1:4] = self._lim_lo[1:4], self._lim_hi[1:4]
+        elif self.q is not None:
+            lo = np.maximum(self._lim_lo[1:4], np.asarray(self.cfg.posture_lo[1:4], float))
+            hi = np.minimum(self._lim_hi[1:4], np.asarray(self.cfg.posture_hi[1:4], float))
+            self.lo[1:4], self.hi[1:4] = np.minimum(lo, self.q[1:4]), np.maximum(hi, self.q[1:4])
 
     def actual_travelled(self) -> float:
         """How far the setpoint really is from where tracking started (m), not the target."""
         return float(np.linalg.norm(self.fk(self.q)[:3, 3][:2])) - self.reach_start
 
-    def advance(self, direction: int, dt: float, c: ExtendConfig) -> None:
-        """Move the reach target in (+1) or back toward where tracking started (-1)."""
-        if direction > 0:
-            self.reach0 += c.approach_speed * dt
-        elif direction < 0:
-            self.reach0 = max(self.reach_start, self.reach0 - c.retreat_speed * dt)
+    def advance(self, direction: int, dt: float, c: ExtendConfig, scale: float = 1.0,
+                room: float = float("inf")) -> None:
+        """Move the reach target in (+1, at ``scale`` x the approach speed) or back toward where
+        tracking started (-1)."""
+        v_des = c.approach_speed * scale if direction > 0 else (-c.retreat_speed if direction < 0 else 0.0)
+        if v_des > 0:  # brake in time: arrive at the stop (``room`` m away) at zero speed, never past it
+            if self.q is not None:  # ``room`` is measured at the arm; the target already leads it
+                room -= max(0.0, self.reach0 - float(np.linalg.norm(self.fk(self.q)[:3, 3][:2])))
+            v_des = min(v_des, float(np.sqrt(2 * c.reach_accel * max(room, 0.0))))
+            if room < c.near_m:
+                v_des = min(v_des, c.near_speed)  # slow for the last few cm near the face
+        if room <= 0 and self.reach_v > 0:
+            self.reach_v = 0.0  # at/past the stop: no coasting in
+        self.reach_v += float(np.clip(v_des - self.reach_v, -c.reach_accel * dt, c.reach_accel * dt))
+        self.reach0 += self.reach_v * dt
+        if self.reach0 < self.reach_start:  # back where it began: stop there
+            self.reach0, self.reach_v = self.reach_start, 0.0
 
     def step(self, face, dt: float | None = None, blind: bool = False) -> np.ndarray:
         """Next joint setpoint (deg). ``face`` = lips in the base frame (m), or None if lost
@@ -211,7 +288,18 @@ class LevelTracker:
                 dq[i] = 0.05
                 J[:, i] = (self.task_error(self.q + dq, face) - e) / 0.05
             es = self._soft(e)
-            rate = -c.gain * J.T @ np.linalg.solve(J @ J.T + c.damping**2 * np.eye(4), es)
+            gain = c.gain if self.extending else min(c.gain, c.center_gain)
+            rate = -gain * J.T @ np.linalg.solve(J @ J.T + c.damping**2 * np.eye(4), es)
+            # A joint pinned at a limit can't help: drop it and let the others do the work
+            # (otherwise its share of the motion is clipped away and the arm only crawls).
+            for _ in range(2):
+                blocked = [(self.q[i] <= self.lo[i] + 0.05 and rate[i] < 0) or (self.q[i] >= self.hi[i] - 0.05 and rate[i] > 0)
+                           for i in range(4)]
+                if not any(blocked):
+                    break
+                Jb = J.copy()
+                Jb[:, [i for i in range(4) if blocked[i]]] = 0.0
+                rate = -gain * Jb.T @ np.linalg.solve(Jb @ Jb.T + c.damping**2 * np.eye(4), es)
             v_des[:4] = np.clip(rate, -np.asarray(c.max_vel_deg), np.asarray(c.max_vel_deg))
             if face is None:
                 face = self.fk(self.q)[:3, 3]  # for the report only
@@ -237,7 +325,7 @@ def solve_level_pose(q_deg, reach_m: float, height_m: float, level_pitch_deg: fl
     pan and wrist roll unchanged. Returns (joints, reached within 5 mm / 1 deg)."""
     q = np.asarray(q_deg, float).copy()
     lim = joint_limits() if limits is None else np.asarray(limits, float)
-    lo, hi = lim[:, 0] + 3, lim[:, 1] - 3
+    lo, hi = lim[:, 0] + 1, lim[:, 1] - 1
     if posture is not None:
         lo[1:4] = np.maximum(lo[1:4], posture[0]); hi[1:4] = np.minimum(hi[1:4], posture[1])
     target = np.array([reach_m, height_m, np.radians(level_pitch_deg)])
@@ -261,16 +349,19 @@ def solve_level_pose(q_deg, reach_m: float, height_m: float, level_pitch_deg: fl
 
 
 def max_level_reach(q_deg, level_pitch_deg: float = 0.0, cfg: "TrackConfig | None" = None, fk=so101_fk,
-                    extra_m: float = 0.45) -> float:
+                    extra_m: float = 0.45, extending: bool = True) -> float:
     """Largest tool reach (m from the base axis) at the current height with a level spoon, inside
     the tracker's comfort posture. Binary search on ``solve_level_pose``."""
     c = cfg or TrackConfig()
     T = fk(q_deg)
     r0, z0 = float(np.linalg.norm(T[:3, 3][:2])), float(T[2, 3])
-    posture = (np.asarray(c.posture_lo[1:]), np.asarray(c.posture_hi[1:]))
+    qd = np.asarray(q_deg, float)[1:4]  # a start outside the comfort posture still counts (as in reset)
+    lo, hi = np.asarray(c.posture_lo[1:], float).copy(), np.asarray(c.posture_hi[1:], float).copy()
+    if extending:  # full joint range while extending (see LevelTracker.set_extending)
+        lim = joint_limits()[1:4]
+        lo, hi = lim[:, 0] + c.limit_margin_deg, lim[:, 1] - c.limit_margin_deg
+    posture = (np.minimum(lo, qd), np.maximum(hi, qd))
     lo, hi, q = r0, r0 + extra_m, np.asarray(q_deg, float)
-    if not solve_level_pose(q, r0, z0, level_pitch_deg, fk, posture=posture)[1]:
-        return r0
     for _ in range(14):
         mid = 0.5 * (lo + hi)
         qm, ok = solve_level_pose(q, mid, z0, level_pitch_deg, fk, posture=posture)
@@ -289,7 +380,7 @@ def jog_level(q_deg, d_yaw_deg: float = 0.0, d_z_m: float = 0.0, level_pitch_deg
     Returns (joints, report); report["ok"] is False if the target is outside the arm's reach."""
     q = np.asarray(q_deg, float).copy()
     lim = joint_limits() if limits is None else np.asarray(limits, float)
-    q[0] = float(np.clip(q[0] + d_yaw_deg, lim[0, 0] + 3, lim[0, 1] - 3))
+    q[0] = float(np.clip(q[0] + d_yaw_deg, lim[0, 0] + 1, lim[0, 1] - 1))
     T0 = fk(q)
     if d_z_m == 0.0:  # yaw only: a pure base rotation; nothing else moves
         return q, {"ok": True, "height_cm": round(float(T0[2, 3]) * 100, 1),
@@ -312,7 +403,7 @@ def jog_level(q_deg, d_yaw_deg: float = 0.0, d_z_m: float = 0.0, level_pitch_deg
             dq = np.zeros(5); dq[j] = 0.05
             J[:, i] = (task(q + dq) - task(q)) * w / 0.05
         step = J.T @ np.linalg.solve(J @ J.T + 1e-6 * np.eye(3), e)
-        q[1:4] = np.clip(q[1:4] + np.clip(step, -5, 5), lim[1:4, 0] + 3, lim[1:4, 1] - 3)
+        q[1:4] = np.clip(q[1:4] + np.clip(step, -5, 5), lim[1:4, 0] + 1, lim[1:4, 1] - 1)
     got = task(q)
     err = (target - got) * np.array([100, 100, np.degrees(1)])
     ok = abs(err[0]) < 0.5 and abs(err[1]) < 0.5 and abs(err[2]) < 1.0

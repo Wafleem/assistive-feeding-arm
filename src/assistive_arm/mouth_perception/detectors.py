@@ -161,7 +161,8 @@ class MediaPipeMouthDetector:
             confidence=float(np.clip((m.frontalness - self.min_frontalness) / (1 - self.min_frontalness), 0, 1)) ** 0.5,
             source="mediapipe",
             extras={"mar": m.mar, "distance": m.distance, "distance_source": m.distance_source,
-                    "frontalness": m.frontalness, "camera": self.camera},
+                    "frontalness": m.frontalness, "camera": self.camera,
+                    "ray_origin": np.asarray(cam.position, float)},
         )
 
 

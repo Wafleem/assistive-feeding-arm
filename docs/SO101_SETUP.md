@@ -229,7 +229,7 @@ own preview page (tunnelled to `localhost:8766` by `dashboard/run_mac.sh`).
 
 ## Scoop from a bowl (2026-10-23)
 Dashboard → **Scoop**: teach the bowl once, then **Plan scoop** (dry run) and **Scoop and come back**.
-1. Put the bowl **34-38 cm from the arm's pan axis** (about 38-42 cm in front of the base's
+1. Put the bowl **28-34 cm from the arm's pan axis** (about 32-38 cm in front of the base's
    origin), any direction the arm can turn to. Weigh it down or tape it: the spoon slides along its bottom.
 2. **Hand-guide on**, put the spoon tip on the bowl's inside bottom centre, enter the rim radius
    and depth, **Teach bowl**, **Hand-guide off** (saved in `poses/so101_face.json`).
@@ -240,7 +240,7 @@ Dashboard → **Scoop**: teach the bowl once, then **Plan scoop** (dry run) and 
    Streamed at 30 Hz like the tracker; STOP works at any time, and it stops itself if the arm
    falls more than 10° behind.
 
-Why not a 90° rotation: with the spoon tip ~21 cm out of the gripper, the SO-101 can tip it only
-~45-50° near the table while keeping its elbow bent one way. The planner tries 90° first and
+Why not a 90° rotation: with the spoon tip 13.3 cm out of the gripper, the SO-101 can tip it only
+~45-65° near the table while keeping its elbow bent one way. The planner tries 90° first and
 uses the deepest dip that fits. Details and checks: `src/assistive_arm/grasping/README.md`.
 

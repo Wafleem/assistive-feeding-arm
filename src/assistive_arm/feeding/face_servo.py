@@ -49,7 +49,7 @@ class FaceServoConfig:
     max_head_speed: float = 0.05  # m/s: faster => no approach; above retreat_head_speed => retreat
     retreat_head_speed: float = 0.12
     max_age: float = 0.4  # s since the last face fix; older during approach => retreat
-    joint_speed_degs: float = 20.0  # arm speed cap while servoing (module floor is 12)
+    joint_speed_degs: float = 80.0  # arm speed cap for planned moves (module floor is 12)
 
     def __post_init__(self):
         if self.stop_tip_distance < self.min_tip_distance_floor:
@@ -197,7 +197,7 @@ class PointingConfig:
     position_leeway_mm: float = 8.0  # planner leeway on the tool position while re-aiming
     orientation_leeway: float = 0.03  # planner leeway on each orientation-vector component (~2 deg)
     max_joint_jump_deg: float = 25.0  # a single planned step moving any joint more than this => stop
-    joint_speed_degs: float = 20.0
+    joint_speed_degs: float = 80.0
     # Level spoon (don't spill): aim by base pan + raising/lowering the gripper, never by tilting.
     level_spoon: bool = True
     level_tol_deg: float = 2.0  # spoon pitch within this of horizontal = level

@@ -33,7 +33,9 @@ import numpy as np
 class KalmanParams:
     sigma_accel: float = 0.3  # m/s^2, white-noise acceleration (process noise). TODO: fit from data
     sigma_meas: float = 0.004  # m, measurement noise per axis. TODO: measure on the RealSense
-    gate_chi2: float = 16.27  # 3-dof chi-square at p=0.001
+    gate_chi2: float = 16.27  # 3-dof chi-square at p=0.001: beyond this, down-weight (not reject)
+    hard_gate_chi2: float = 400.0  # beyond this (~20 sigma), reject outright
+    max_extrapolate_s: float = 0.25  # predict_ahead uses the velocity for at most this long
     init_pos_var: float = 0.01**2
     init_vel_var: float = 0.2**2
 
@@ -77,9 +79,12 @@ class ConstantVelocityKF:
         self.P = F @ self.P @ F.T + Q
         self.t = float(t)
 
-    def update(self, z, t: float) -> bool:
-        """Predict to t, then fuse measurement z. Return False if gated out or out of order."""
+    def update(self, z, t: float, R: np.ndarray | None = None) -> bool:
+        """Predict to t, then fuse measurement z (covariance R, default sigma_meas^2 I).
+        Mildly surprising measurements are down-weighted (Huber), wild ones rejected.
+        Return False if rejected or out of order."""
         z = np.asarray(z, float).reshape(3)
+        R = self.p.sigma_meas**2 * np.eye(3) if R is None else np.asarray(R, float)
         if self.x is None:
             self.reset(z, t)
             return True
@@ -88,19 +93,24 @@ class ConstantVelocityKF:
         self.predict(t)
         H = np.hstack([np.eye(3), np.zeros((3, 3))])
         y = z - H @ self.x
-        S = H @ self.P @ H.T + self.p.sigma_meas**2 * np.eye(3)
-        S_inv = np.linalg.inv(S)
-        if float(y @ S_inv @ y) > self.p.gate_chi2:
+        S = H @ self.P @ H.T + R
+        d2 = float(y @ np.linalg.solve(S, y))
+        if d2 > self.p.hard_gate_chi2:
             self.rejected += 1
             return False
+        if d2 > self.p.gate_chi2:  # Huber: trust it less the more it surprises us
+            R = R * (d2 / self.p.gate_chi2)
+            S = H @ self.P @ H.T + R
+        S_inv = np.linalg.inv(S)
         K = self.P @ H.T @ S_inv
         self.x = self.x + K @ y
         I_KH = np.eye(6) - K @ H
-        self.P = I_KH @ self.P @ I_KH.T + K @ (self.p.sigma_meas**2 * np.eye(3)) @ K.T  # Joseph form
+        self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T  # Joseph form
         return True
 
     def predict_ahead(self, dt: float) -> tuple[np.ndarray, np.ndarray]:
         """(position, velocity) dt seconds after the filter time, without changing the filter."""
         if self.x is None:
             raise RuntimeError("filter not initialised")
-        return self.x[:3] + dt * self.x[3:], self.x[3:].copy()
+        dt_v = float(np.clip(dt, -self.p.max_extrapolate_s, self.p.max_extrapolate_s))  # no drifting off when stale
+        return self.x[:3] + dt_v * self.x[3:], self.x[3:].copy()
