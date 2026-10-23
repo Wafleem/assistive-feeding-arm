@@ -2,8 +2,6 @@
 
 import numpy as np
 
-from conftest import todo
-
 from assistive_arm.mouth_perception import (
     ConstantVelocityKF, HeadMotionMonitor, MouthObservation, MouthState, MouthTracker, ReadyGate, TrackerParams,
 )
@@ -15,7 +13,6 @@ def obs(t, p, open_ratio=1.0, conf=1.0, n=N):
     return MouthObservation(t, np.asarray(p, float), np.asarray(n, float), open_ratio, conf)
 
 
-@todo
 def test_kf_tracks_constant_velocity():
     rng = np.random.default_rng(0)
     kf = ConstantVelocityKF()
@@ -28,7 +25,6 @@ def test_kf_tracks_constant_velocity():
     assert np.allclose(pred, kf.x[:3] + 0.2 * kf.x[3:]) and np.allclose(vel, kf.x[3:])
 
 
-@todo
 def test_kf_gates_outliers():
     kf = ConstantVelocityKF()
     for k in range(30):
@@ -37,7 +33,6 @@ def test_kf_gates_outliers():
     assert kf.rejected == 1 and abs(kf.x[2] - 0.3) < 0.01
 
 
-@todo
 def test_latency_compensation_reduces_lag_error():
     v = np.array([0.0, 0.03, 0.0])  # slow lean toward the spoon
     tr = MouthTracker(TrackerParams(latency=0.15))
@@ -50,7 +45,6 @@ def test_latency_compensation_reduces_lag_error():
     assert np.linalg.norm(comp - truth_at_actuation) < 0.3 * np.linalg.norm(raw - truth_at_actuation)
 
 
-@todo
 def test_open_state_has_hysteresis():
     tr = MouthTracker()
     tr.update(obs(0.0, [0.3, 0.3, 0.3], open_ratio=0.5))
@@ -66,7 +60,6 @@ def state(t=0.0, p=(0.3, 0.3, 0.3), v=(0, 0, 0), n=N, open_=True, conf=1.0, age=
                       open_, conf, age)
 
 
-@todo
 def test_ready_gate_needs_open_and_still_for_the_hold_time():
     g = ReadyGate()
     assert not g.update(state(open_=False), 0.0)
@@ -77,7 +70,6 @@ def test_ready_gate_needs_open_and_still_for_the_hold_time():
     assert not g.update(state(age=1.0), 2.0) and g.reason == "tracking stale"
 
 
-@todo
 def test_head_motion_monitor_triggers_retreat():
     m = HeadMotionMonitor()
     m.start(state())

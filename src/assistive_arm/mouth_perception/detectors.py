@@ -2,12 +2,12 @@
 
 | Backend | Status | Use |
 |---|---|---|
-| ``FiducialMouthDetector`` | TODO | **the demo path**: ArUco tag on the printed face + the CAD tag->opening offset |
-| ``CameraSegMouthDetector`` | TODO | the vision path (mask + depth + face plane), testable on sim renders |
+| ``MediaPipeMouthDetector`` | implemented | **the main path: a real person's face** (Face Landmarker, webcam or RGB-D) |
 | ``SimOracleMouthDetector`` | TODO | sim ground truth (+ optional noise/dropouts/delay) |
-| ``MediaPipeMouthDetector`` | TODO, later | real faces: MediaPipe Face Landmarker (not needed for the printed mouth) |
+| ``CameraSegMouthDetector`` | TODO | the vision path (mask + depth + face plane), testable on sim renders |
+| ``FiducialMouthDetector`` | TODO, optional | ArUco tag on a printed face prop (rehearsal without a person) |
 
-The printed mouth is always open: detectors for it report ``open_ratio = 1.0``.
+A printed mouth is always open: detectors for it report ``open_ratio = 1.0``.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..vision.locate import Locator
+from .face_geometry import FaceGeometryParams, FaceMeasurement, measure_face
 from .types import MouthObservation
 
 
@@ -66,26 +67,102 @@ class CameraSegMouthDetector:
 
 
 class MediaPipeMouthDetector:
-    """Real faces with MediaPipe Face Landmarker (30+ fps on the AGX Orin). LATER: not
-    needed for the printed mouth, but it is the "works on a person" story.
+    """Real faces: MediaPipe Face Landmarker (30+ fps on the AGX Orin, ~15 ms on a laptop CPU).
 
-    TODO(mouth_perception):
-      1. ``mediapipe.tasks.vision.FaceLandmarker`` on the RGB frame (VIDEO mode, 1 face).
-      2. Lips centre = mean of inner-lip landmarks (13 upper, 14 lower); corners 78 / 308.
-      3. open_ratio = |13-14| / |78-308| (mouth aspect ratio), normalised per person
-         with a 3-second calibration ("open wide", "close").
-      4. 3D: deproject the lip pixels with aligned depth (median over a small patch);
-         face normal = plane fit to forehead/cheek/chin landmarks (e.g. 10, 234, 454, 152),
-         oriented toward the camera.
-      5. Confidence from the landmarker's face presence score and depth validity.
-      6. Publish as a Viam vision service on the AGX Orin (see docs/COMPUTE.md).
+    observe(robot):
+      1. RGB frame from ``camera`` (``robot.get_frames``); depth is used when the camera has it.
+      2. Face Landmarker in VIDEO mode, one face (the closest/largest when several).
+      3. ``face_geometry.measure_face``: lips centre, face normal (plane through forehead,
+         nose bridge, cheeks, chin), mouth opening. Range from depth, else from the eye span.
+      4. ``open_ratio``: the ``jawOpen`` blendshape when available (robust to lip shape),
+         else the normalised mouth aspect ratio.
+      5. Camera frame -> base frame with ``robot.camera_pose(camera)``.
+      6. Confidence: 1.0 facing the camera, falling toward 0 as the head turns side-on
+         (landmarks get unreliable there; the tracker ignores < 0.5).
+
+    The model file (``face_landmarker.task``, ~4 MB) is not in git: download
+    ``MODEL_URL`` into ``data/models/`` (``scripts/fetch_models.sh``).
+    Pass ``landmarker`` to inject a fake in tests.
+    TODO(mouth_perception): per-person calibration (eye span at a measured distance;
+    "close" / "open wide" for the MAR range); run as a Viam vision service on the Orin.
     """
 
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("MediaPipeMouthDetector: see TODO in mouth_perception/detectors.py")
+    MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+                 "face_landmarker/float16/1/face_landmarker.task")
 
-    def observe(self, robot) -> MouthObservation | None:  # pragma: no cover
-        raise NotImplementedError
+    def __init__(self, camera: str = "webcam-2", model_path: str = "data/models/face_landmarker.task",
+                 params: FaceGeometryParams | None = None, landmarker=None, use_blendshapes: bool = True,
+                 min_frontalness: float = 0.3):
+        self.camera, self.params, self.use_blendshapes = camera, params or FaceGeometryParams(), use_blendshapes
+        self.min_frontalness = min_frontalness
+        self.last: FaceMeasurement | None = None
+        self.last_landmarks: np.ndarray | None = None  # (478, 3) normalised, for overlays
+        self._last_ms = -1
+        self._landmarker = landmarker or self._make_landmarker(model_path)
+
+    def _make_landmarker(self, model_path: str):
+        import mediapipe as mp  # optional dependency: pip install -e ".[face]"
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        opts = vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=2,
+            output_face_blendshapes=self.use_blendshapes,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        self._mp = mp
+        return vision.FaceLandmarker.create_from_options(opts)
+
+    def landmarks(self, rgb: np.ndarray, t: float):
+        """(landmarks (N, 3) normalised, blendshapes dict) of the largest face, or None."""
+        ms = max(int(t * 1000), self._last_ms + 1)  # VIDEO mode needs increasing timestamps
+        self._last_ms = ms
+        if hasattr(self, "_mp"):
+            image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+            res = self._landmarker.detect_for_video(image, ms)
+        else:
+            res = self._landmarker.detect_for_video(rgb, ms)
+        faces = getattr(res, "face_landmarks", None) or []
+        if not faces:
+            return None
+        arrs = [np.array([[l.x, l.y, l.z] for l in f]) if not isinstance(f, np.ndarray) else f for f in faces]
+        i = int(np.argmax([np.ptp(a[:, 0]) * np.ptp(a[:, 1]) for a in arrs]))  # largest = closest
+        shapes = {}
+        bs = getattr(res, "face_blendshapes", None) or []
+        if i < len(bs):
+            shapes = {c.category_name: float(c.score) for c in bs[i]}
+        return arrs[i], shapes
+
+    def observe(self, robot) -> MouthObservation | None:
+        frame = robot.get_frames([self.camera]).get(self.camera)
+        if frame is None:
+            return None
+        t = frame.timestamp or robot.now()
+        found = self.landmarks(frame.rgb, t)
+        if found is None:
+            self.last, self.last_landmarks = None, None
+            return None
+        lm, shapes = found
+        self.last_landmarks = lm
+        m = measure_face(lm, frame.intrinsics, frame.depth, self.params)
+        self.last = m
+        if m.frontalness < self.min_frontalness:
+            return None
+        open_ratio = shapes.get("jawOpen", m.open_ratio) if self.use_blendshapes else m.open_ratio
+        cam = robot.camera_pose(self.camera)
+        return MouthObservation(
+            t=t,
+            position=cam.transform_point(m.position),
+            normal=cam.transform_vector(m.normal),
+            open_ratio=float(open_ratio),
+            confidence=float(np.clip((m.frontalness - self.min_frontalness) / (1 - self.min_frontalness), 0, 1)) ** 0.5,
+            source="mediapipe",
+            extras={"mar": m.mar, "distance": m.distance, "distance_source": m.distance_source,
+                    "frontalness": m.frontalness, "camera": self.camera},
+        )
 
 
 class FiducialMouthDetector:

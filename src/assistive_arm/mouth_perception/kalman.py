@@ -54,16 +54,53 @@ class ConstantVelocityKF:
 
     def reset(self, z: np.ndarray, t: float) -> None:
         """Initialise at position z (zero velocity) at time t."""
-        raise NotImplementedError("TODO(mouth_perception): ConstantVelocityKF.reset")
+        self.x = np.concatenate([np.asarray(z, float).reshape(3), np.zeros(3)])
+        self.P = np.diag([self.p.init_pos_var] * 3 + [self.p.init_vel_var] * 3)
+        self.t = float(t)
+
+    def _F_Q(self, dt: float) -> tuple[np.ndarray, np.ndarray]:
+        F = np.eye(6)
+        F[:3, 3:] = dt * np.eye(3)
+        q = self.p.sigma_accel**2
+        Q = np.zeros((6, 6))
+        Q[:3, :3] = dt**4 / 4 * q * np.eye(3)
+        Q[:3, 3:] = Q[3:, :3] = dt**3 / 2 * q * np.eye(3)
+        Q[3:, 3:] = dt**2 * q * np.eye(3)
+        return F, Q
 
     def predict(self, t: float) -> None:
         """Propagate state and covariance to time t (no-op if t <= self.t)."""
-        raise NotImplementedError("TODO(mouth_perception): ConstantVelocityKF.predict")
+        if self.x is None or self.t is None or t <= self.t:
+            return
+        F, Q = self._F_Q(t - self.t)
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + Q
+        self.t = float(t)
 
     def update(self, z, t: float) -> bool:
         """Predict to t, then fuse measurement z. Return False if gated out or out of order."""
-        raise NotImplementedError("TODO(mouth_perception): ConstantVelocityKF.update")
+        z = np.asarray(z, float).reshape(3)
+        if self.x is None:
+            self.reset(z, t)
+            return True
+        if t < self.t:
+            return False  # out of order: a newer frame was already fused
+        self.predict(t)
+        H = np.hstack([np.eye(3), np.zeros((3, 3))])
+        y = z - H @ self.x
+        S = H @ self.P @ H.T + self.p.sigma_meas**2 * np.eye(3)
+        S_inv = np.linalg.inv(S)
+        if float(y @ S_inv @ y) > self.p.gate_chi2:
+            self.rejected += 1
+            return False
+        K = self.P @ H.T @ S_inv
+        self.x = self.x + K @ y
+        I_KH = np.eye(6) - K @ H
+        self.P = I_KH @ self.P @ I_KH.T + K @ (self.p.sigma_meas**2 * np.eye(3)) @ K.T  # Joseph form
+        return True
 
     def predict_ahead(self, dt: float) -> tuple[np.ndarray, np.ndarray]:
         """(position, velocity) dt seconds after the filter time, without changing the filter."""
-        raise NotImplementedError("TODO(mouth_perception): ConstantVelocityKF.predict_ahead")
+        if self.x is None:
+            raise RuntimeError("filter not initialised")
+        return self.x[:3] + dt * self.x[3:], self.x[3:].copy()
