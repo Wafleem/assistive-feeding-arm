@@ -23,11 +23,22 @@ Calibration files live in the module's data directory on the Pi
 The hardware moved to the Jetson Orin dev kit (machine `orin-dev-kit`, part id
 `af8aae81-2f68-46bb-a2a0-fdc12ed08ad0`). It has the same components, ports (by-id) and
 names; the leader, both calibration sensors and teleop are **disabled** until the leader is
-plugged in. Snapshots: `viam/machines/`. Open issues at the move:
-- **Servo `voltage` errors** on all six follower servos: check the follower's power adapter.
-- **No calibration file on the Orin:** the follower fell back to default calibration (joint
-  angles wrong). Copy `viam/calibration/so101_follower_calibration.json` into the module data
-  dir (see `viam/README.md`) and `reload_calibration`, or re-run calibration on the Orin.
+plugged in. Snapshots: `viam/machines/`.
+
+What happened at the move, and what fixed it:
+- **Servo `voltage` errors** on all six follower servos: the wrong power adapter came along
+  with the move. With the flag set, the servos refuse register reads, so the arm fell back to
+  *default* calibration. Fixed by swapping to the correct adapter (and rebooting the Orin;
+  viam-agent brings viam-server back by itself, and the arms reconnect within a minute or two).
+- **No calibration file on the Orin:** not needed. `save_calibration` also writes the
+  calibration into the servos, and with correct power the arm reads it back from there
+  ("No calibration file loaded, attempting to read from servo registers"). It matched
+  `viam/calibration/so101_follower_calibration.json` exactly. The file is still the more
+  reliable source; see `viam/README.md` to install it.
+- `reload_calibration` resolves a relative `calibration_file` against the module's working
+  directory, not its data folder, so it can't find a relative file that startup loads fine.
+  After installing a file, restart the arm component (toggle `disabled`, or edit its config)
+  instead of using `reload_calibration`.
 - `pi-arm2` still has the arm components configured, with no arms attached.
 
 ## Teleop
