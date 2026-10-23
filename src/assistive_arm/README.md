@@ -13,7 +13,8 @@ assistive_arm/
 ├── feeding/             section 4: delivery modes, face keep-out zone, approach, release, retreat
 ├── language/            section 5: intent schema, rules, provider-agnostic LLM router, dialogue, speech
 ├── orchestration/       section 6: bite-cycle state machine (composes the other sections)
-└── sim/                 section 7: feeding-scene behaviour (head scripts) and metrics
+├── sim/                 section 7: feeding-scene behaviour (head scripts) and metrics
+└── pick_place/          section 9: taught (hard-coded) pick and place on the SO-101 bench arm
 ```
 
 Each folder has its own README (plan, interfaces, TODO checklist, done-when).

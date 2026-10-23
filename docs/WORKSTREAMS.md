@@ -91,6 +91,14 @@ scenarios, "bite in cup", metrics.
 removable catch cup, ArUco recess, stand); share the CAD with sim; buy and measure the foods.
 **Done when:** everything packs per the packing plan and sets up in ≤ 30 minutes.
 
+## 9. Hard-coded pick and place (SO-101 bench rig) — owner: manipulation + integration
+**Owns** `pick_place/`, `robot_iface/viam_so101.py`, `poses/`, `docs/SO101_SETUP.md`.
+**First task:** review the joint-space contract proposal in `pick_place/README.md`; then
+`teach.py` + `scripts/so101_teach.py` to record poses on pi-arm2 with the leader arm.
+**Then:** `run_pick_and_place` on FakeRobot, then on the follower at 20 deg/s.
+**Done when:** 10 consecutive cycles of one object between two fixed spots; the grip check
+catches a deliberately empty grasp every time.
+
 ## Integration points
 
 1. **Week -2:** sections 1, 3, 4, 5 have their first specs passing; 7 has the head scenarios.
