@@ -131,3 +131,24 @@ def test_extend_refuses_without_taught_poses(tmp_path):
         assert robot.moves == 0
     finally:
         s.close()
+
+
+def test_auto_center_needs_only_the_look_pose(tmp_path):
+    robot = FakeSO101()
+    s = FaceServoSession(robot, FakeFace(robot), poses_path=tmp_path / "p.json", settle=0.0)
+    s.start()
+    try:
+        robot.q = LOOK.copy(); s.command("teach_look")
+        robot.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])  # facing away: no face
+        s.command("auto_center")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:  # searches, calibrates, then centres (runs until STOP)
+            f = s.state()["face"]
+            if s.taught.jacobian and f and "error_px" in f and max(map(abs, f["error_px"])) <= s.cfg.center_tol_px:
+                break
+            time.sleep(0.05)
+        s.command("stop")
+        assert s.taught.jacobian is not None and s.taught.near is None
+        assert max(map(abs, s.state()["face"]["error_px"])) <= s.cfg.center_tol_px
+    finally:
+        s.close()
