@@ -14,7 +14,7 @@ run on a Raspberry Pi Viam machine, `pi-arm2`.
 | Leader | `leader-arm` + `leader-gripper`, port `/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00`, `calibration_file: so101_leader_calibration.json`, frame at y = −600 mm |
 | Calibration sensors | `follower-calibration`, `leader-calibration` (same ports and files as their arms) |
 | Teleop | `teleop` (`devrel:so101:teleop`): leader → follower, grippers mirrored, 100 Hz, `auto_start: false` |
-| Other | `arm-camera` (USB webcam, 640×480), `table` obstacle (2 × 2 m, 30 mm thick, top at z = 0), discovery services |
+| Other | `arm-camera` (USB webcam, 640×480), `table` obstacle (2 × 2 m, 30 mm thick, top at z = 0), `spoon` collision box on the gripper (see below), discovery services |
 
 Calibration files live in the module's data directory on the Pi
 (`/root/.viam/module-data/<part-id>/devrel_so101-arm/`), not in this repo.
@@ -125,6 +125,28 @@ Viewing detections:
 - **`scripts/perception_viewer.py`**: the same feed plus the person's face (lips, mouth
   open/closed, distance, readiness) and bowls with ids and 3D positions. Needs
   `VIAM_ADDRESS`, `VIAM_API_KEY`, `VIAM_API_KEY_ID` in `.env` (Viam app → CONNECT → API keys).
+
+## Collision geometry: `table` and `spoon` (motion planner only)
+Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3D SCENE tab.
+
+| Component | Parent | Geometry | Why |
+|---|---|---|---|
+| `table` | `world`, z −15 | box 2000 × 2000 × 30 mm | top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
+| `spoon` | `follower-gripper`, z +61.5 | box x 50 × y 45 × z 143 mm | the spoon sticks out **123 mm** past the jaw tips (measured 2026-10-23); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
+
+- `follower-gripper`'s frame is the module's TCP, the point between the jaw tips, with the arm
+  tool's axes (+Z along the spoon). So the spoon box starts at the tips, and it moves with the
+  arm: the planner treats it as part of the arm and keeps it off the table.
+- The 50 × 45 mm cross-section is a generous guess (bowl orientation and the fixed jaw's offset
+  weren't measured). Check it against the real spoon in the 3D SCENE tab and shrink it if
+  close approaches get refused.
+- If the follower sits on a riser, lower `table` by the riser height.
+- **Only motion-service moves are checked.** Teleop and direct `MoveToJointPositions` ignore
+  these boxes.
+- The planner ignores any contact that already exists when a move starts. That's why the base's
+  collision box (which dips ~15 mm below z = 0) and the spoon/gripper overlap cause no errors,
+  but it also means: if the spoon starts a move touching the table, the table isn't checked for
+  that move.
 
 ## Lessons from the camera debugging (2026-10-23)
 - **A module download blocks every config change.** While the 2.9 GB YOLOv8 package was

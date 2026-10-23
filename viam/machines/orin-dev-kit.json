@@ -1,5 +1,5 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start ON since 2026-10-23: the venue Wi-Fi kept live commands from reaching the Orin; set it back to false when the network is reliable). Calibration sensors disabled. Cameras: webcam-2 = Logitech C270 taped on top of the gripper, centred, lens forward along the spoon (frame on follower-arm, estimated from photos); arm-camera = icSpring wrist module that enumerates but sends no frames (hardware fault). spoon-detector = YOLOv8s COCO on webcam-2 (bowl, cup, spoon, person, ...); detections-view = transform camera that overlays its boxes for viewing in the Viam app. No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start ON since 2026-10-23: the venue Wi-Fi kept live commands from reaching the Orin; set it back to false when the network is reliable). Calibration sensors disabled. Cameras: webcam-2 = Logitech C270 taped on top of the gripper, centred, lens forward along the spoon (frame on follower-arm, estimated from photos); arm-camera = icSpring wrist module that enumerates but sends no frames (hardware fault). spoon-detector = YOLOv8s COCO on webcam-2 (bowl, cup, spoon, person, ...); detections-view = transform camera that overlays its boxes for viewing in the Viam app. spoon = collision box for the spoon taped in the fixed jaw (on follower-gripper, whose frame is the jaw-tip TCP), so the motion planner keeps it off the table. No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
@@ -86,6 +86,39 @@
           "x": 0,
           "y": 0,
           "z": -15
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "spoon",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle",
+      "attributes": {
+        "geometries": [
+          {
+            "label": "spoon",
+            "type": "box",
+            "x": 50,
+            "y": 45,
+            "z": 143
+          }
+        ]
+      },
+      "frame": {
+        "parent": "follower-gripper",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 61.5
         },
         "orientation": {
           "type": "ov_degrees",
