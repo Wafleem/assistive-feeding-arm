@@ -61,6 +61,22 @@ class RGBDFrame:
 
 
 @dataclass
+class RGBFrame:
+    """Colour capture without an implied depth map or camera calibration.
+
+    Receive time uses the consuming adapter's monotonic clock. Capture time is
+    separate and must not be compared with receive time unless the clock domains
+    have been synchronized. Missing clock provenance stays explicit.
+    """
+
+    camera: str
+    rgb: np.ndarray  # (H, W, 3) uint8, RGB
+    received_at_s: float
+    captured_at_s: float | None = None
+    capture_clock: str | None = None
+
+
+@dataclass
 class Detection:
     label: str
     score: float
