@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision
+from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
@@ -96,7 +96,7 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -289,6 +289,7 @@ class FaceServoSession:
             raise RuntimeError("Extend is disabled (start the dashboard with --allow-extend)")
         self._require_idle()
         self._stop.clear()
+        self._kw = kw
         self.mode, self.reason = action, "starting"
         self._worker = threading.Thread(target=self._run, args=(action,), daemon=True)
         self._worker.start()
@@ -596,6 +597,33 @@ class FaceServoSession:
             self.robot.set_speed(self.cfg.joint_speed_degs)
         self.reason = f"spoon level ({self._spoon_tilt():+.1f} deg)"
         self._event("level", self.reason)
+
+    def _do_jog(self, speed_degs: float = 12.0) -> None:
+        """Debug jog with the spoon kept level: yaw (+ = to the right, seen from behind the arm
+        looking out along the spoon) by base pan only; up/down by shoulder+elbow+wrist together."""
+        kw = getattr(self, "_kw", {}) or {}
+        yaw = float(np.clip(float(kw.get("yaw_deg", 0.0)), -10.0, 10.0))
+        dz = float(np.clip(float(kw.get("dz_cm", 0.0)), -5.0, 5.0)) / 100.0
+        self._require_level()
+        q = self.robot.joints()
+        T0, T1 = so101_fk(q), so101_fk(q + np.array([1.0, 0, 0, 0, 0]))
+        az0, az1 = np.arctan2(T0[1, 2], T0[0, 2]), np.arctan2(T1[1, 2], T1[0, 2])  # spoon heading
+        pan_per_right = -1.0 if az1 > az0 else 1.0  # turning right = heading decreasing
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        target, rep = jog_level(q, pan_per_right * yaw, dz, level)
+        if not rep["ok"]:
+            raise RuntimeError(f"out of the arm's reach with a level spoon here (gets within {rep['miss_cm']} cm): try a smaller step")
+        try:
+            self.robot.set_speed(speed_degs)
+            what = (f"yaw {'right' if yaw > 0 else 'left'} {abs(yaw):g} deg" if yaw else "") + \
+                   (f"{' + ' if yaw else ''}{'up' if dz > 0 else 'down'} {abs(dz) * 100:g} cm" if dz else "")
+            self.reason = f"jog: {what}"
+            self._move(target)
+        finally:
+            self.robot.set_speed(self.cfg.joint_speed_degs)
+        self.reason = (f"jogged {what}: spoon height {rep['height_cm']} cm, reach {rep['reach_cm']} cm, "
+                       f"tilt {self._spoon_tilt():+.1f} deg")
+        self._event("jog", self.reason)
 
     def _do_center(self) -> None:
         self._require_level()
