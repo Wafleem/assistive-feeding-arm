@@ -34,7 +34,7 @@ class SO101ViamRobot:
         self.teleop_name = teleop
         self._teleop = Generic.from_robot(self.client, teleop) if teleop else None
         if camera_address:
-            self.rig = ViamCameraRig(cameras, io=self._io, client=self._io.run(connect(camera_address)))
+            self.rig = ViamCameraRig(cameras, address=camera_address, io=self._io)
         else:
             self.rig = ViamCameraRig(cameras, client=self.client, io=self._io)
 
@@ -49,8 +49,8 @@ class SO101ViamRobot:
         return self.rig.camera_pose(name)
 
     # arm
-    def joints(self) -> np.ndarray:
-        jp = self._io.run(self.arm.get_joint_positions(), timeout=10)
+    def joints(self, timeout: float = 10.0) -> np.ndarray:
+        jp = self._io.run(self.arm.get_joint_positions(), timeout=timeout)
         return np.asarray(jp.values, float)
 
     def move_joints(self, q, timeout: float = 30.0) -> None:

@@ -252,8 +252,12 @@ class ViamCameraRig:
         from viam.components.camera import Camera
 
         self._io = io or _Loop()
+        self._address = address  # None + client given: reconnect via the env VIAM_ADDRESS is not attempted
+        self._own_client = client is None or address is not None
         self.client = client or self._io.run(connect(address))
+        self._names = tuple(cameras)
         self._cams = {c: self._find(Camera, c) for c in cameras}
+        self._failures = 0
         self._k = dict(intrinsics or {})
         self.pose_error: str | None = None
 
@@ -289,13 +293,33 @@ class ViamCameraRig:
     def cameras(self) -> dict[str, CameraSpec]:
         return {c: CameraSpec(c, "wrist", self.intrinsics(c)) for c in self._cams}
 
-    def get_frames(self, names=None) -> dict[str, RGBDFrame]:
+    def reconnect(self) -> None:
+        """Fresh connection (e.g. after viam-server restarted and the SDK's own reconnect stalled)."""
+        from viam.components.camera import Camera
+
+        old = self.client
+        try:
+            self._io.run(old.close(), timeout=3)
+        except Exception:
+            pass
+        self.client = self._io.run(connect(self._address), timeout=30)
+        self._cams = {c: self._find(Camera, c) for c in self._names}
+        self._failures = 0
+
+    def get_frames(self, names=None, timeout: float = 5.0) -> dict[str, RGBDFrame]:
         out = {}
-        for name in names or list(self._cams):
-            t = self.now()
-            images, _ = self._io.run(self._cams[name].get_images(), timeout=10)
-            rgb, depth = _rgb_and_depth(images)
-            out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
+        try:
+            for name in names or list(self._cams):
+                t = self.now()
+                images, _ = self._io.run(self._cams[name].get_images(), timeout=timeout)
+                rgb, depth = _rgb_and_depth(images)
+                out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
+        except Exception:
+            self._failures += 1
+            if self._failures >= 2 and self._own_client:
+                self.reconnect()
+            raise
+        self._failures = 0
         return out
 
     def camera_pose(self, name: str) -> Pose:
