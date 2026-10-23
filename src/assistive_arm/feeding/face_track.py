@@ -30,11 +30,11 @@ ROLL = 4
 
 @dataclass(frozen=True)
 class TrackConfig:
-    rate_hz: float = 20.0
+    rate_hz: float = 30.0  # setpoints per second (more = finer steps = smoother on the servos)
     gain: float = 1.6  # 1/s: errors decay with a ~0.6 s time constant
     max_vel_deg: tuple = (30.0, 20.0, 20.0, 15.0)  # deg/s: pan, lift, elbow, flex (flex gentle: it swings the camera)
     max_acc_deg: float = 80.0  # deg/s^2 (smoothness)
-    deadband_m: float = 0.006  # miss below this: no correction
+    deadband_m: float = 0.010  # miss below this: no correction (above the face estimate's ~1 cm jitter: no hunting)
     taper_m: float = 0.02  # correction ramps in over this much more miss (soft deadband)
     pitch_scale: float = 0.5  # m per rad: weight of spoon level vs. aim (level wins)
     pitch_target_deg: float = 0.0  # tool pitch at which the SPOON is level (dashboard: Save spoon level)

@@ -85,19 +85,28 @@ class SO101ViamRobot:
         the arm holds against gravity and follows your hand) / {"command": "exit_manual_mode"}."""
         return dict(self._io.run(self.arm.do_command(cmd), timeout=timeout))
 
+    def _fast_arm(self):
+        """The arm over the direct (camera) connection when there is one: ~5 ms per call."""
+        if self._fast is None:
+            from viam.components.arm.client import ArmClient
+
+            same = self.rig.client is self.client
+            self._fast = self.arm if same else ArmClient(self._arm_name, self.rig.client._channel)
+        return self._fast
+
+    def joints_fast(self, timeout: float = 1.0) -> np.ndarray:
+        """MEASURED joints (servo encoders, so including gravity sag) over the fast link."""
+        jp = self._io.run(self._fast_arm().get_joint_positions(), timeout=timeout)
+        return np.asarray(jp.values, float)
+
     def stream_joints(self, q) -> None:
         """Non-blocking streamed setpoint (what teleop uses): no servo profile, so the CALLER must
         keep successive setpoints close together (the face tracker limits speed and acceleration).
         Sent over the direct connection when available (lower latency than the cloud)."""
         from viam.proto.component.arm import JointPositions
 
-        if self._fast is None:
-            from viam.components.arm.client import ArmClient
-
-            same = self.rig.client is self.client
-            self._fast = self.arm if same else ArmClient(self._arm_name, self.rig.client._channel)
-        self._io.run(self._fast.move_to_joint_positions(JointPositions(values=[float(v) for v in q]),
-                                                        extra={"wait": False, "streamed": True}), timeout=2.0)
+        self._io.run(self._fast_arm().move_to_joint_positions(JointPositions(values=[float(v) for v in q]),
+                                                              extra={"wait": False, "streamed": True}), timeout=2.0)
 
     def set_speed(self, degs_per_sec: float) -> float:
         out = self._io.run(self.arm.do_command({"set_speed": float(degs_per_sec)}), timeout=10)

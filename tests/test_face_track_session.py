@@ -42,6 +42,9 @@ class KinArm:
     def move_joints(self, q):
         self.q = np.asarray(q, float).copy()
 
+    def joints_fast(self, timeout=None):
+        return self.q.copy() + getattr(self, "sag", 0.0)
+
     def stream_joints(self, q):
         q = np.asarray(q, float)
         self.streamed.append(q.copy())
@@ -254,5 +257,26 @@ def test_jog_buttons_keep_the_spoon_level(tmp_path):
         T2 = fk(arm.q)
         assert np.degrees(heading - np.arctan2(T2[1, 2], T2[0, 2])) == pytest.approx(5.0, abs=0.3)  # turned right 5 deg
         assert abs(s._spoon_tilt()) < 0.6
+    finally:
+        s.close()
+
+
+
+def test_tuning_applies_live_and_the_camera_pose_uses_measured_joints(tmp_path):
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    s.start()
+    try:
+        msg = s.command("set_tuning", gain=1.0, speed_pct=50, accel=40, deadband_cm=1.5, smoothing_cm=2.0, rate_hz=40)
+        t = s.tuning()
+        assert t == {"gain": 1.0, "speed_pct": 50, "accel": 40.0, "deadband_cm": 1.5, "smoothing_cm": 2.0, "rate_hz": 40.0}, t
+        assert s.tracker.kf.p.sigma_meas == 0.02 and "tuning" in msg["kind"]
+        level_first(s)
+        arm.sag = np.array([0.0, 2.0, 0.0, 0.0, 0.0])  # the real shoulder sags 2 deg below the command
+        s.command("center")
+        assert wait(lambda: len(s._qm_hist) > 5)
+        q_seen = s._qm_hist[-1][1]
+        assert q_seen[1] - s._q_hist[-1][1][1] == pytest.approx(2.0, abs=0.5)  # pose uses the sagging arm
+        s.command("stop")
     finally:
         s.close()

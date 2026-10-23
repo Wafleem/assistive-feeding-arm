@@ -53,7 +53,7 @@ def test_follows_a_slowly_moving_face():
     side = np.cross([0, 0, 1.0], base / np.linalg.norm(base))
     tr, qs, vs, errs = run(lambda t: base + 0.06 * np.sin(0.6 * t) * side, seconds=12.0)  # 6 cm sway
     late = [e["miss_cm"] for e in errs[-120:]]
-    assert max(late) <= 3.0, max(late)
+    assert max(late) <= 3.5, max(late)  # 1 cm deadband: a little looser, no hunting
 
 
 def test_a_lost_face_decelerates_smoothly_to_a_stop():

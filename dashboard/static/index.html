@@ -121,6 +121,20 @@
         Speed <input type="number" id="speed" min="12" max="60" step="1"> °/s
         <button class="step" id="apply">Apply</button>
       </div>
+      <h2>Tuning (smoothness; applies live)</h2>
+      <div class="row" style="margin-bottom:6px">
+        Response <input type="number" id="t_gain" step="0.1" min="0.3" max="4"> /s
+        Speed <input type="number" id="t_speed" step="10" min="20" max="150"> %
+        Accel <input type="number" id="t_accel" step="10" min="10" max="200"> °/s²
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Deadband <input type="number" id="t_dead" step="0.2" min="0.2" max="4"> cm
+        Face smoothing <input type="number" id="t_smooth" step="0.2" min="0.2" max="5"> cm
+        Rate <input type="number" id="t_rate" step="5" min="10" max="60"> Hz
+        <button class="step" id="t_apply">Apply tuning</button>
+      </div>
+      <div style="color:var(--dim);font-size:12px">Smoother: lower Response and Accel, raise Deadband and Face smoothing.
+        Snappier: the opposite. Rate: more setpoints per second = finer steps on the servos.</div>
       <div id="msg"></div>
     </div>
     <div class="card" style="margin-top:16px">
@@ -163,6 +177,9 @@ document.querySelectorAll("button.jog").forEach(b => b.onclick = () => cmd("jog"
   yaw_deg: parseFloat(b.dataset.yaw || 0), dz_cm: parseFloat(b.dataset.dz || 0) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
 $("apply").onclick = () => cmd("set_params", { stop_tip_distance: $("stopcm").value / 100, joint_speed_degs: $("speed").value });
+$("t_apply").onclick = () => cmd("set_tuning", { gain: $("t_gain").value, speed_pct: $("t_speed").value, accel: $("t_accel").value,
+  deadband_cm: $("t_dead").value, smoothing_cm: $("t_smooth").value, rate_hz: $("t_rate").value });
+let tuningLoaded = false;
 
 function rows(el, obj) {
   el.innerHTML = Object.entries(obj).map(([k, v]) =>
@@ -200,6 +217,10 @@ async function poll() {
     });
     document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
       el.style.display = s.allow_extend ? "" : "none");
+    if (!tuningLoaded && s.tuning) {
+      const t = s.tuning; $("t_gain").value = t.gain; $("t_speed").value = t.speed_pct; $("t_accel").value = t.accel;
+      $("t_dead").value = t.deadband_cm; $("t_smooth").value = t.smoothing_cm; $("t_rate").value = t.rate_hz; tuningLoaded = true;
+    }
     if (!paramsLoaded) { $("stopcm").value = s.params.stop_tip_distance_cm; $("speed").value = s.params.joint_speed_degs; paramsLoaded = true; }
     const L = s.level || {};
     $("lvl").textContent = (L.hand_guide ? "HAND-GUIDE ON · " : "") + "spoon tilt now " +
