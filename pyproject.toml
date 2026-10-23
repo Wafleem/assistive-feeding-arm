@@ -15,7 +15,7 @@ dev = ["pytest>=8", "mujoco>=3.1", "pillow"]
 viam = ["viam-sdk>=0.40"]
 vision = ["torch", "transformers>=4.44", "pillow"]
 # Install a CUDA build of torch/torchvision appropriate to the Jetson first.
-vision-preview = ["rfdetr==1.11.2", "mediapipe==1.1.1", "pillow", "opencv-python", "viam-sdk==0.85.0"]
+vision-preview = ["rfdetr==1.11.2", "mediapipe==1.1.1", "pillow", "opencv-contrib-python", "viam-sdk==0.85.0"]
 # Optional cloud LLM backends for the language layer (the default is a local model; tests never need these)
 llm-cloud = ["anthropic", "openai"]
 

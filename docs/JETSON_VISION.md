@@ -15,10 +15,13 @@ from the implementation.
 - Host: `ssh jetson-sentry-wifi`, AGX Orin 32 GB.
 - Root: `/home/ultraviolet/assistive-arm-vision`.
 - Python: isolated `.venv`, Python 3.12; Ubuntu 24.04, L4T R39.2.1.
-- Candidate GPU packages: torch 2.13.0+cu132, torchvision 0.28.0+cu132 from
-  `https://download.pytorch.org/whl/cu132`. Verify a real CUDA operation before
-  claiming GPU inference works; see `deploy/jetson-cu132-constraints.txt`.
+- GPU packages: torch 2.13.0+cu132, torchvision 0.28.0+cu132 from
+  `https://download.pytorch.org/whl/cu132`. Real CUDA matrix multiplication,
+  convolution, and torchvision NMS passed on Orin (compute capability 8.7);
+  see `deploy/jetson-cu132-constraints.txt`.
 - Models: RF-DETR 1.11.2 and MediaPipe 1.1.1. Viam SDK 0.85.0.
+- MediaPipe uses CPU/XNNPACK; RF-DETR uses CUDA. Both models run from verified
+  local weights with Hugging Face offline mode enabled.
 - Physical USB source: `/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0`,
   640 × 480 at a requested 30 fps. The camera was physically moved to the Jetson;
   a direct capture succeeded on 2026-10-23. `UsbCameraReader` implements the same
@@ -42,6 +45,11 @@ only when Viam or another application is not using the device. That path does
 not load credentials or access any arm serial devices. The default Viam source
 loads the private `vision.env` credentials.
 
+Cloud/WebRTC connection negotiation took about 29 seconds on this network.
+`ViamCameraReader` allows one 45-second connection attempt, separately from
+the 10-second camera read deadline. A successful connection does not mean the
+USB camera is producing frames.
+
 ## Start and view
 
 To reproduce the environment on this JetPack/CUDA version, from the deployed
@@ -64,6 +72,14 @@ their recorded hashes before making them available to inference. Keep
 `VIAM_ADDRESS`, `VIAM_API_KEY_ID`, and `VIAM_API_KEY` in the private `vision.env`,
 not in tracked configuration. The CUDA wheel choice is specific to the observed
 L4T R39.2.1 / CUDA 13.2 environment.
+
+Known upstream packaging exception: `pip check` reports
+`nvidia-cusparselt-cu13 0.8.1 is not supported on this platform`. The official
+ARM64 wheel filename advertises `manylinux2014_aarch64`, but its internal
+`WHEEL` tag is `manylinux2014_sbsa`. Its library is AArch64, matches the installed
+RECORD hash, and loads successfully; actual RF-DETR CUDA inference also passed.
+The vendor package is unmodified. This is a documented exception, not a clean
+`pip check` result. See the [official package listing](https://pypi.org/pypi/nvidia-cusparselt-cu13/0.8.1/json).
 
 From the deployed checkout on the Jetson:
 
@@ -112,15 +128,38 @@ timestamp provenance, camera-only behavior and stale/error preview handling.
 Run `make test` with the development extra. Real model weights, credentials and
 hardware are not required by those tests.
 
-- `make test` on 2026-10-23: **99 passed, 2 skipped, 31 expected failures** for
-  pre-existing unfinished sections. Contract PR #1 and implementation PR #2 CI
-  both passed.
+- `make test` on 2026-10-23: **107 passed, 32 expected failures** for
+  pre-existing unfinished sections. The new tests verify separate connection
+  and image-read deadlines. Contract PR #1 and the earlier implementation PR #2
+  revision passed CI; check the PR for the latest revision's status.
 - The approved Jetson-scoped key returned two 640 × 480 RGB frames through
   `ViamCameraReader`; capture timestamps reported the `unix` clock domain.
 - The temporary Mac credential transfer files were removed after verification.
+- PyTorch emits an architecture warning for this Orin. The actual CUDA checks
+  above passed. NVIDIA documents this warning with upstream cu132 builds on
+  [Orin / JetPack 7.2](https://forums.developer.nvidia.com/t/how-do-i-correctly-install-pytorch-on-jetpack-7-2/372773).
+  Actual RF-DETR Nano CUDA inference also passed.
 - The USB reader's reconnection and stale-buffer behavior are covered by offline
   tests. Direct hardware capture succeeded before Viam took ownership; ongoing
   live preview uses Viam to share that camera without competing for the device.
 
-Deployment measurements and live verification will be recorded here after the
-Jetson installation and camera checks finish.
+Offline inference on synthetic 640 × 480 RGB frames passed on 2026-10-23:
+
+| Measurement | Result |
+| --- | --- |
+| RF-DETR first inference | 13.2 s |
+| RF-DETR subsequent inferences | 45.3 / 35.6 ms |
+| Peak CUDA allocation | 151.8 MiB |
+| MediaPipe initialization | 677 ms |
+| MediaPipe no-face processing | 8.1 / 7.0 / 6.5 ms |
+| Combined process peak RAM | 2,054 MiB |
+
+The blank frames correctly produced no detections. MediaPipe's no-face path
+skips full landmark inference; these measurements do not establish real-face
+latency or spoon/mouth accuracy.
+
+Current live acceptance blocker: after the Jetson reboot, Viam authenticates
+successfully but the icSpring `arm-camera` returns `read timeout`. A reconnect of
+only that USB camera did not recover frames; a physical camera reconnection was
+requested. The preview retries reads and hides imagery during errors. Neither
+Viam nor any arm process was restarted.

@@ -222,12 +222,15 @@ class ViamCameraReader(RobotInterface):
     """
 
     def __init__(self, address: str | None = None,
-                 cameras: dict[str, str] | None = None, timeout_s: float = 10.0):
+                 cameras: dict[str, str] | None = None, timeout_s: float = 10.0,
+                 connect_timeout_s: float = 45.0):
         from viam.components.camera import Camera
         from viam.robot.client import RobotClient
 
         if not np.isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError("timeout_s must be positive and finite")
+        if not np.isfinite(connect_timeout_s) or connect_timeout_s <= 0:
+            raise ValueError("connect_timeout_s must be positive and finite")
         camera_names = {"wrist": "arm-camera"} if cameras is None else dict(cameras)
         if not camera_names or any(not alias or not name for alias, name in camera_names.items()):
             raise ValueError("cameras must map nonempty aliases to Viam camera names")
@@ -237,11 +240,17 @@ class ViamCameraReader(RobotInterface):
             disable_sessions=True,
         )
         self.timeout_s = float(timeout_s)
+        self.connect_timeout_s = float(connect_timeout_s)
+        opts.dial_options.timeout = self.connect_timeout_s
+        opts.dial_options.initial_connection_attempt_timeout = self.connect_timeout_s
+        opts.dial_options.initial_connection_attempts = 1
         self._closed = True
         self._io = _Loop()
         self.client = None
         try:
-            self.client = self._io.run(RobotClient.at_address(address, opts), timeout=self.timeout_s)
+            self.client = self._io.run(
+                RobotClient.at_address(address, opts), timeout=self.connect_timeout_s + 1.0,
+            )
             self._cams = {alias: Camera.from_robot(self.client, name) for alias, name in camera_names.items()}
         except BaseException:
             try:
