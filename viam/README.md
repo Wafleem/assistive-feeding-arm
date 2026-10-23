@@ -3,7 +3,7 @@
 | Path | What |
 |---|---|
 | `machines/pi-arm2.json` | the Raspberry Pi rig as calibrated on 2026-10-23 (leader + follower + teleop + webcam) |
-| `machines/orin-dev-kit.json` | the same SO-101 setup on the Jetson Orin dev kit (leader + teleop disabled until plugged in) |
+| `machines/orin-dev-kit.json` | the same SO-101 setup on the Jetson Orin dev kit (leader + teleop on), plus webcam-2 and its Depth Anything 3 depth camera and range sensor (`modules/depth-anything-3`) |
 | `calibration/so101_follower_calibration.json` | follower calibration, read back from the arm after calibrating |
 | `calibration/so101_leader_calibration.json` | leader calibration, read back from the arm after calibrating |
 

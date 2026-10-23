@@ -1,13 +1,13 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start ON since 2026-10-23: the venue Wi-Fi kept live commands from reaching the Orin; set it back to false when the network is reliable). Calibration sensors disabled. Cameras: webcam-2 = Logitech C270 taped on top of the gripper, centred, lens forward along the spoon (frame on follower-arm, estimated from photos); arm-camera = icSpring wrist module that enumerates but sends no frames (hardware fault). spoon-detector = YOLOv8s COCO on webcam-2 (bowl, cup, spoon, person, ...); detections-view = transform camera that overlays its boxes for viewing in the Viam app. No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start on). Both calibration sensors are disabled (only needed to recalibrate). Cameras: arm-camera and webcam-2 (the wrist camera; its frame is an estimate, to be verified), detections-view (YOLOv8s detections drawn on webcam-2), and webcam-2-depth / webcam-2-range: Depth Anything 3 metric depth, a point cloud and lidar-style ranges from webcam-2, served by the local module in modules/depth-anything-3 (installed at /home/ultraviolet/depth-anything-3 on the Orin; preview page on 127.0.0.1:8766). The ViamShellDanger shell service comes from a fragment, not listed here. No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
       "api": "rdk:component:arm",
       "model": "devrel:so101:arm",
       "attributes": {
-        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00",
-        "calibration_file": "so101_follower_calibration.json"
+        "calibration_file": "so101_follower_calibration.json",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00"
       },
       "frame": {
         "parent": "world",
@@ -53,38 +53,25 @@
       }
     },
     {
-      "name": "follower-calibration",
-      "api": "rdk:component:sensor",
-      "model": "devrel:so101:calibration",
-      "ui_folder": {
-        "name": "calibration"
-      },
-      "attributes": {
-        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00",
-        "calibration_file": "so101_follower_calibration.json"
-      },
-      "disabled": true
-    },
-    {
       "name": "table",
       "api": "rdk:component:generic",
       "model": "viam:obstacle-pack:obstacle",
       "attributes": {
         "geometries": [
           {
+            "y": 685.8,
             "label": "table",
-            "type": "box",
-            "x": 2000,
-            "y": 2000,
-            "z": 30
+            "x": 1447.8,
+            "z": 30,
+            "type": "box"
           }
         ]
       },
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 0,
-          "y": 0,
+          "x": 698.1,
+          "y": 266.7,
           "z": -15
         },
         "orientation": {
@@ -99,13 +86,27 @@
       }
     },
     {
+      "name": "follower-calibration",
+      "api": "rdk:component:sensor",
+      "model": "devrel:so101:calibration",
+      "ui_folder": {
+        "name": "calibration"
+      },
+      "attributes": {
+        "calibration_file": "so101_follower_calibration.json",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124377-if00"
+      },
+      "disabled": true
+    },
+    {
       "name": "leader-arm",
       "api": "rdk:component:arm",
       "model": "devrel:so101:arm",
       "attributes": {
-        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00",
-        "calibration_file": "so101_leader_calibration.json"
+        "calibration_file": "so101_leader_calibration.json",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00"
       },
+      "disabled": false,
       "frame": {
         "parent": "world",
         "translation": {
@@ -131,6 +132,7 @@
       "attributes": {
         "arm": "leader-arm"
       },
+      "disabled": false,
       "frame": {
         "parent": "leader-arm",
         "translation": {
@@ -157,8 +159,8 @@
         "name": "calibration"
       },
       "attributes": {
-        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00",
-        "calibration_file": "so101_leader_calibration.json"
+        "calibration_file": "so101_leader_calibration.json",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00"
       },
       "disabled": true
     },
@@ -167,11 +169,11 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:webcam",
       "attributes": {
-        "video_path": "usb-icSpring_icspring_camera-video-index0",
-        "width_px": 640,
         "height_px": 480,
-        "frame_rate": 30,
-        "format": "YUYV"
+        "width_px": 640,
+        "format": "YUYV",
+        "video_path": "usb-icSpring_icspring_camera-video-index0",
+        "frame_rate": 30
       }
     },
     {
@@ -179,10 +181,10 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:webcam",
       "attributes": {
+        "height_px": 480,
+        "width_px": 640,
         "video_path": "usb-046d_C270_HD_WEBCAM_7DEF8890-video-index0",
         "format": "MJPEG",
-        "width_px": 640,
-        "height_px": 480,
         "frame_rate": 30
       },
       "frame": {
@@ -208,10 +210,8 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:transform",
       "attributes": {
-        "source": "webcam-2",
         "pipeline": [
           {
-            "type": "detections",
             "attributes": {
               "detector_name": "spoon-detector",
               "confidence_threshold": 0.3,
@@ -232,9 +232,81 @@
                 "donut",
                 "cake"
               ]
-            }
+            },
+            "type": "detections"
+          }
+        ],
+        "source": "webcam-2"
+      }
+    },
+    {
+      "name": "spoon",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle",
+      "attributes": {
+        "geometries": [
+          {
+            "y": 45,
+            "label": "spoon",
+            "x": 50,
+            "z": 143,
+            "type": "box"
           }
         ]
+      },
+      "frame": {
+        "parent": "follower-gripper",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 61.5
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "webcam-2-depth",
+      "api": "rdk:component:camera",
+      "model": "assistive-arm:depth-anything-3:camera",
+      "attributes": {
+        "weights": "/home/ultraviolet/depth-anything-3/weights/DA3METRIC-LARGE",
+        "produce_hz": 5,
+        "hfov_deg": 45,
+        "source": "webcam-2",
+        "preview_port": 8766
+      },
+      "frame": {
+        "parent": "follower-arm",
+        "translation": {
+          "x": -21,
+          "y": -8,
+          "z": 90
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": -90
+          }
+        }
+      }
+    },
+    {
+      "name": "webcam-2-range",
+      "api": "rdk:component:sensor",
+      "model": "assistive-arm:depth-anything-3:range",
+      "attributes": {
+        "camera": "webcam-2-depth"
       }
     }
   ],
@@ -250,24 +322,25 @@
       "api": "rdk:service:generic",
       "model": "devrel:so101:teleop",
       "attributes": {
-        "leader_arm": "leader-arm",
-        "follower_arm": "follower-arm",
-        "leader_gripper": "leader-gripper",
-        "follower_gripper": "follower-gripper",
-        "rate_hz": 100,
         "manage_leader_torque": true,
+        "follower_gripper": "follower-gripper",
+        "follower_arm": "follower-arm",
+        "leader_arm": "leader-arm",
+        "rate_hz": 100,
+        "leader_gripper": "leader-gripper",
         "auto_start": true
-      }
+      },
+      "disabled": false
     },
     {
       "name": "spoon-detector",
       "api": "rdk:service:vision",
       "model": "viam-labs:vision:yolov8",
       "attributes": {
-        "model_location": "yolov8s.pt",
-        "camera_name": "webcam-2",
         "task": "detect",
-        "confidence": 0.25
+        "camera_name": "webcam-2",
+        "model_location": "yolov8s.pt",
+        "confidence": 0.3
       }
     }
   ],
@@ -289,6 +362,16 @@
       "name": "viam-labs_YOLOv8",
       "module_id": "viam-labs:YOLOv8",
       "version": "latest"
+    },
+    {
+      "type": "local",
+      "name": "depth-anything-3",
+      "executable_path": "/home/ultraviolet/depth-anything-3/run.sh",
+      "env": {
+        "DA3_PREVIEW": "stream",
+        "PYTHONUNBUFFERED": "1",
+        "DA3_LOG_LEVEL": "WARN"
+      }
     }
   ]
 }
