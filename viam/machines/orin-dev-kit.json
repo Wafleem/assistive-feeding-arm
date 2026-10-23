@@ -240,6 +240,56 @@
       }
     },
     {
+      "name": "bowl-right",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 316.2,
+          "y": 173.8,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "bowl-left",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 316.2,
+          "y": 323.8,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
       "name": "webcam-2-depth",
       "api": "rdk:component:camera",
       "model": "assistive-arm:depth-anything-3:camera",
