@@ -28,8 +28,8 @@ from the implementation.
 - Viam authentication uses a dedicated machine-scoped Operator key stored in
   `vision.env` with mode 0600, inside a private directory. Operator is not a
   camera-only permission; the application enforces read-only behavior. The
-  initial `pi-arm2` key cannot access `orin-dev-kit`; its separate credential
-  approval is pending.
+  initial `pi-arm2` key cannot access `orin-dev-kit`; the user separately approved
+  the Jetson-scoped key on 2026-10-23. It was verified with two live RGB reads.
 
 Viam on the Jetson now owns the USB camera, so the preview must use the Viam
 source. No Viam configuration or server restart is required. The old `pi-arm2`
@@ -111,6 +111,16 @@ The offline suite covers model output filtering, lip geometry, RGB preservation,
 timestamp provenance, camera-only behavior and stale/error preview handling.
 Run `make test` with the development extra. Real model weights, credentials and
 hardware are not required by those tests.
+
+- `make test` on 2026-10-23: **99 passed, 2 skipped, 31 expected failures** for
+  pre-existing unfinished sections. Contract PR #1 and implementation PR #2 CI
+  both passed.
+- The approved Jetson-scoped key returned two 640 × 480 RGB frames through
+  `ViamCameraReader`; capture timestamps reported the `unix` clock domain.
+- The temporary Mac credential transfer files were removed after verification.
+- The USB reader's reconnection and stale-buffer behavior are covered by offline
+  tests. Direct hardware capture succeeded before Viam took ownership; ongoing
+  live preview uses Viam to share that camera without competing for the device.
 
 Deployment measurements and live verification will be recorded here after the
 Jetson installation and camera checks finish.
