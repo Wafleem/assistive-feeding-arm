@@ -747,7 +747,10 @@ class FaceServoSession:
                     stop_at = (max(self.ext_cfg.close_margin, self.ext_cfg.min_tip_distance_floor)
                                if self.ext_cfg.close_fwd is not None else self.ext_cfg.stop_tip_distance)
                     tr.advance(direction, dt, self.ext_cfg, scale, room=(tip - stop_at) if face is not None else 0.0)
-                q = tr.step(face, dt, blind=extend and backing_out)
+                # Eating hold: the person moves onto the spoon, so the arm keeps still (no
+                # re-centring). The face is still watched: a fast head move still backs out.
+                frozen = extend and held_since is not None and not backing_out
+                q = tr.step(None if frozen else face, dt, blind=extend and backing_out)
                 if self._qm_hist and self.sag_gain > 0:
                     t_m, q_m = self._qm_hist[-1]
                     err = self._q_at(t_m - self.servo_lag) - q_m  # setpoint (desired) vs where it is
