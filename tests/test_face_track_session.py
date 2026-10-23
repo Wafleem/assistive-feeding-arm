@@ -198,7 +198,7 @@ def test_retreat_after_a_stopped_extend_glides_back_out(tmp_path):
         s.close()
 
 
-def test_extend_toward_an_out_of_reach_face_stops_at_the_arms_limit_and_says_so(tmp_path):
+def test_extend_toward_an_out_of_reach_face_is_refused_up_front_with_how_much_closer(tmp_path):
     from assistive_arm.feeding.face_track import ExtendConfig
     arm = KinArm(LOOK)
     s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.75, up=0.0)), poses_path=tmp_path / "p.json", settle=0.0)
@@ -206,13 +206,12 @@ def test_extend_toward_an_out_of_reach_face_stops_at_the_arms_limit_and_says_so(
     s.start()
     try:
         level_first(s)
+        n = len(arm.streamed)
         s.command("extend")
-        assert wait(lambda: "reach limit" in s.reason, 20), s.reason
-        assert s.mode == "extend"  # still tracking the face, not lost, not crashed
-        s.command("stop")
+        assert wait(lambda: s.mode == "idle" and "out of reach" in s.reason and "closer" in s.reason, 20), s.reason
+        assert len(arm.streamed) == n  # never started stretching out
     finally:
         s.close()
-
 
 
 def test_level_spoon_button_then_centring_is_allowed_and_tilted_starts_are_refused(tmp_path):

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level
+from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level, max_level_reach
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
@@ -522,7 +522,7 @@ class FaceServoSession:
                 now = self.robot.now()
                 st = self.tracker.state(now)
                 face = st.position if (st is not None and st.age <= 0.5) else None
-                ext_reason = ""
+                ext_reason, ext_log = "", {}
                 if extend:
                     e0 = tr.last or {}
                     tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool) if face is not None else 9.9
@@ -544,6 +544,16 @@ class FaceServoSession:
                     held_since = (held_since or time.monotonic()) if ext_reason.startswith("at the stop") else None
                     if direction > 0 and tr.travelled - tr.actual_travelled() > 0.015:
                         direction, ext_reason = 0, "arm at its reach limit here: not moving in further"
+                    if direction > 0 and tr.travelled >= getattr(self, "_ext_max_travel", 9.9):
+                        direction, ext_reason = 0, "at the arm's reach for a level spoon: not moving in further"
+                    if ext_reason != getattr(self, "_last_ext_reason", None) and ext_reason.split(":")[0] != \
+                            (getattr(self, "_last_ext_reason", "") or "").split(":")[0]:
+                        self._event("extend", ext_reason)
+                    self._last_ext_reason = ext_reason
+                    ext_log = {"ext_dir": direction, "ext_reason": ext_reason, "tip_cm": round(tip * 100, 1),
+                               "travel_target_cm": round(tr.travelled * 100, 1),
+                               "travel_actual_cm": round(tr.actual_travelled() * 100, 1),
+                               "head_speed_cm_s": None if st is None else round(st.speed * 100, 1)}
                     tr.advance(direction, dt, self.ext_cfg)
                 q = tr.step(face, dt, blind=extend and backing_out)
                 self.robot.stream_joints(q)
@@ -565,9 +575,14 @@ class FaceServoSession:
                         raise Stopped()
                 tick += 1
                 if tick % 4 == 0:
-                    self._log_plan({"kind": "track", "q_cmd": _r(q, 2), "v": _r(tr.v, 2), **e,
+                    Tq = so101_fk(q)
+                    self._log_plan({"kind": "extend" if extend else "track", "q_cmd": _r(q, 2), "v": _r(tr.v, 2), **e,
+                                    **ext_log, "tool_mm": _mm(Tq[:3, 3]),
+                                    "cam_mm": _mm(pose_at(self.robot.now()).position),
                                     "face_mm": _mm(face) if face is not None else None,
-                                    "face_age_s": None if st is None else round(st.age, 3)})
+                                    "face_age_s": None if st is None else round(st.age, 3),
+                                    "eye_span_mm": round(getattr(self.det, "params").eye_span_m * 1000, 1)
+                                    if hasattr(self.det, "params") else None})
                 next_t += dt
                 pause = next_t - time.monotonic()
                 if pause > 0:
@@ -642,8 +657,29 @@ class FaceServoSession:
 
     def _do_extend(self) -> None:
         self._require_level()
+        self._check_extend_reach()
         self.mode = "extend"
         self._track_loop(extend=True)
+
+    def _check_extend_reach(self) -> None:
+        """Refuse up front when the spoon can't get to the stop distance from here (instead of
+        stretching the arm out to its limit and backing off)."""
+        face, st = self._face_target(need=2, timeout=1.5)
+        if face is None:
+            raise RuntimeError("no face in view: centre on the person first")
+        q = self.robot.joints()
+        T = so101_fk(q)
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        tip = float(np.linalg.norm(face - T[:3, 3])) - self.ext_cfg.spoon_tip_from_tool
+        need = tip - self.ext_cfg.stop_tip_distance
+        avail = max_level_reach(q, level, self.track_cfg) - float(np.linalg.norm(T[:3, 3][:2]))
+        self._event("extend", f"check: spoon tip {tip * 100:.0f} cm from the lips, needs {need * 100:.0f} cm "
+                              f"more reach, the arm has {avail * 100:.0f} cm at this height")
+        if need > avail + 0.01:
+            raise RuntimeError(f"the person is out of reach: the spoon can only get to {tip * 100 - avail * 100:.0f} cm "
+                               f"from the lips here (stop distance {self.ext_cfg.stop_tip_distance * 100:.0f} cm): "
+                               f"move them about {(need - avail) * 100:.0f} cm closer")
+        self._ext_max_travel = avail
 
     def _do_auto_center(self) -> None:
         """One button, no calibration: find the face (sweep from start toward the look side if
