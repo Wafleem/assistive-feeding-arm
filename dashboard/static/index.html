@@ -65,6 +65,20 @@
         <button class="step" data-a="teach_look"><b>T1</b>Teach look (facing the person)</button>
         <button class="step" data-a="teach_home"><b>T0</b>Teach start (optional)</button>
       </div>
+      <h2>Spoon level (calibrate once)</h2>
+      <div class="row" style="margin-bottom:6px">
+        <button class="step" data-a="hand_guide_on">Hand-guide on</button>
+        <button class="step" data-a="hand_guide_off">Hand-guide off</button>
+        <span id="lvl" style="color:var(--dim)"></span>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Spoon tip:
+        <button class="step nudge" data-deg="5">▲ 5°</button>
+        <button class="step nudge" data-deg="1">▲ 1°</button>
+        <button class="step nudge" data-deg="-1">▼ 1°</button>
+        <button class="step nudge" data-deg="-5">▼ 5°</button>
+        <button class="step" data-a="save_level" style="border-color: var(--ok)">Save spoon level</button>
+      </div>
       <h2>Motion tests</h2>
       <div class="steps">
         <button class="step" data-a="home"><b>1</b>Start centered</button>
@@ -116,6 +130,7 @@ document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
   cmd(a);
 });
 $("stop").onclick = () => cmd("stop");
+document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nudge_spoon", { deg: parseFloat(b.dataset.deg) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
 $("apply").onclick = () => cmd("set_params", { stop_tip_distance: $("stopcm").value / 100, joint_speed_degs: $("speed").value });
 
@@ -154,6 +169,10 @@ async function poll() {
     document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
       el.style.display = s.allow_extend ? "" : "none");
     if (!paramsLoaded) { $("stopcm").value = s.params.stop_tip_distance_cm; $("speed").value = s.params.joint_speed_degs; paramsLoaded = true; }
+    const L = s.level || {};
+    $("lvl").textContent = (L.hand_guide ? "HAND-GUIDE ON · " : "") + "spoon tilt now " +
+      (L.spoon_tilt_now_deg == null ? "?" : L.spoon_tilt_now_deg + "°") +
+      (L.saved_tool_pitch_deg == null ? " (not calibrated: tool level = 0°)" : " (calibrated: level at tool pitch " + L.saved_tool_pitch_deg + "°)");
     $("log").innerHTML = s.log.map(e => `<div>${e.t} <b>${e.kind}</b> ${e.msg}</div>`).join("");
   } catch (e) { $("mode").textContent = "disconnected"; }
   setTimeout(poll, 300);

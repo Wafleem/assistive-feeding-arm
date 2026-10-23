@@ -80,6 +80,11 @@ class SO101ViamRobot:
         pose = Pose(x=p[0], y=p[1], z=p[2], o_x=d[0], o_y=d[1], o_z=d[2], theta=theta)
         self._io.run(self.arm.move_to_position(pose, extra={"pose_cloud": cloud}), timeout=timeout)
 
+    def arm_command(self, cmd: dict, timeout: float = 10.0) -> dict:
+        """The SO-101 module's DoCommand, e.g. {"command": "enter_manual_mode"} (hand-guiding:
+        the arm holds against gravity and follows your hand) / {"command": "exit_manual_mode"}."""
+        return dict(self._io.run(self.arm.do_command(cmd), timeout=timeout))
+
     def stream_joints(self, q) -> None:
         """Non-blocking streamed setpoint (what teleop uses): no servo profile, so the CALLER must
         keep successive setpoints close together (the face tracker limits speed and acceleration).

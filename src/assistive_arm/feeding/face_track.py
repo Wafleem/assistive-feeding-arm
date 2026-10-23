@@ -36,12 +36,21 @@ class TrackConfig:
     max_acc_deg: float = 80.0  # deg/s^2 (smoothness)
     deadband_m: float = 0.006  # miss below this: no correction
     taper_m: float = 0.02  # correction ramps in over this much more miss (soft deadband)
-    pitch_scale: float = 0.25  # m per rad: weight of spoon level vs. aim
-    pitch_target_deg: float = 0.0  # level
+    pitch_scale: float = 0.5  # m per rad: weight of spoon level vs. aim (level wins)
+    pitch_target_deg: float = 0.0  # tool pitch at which the SPOON is level (dashboard: Save spoon level)
     damping: float = 0.001  # damped least squares (J is ~0.01 m/deg; keep this well below it)
     reach_weight: float = 0.3  # holding the reach is a soft preference: aim and level come first
     spoon_dz: float = 0.0  # m: spoon line above the tool axis. TODO: measure
     limit_margin_deg: float = 3.0  # stay this far inside the joint limits
+    # Where a LEVEL spoon can comfortably go (SO-101 FK: a level spoon tops out at ~0.37 m above
+    # the arm base, and only in folded postures). Lips above z_cap: the spoon stays level at the
+    # cap and the dashboard reports how far above reach they are.
+    z_cap: float = 0.32  # m, base frame
+    z_floor: float = 0.04  # m
+    # Comfortable posture (deg): pan, lift, elbow, flex (roll is held). Keeps the arm out of the
+    # stretched/folded extremes the unconstrained solution drifts toward.
+    posture_lo: tuple = (-100.0, -97.0, -60.0, -60.0)
+    posture_hi: tuple = (100.0, 10.0, 93.0, 75.0)
 
 
 def _unit(v) -> np.ndarray:
@@ -54,7 +63,8 @@ class LevelTracker:
         self.cfg = cfg or TrackConfig()
         self.fk = fk
         lim = joint_limits() if limits is None else np.asarray(limits, float)
-        self.lo, self.hi = lim[:, 0] + self.cfg.limit_margin_deg, lim[:, 1] - self.cfg.limit_margin_deg
+        self._lim_lo, self._lim_hi = lim[:, 0] + self.cfg.limit_margin_deg, lim[:, 1] - self.cfg.limit_margin_deg
+        self.lo, self.hi = self._lim_lo.copy(), self._lim_hi.copy()
         self.q = None
         self.v = np.zeros(5)
         self.reach0 = None
@@ -65,12 +75,23 @@ class LevelTracker:
         self.v = np.zeros(5)
         p = self.fk(self.q)[:3, 3]
         self.reach0 = float(np.linalg.norm(p[:2]))
+        # Comfort limits, but never a jump: a start outside them only stops motion further out.
+        lo = np.maximum(self._lim_lo, np.r_[self.cfg.posture_lo, -1e9])
+        hi = np.minimum(self._lim_hi, np.r_[self.cfg.posture_hi, 1e9])
+        self.lo, self.hi = np.minimum(lo, self.q), np.maximum(hi, self.q)
+
+    def reachable_face(self, face) -> np.ndarray:
+        """The aim point for a level spoon: the lips, with the height clamped to what a level
+        spoon can reach (z_floor..z_cap)."""
+        f = np.asarray(face, float).copy()
+        f[2] = float(np.clip(f[2], self.cfg.z_floor + self.cfg.spoon_dz, self.cfg.z_cap + self.cfg.spoon_dz))
+        return f
 
     def task_error(self, q, face) -> np.ndarray:
         """[lateral miss, vertical miss, scaled pitch error, reach error] at joints q."""
         T = self.fk(q)
         p, d = T[:3, 3] + np.array([0.0, 0.0, self.cfg.spoon_dz]), T[:3, 2]
-        v = np.asarray(face, float) - p
+        v = self.reachable_face(face) - p
         v_perp = v - np.dot(v, d) * d
         h = _unit(np.cross(d, [0.0, 0.0, 1.0]))  # sideways, horizontal
         u = np.cross(h, d)  # up, perpendicular to the spoon
@@ -104,8 +125,10 @@ class LevelTracker:
             rate = -c.gain * J.T @ np.linalg.solve(J @ J.T + c.damping**2 * np.eye(4), es)
             v_des[:4] = np.clip(rate, -np.asarray(c.max_vel_deg), np.asarray(c.max_vel_deg))
             self.last = {"lateral_cm": round(e[0] * 100, 1), "vertical_cm": round(e[1] * 100, 1),
-                         "pitch_deg": round(float(np.degrees(e[2] / c.pitch_scale)), 1),
-                         "reach_cm": round(e[3] / c.reach_weight * 100, 1), "miss_cm": round(float(np.linalg.norm(e[:2])) * 100, 1)}
+                         "pitch_deg": round(float(np.degrees(e[2] / c.pitch_scale)), 1),  # spoon tilt from level
+                         "reach_cm": round(e[3] / c.reach_weight * 100, 1), "miss_cm": round(float(np.linalg.norm(e[:2])) * 100, 1),
+                         "lips_above_reach_cm": round(max(0.0, float(face[2]) - (c.z_cap + c.spoon_dz)) * 100, 1),
+                         "lips_below_reach_cm": round(max(0.0, (c.z_floor + c.spoon_dz) - float(face[2])) * 100, 1)}
         dv = np.clip(v_des - self.v, -c.max_acc_deg * dt, c.max_acc_deg * dt)
         self.v = self.v + dv
         self.v[ROLL] = 0.0
