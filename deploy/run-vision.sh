@@ -15,7 +15,7 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export RUST_LOG=error
 exec "$VISION_ROOT/.venv/bin/python" -m assistive_arm.orchestration.vision_preview \
-  --camera arm-camera \
+  --camera "${ASSIST_VISION_CAMERA:-arm-camera}" \
   --source "$VISION_SOURCE" \
   --spoon-weights "$VISION_ROOT/data/models/rf-detr-nano.pth" \
   --mouth-model "$VISION_ROOT/data/models/face_landmarker.task" \
