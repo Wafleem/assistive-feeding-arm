@@ -1,5 +1,5 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. Same SO-101 setup as pi-arm2, with leader, follower and teleop enabled (teleop auto_start off). Both calibration sensors are disabled (only needed to recalibrate). No webcam configured yet. Both arms read their calibration back from the servo registers (no calibration files on the Orin). No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. Same SO-101 setup as pi-arm2, with leader, follower and teleop enabled (teleop auto_start off). Both calibration sensors are disabled (only needed to recalibrate). Webcam arm-camera and a COCO YOLOv8s detector (spoon-detector) added for spoon detection tests. Both arms read their calibration back from the servo registers (no calibration files on the Orin). No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
@@ -161,6 +161,18 @@
         "calibration_file": "so101_leader_calibration.json"
       },
       "disabled": true
+    },
+    {
+      "name": "arm-camera",
+      "api": "rdk:component:camera",
+      "model": "rdk:builtin:webcam",
+      "attributes": {
+        "video_path": "usb-icSpring_icspring_camera-video-index0",
+        "width_px": 640,
+        "height_px": 480,
+        "frame_rate": 30,
+        "format": "YUYV"
+      }
     }
   ],
   "services": [
@@ -183,6 +195,17 @@
         "manage_leader_torque": true,
         "auto_start": false
       }
+    },
+    {
+      "name": "spoon-detector",
+      "api": "rdk:service:vision",
+      "model": "viam-labs:vision:yolov8",
+      "attributes": {
+        "model_location": "yolov8s.pt",
+        "camera_name": "arm-camera",
+        "task": "detect",
+        "confidence": 0.25
+      }
     }
   ],
   "modules": [
@@ -196,6 +219,12 @@
       "type": "registry",
       "name": "viam_obstacle-pack",
       "module_id": "viam:obstacle-pack",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam-labs_YOLOv8",
+      "module_id": "viam-labs:YOLOv8",
       "version": "latest"
     }
   ]
