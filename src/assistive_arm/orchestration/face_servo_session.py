@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision
+from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level, max_level_reach
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
@@ -37,7 +37,8 @@ from ..feeding.face_servo import (
 ROLL = 4  # SO-101 wrist roll joint index
 FLEX_J = 3
 from ..mouth_perception.depth_range import DepthRangeCorrector
-from ..mouth_perception.tracker import MouthTracker
+from ..mouth_perception.kalman import KalmanParams
+from ..mouth_perception.tracker import MouthTracker, TrackerParams
 from ..mouth_perception.types import MouthState
 
 
@@ -96,12 +97,13 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
-                 allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None):
+                 allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None,
+                 depth_render=None):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -112,7 +114,9 @@ class FaceServoSession:
         self.last_cmd = None
         self.render = render  # (frame, session_snapshot) -> jpeg bytes; None = no preview
         self.probe_deg, self.settle = probe_deg, settle
-        self.tracker = MouthTracker()
+        # Face-position smoothing: monocular landmarks at ~1 m jitter by ~1-2 cm, so the filter must
+        # not trust a single frame to 4 mm (the old default): the arm would chase the jitter.
+        self.tracker = MouthTracker(TrackerParams(kalman=KalmanParams(sigma_meas=0.012, sigma_accel=0.3)))
         self.mode, self.reason = "idle", "ready"
         self.log: deque = deque(maxlen=300)
         self._snap: dict = {}
@@ -128,12 +132,15 @@ class FaceServoSession:
         self.depth_camera, self.depth_det = depth_camera, depth_detector
         self.depth = DepthRangeCorrector()
         self.depth_status = "off" if not (depth_camera and depth_detector) else "starting"
+        self.depth_render = depth_render  # (frame, landmarks or None, session) -> jpeg bytes
+        self._depth_jpeg: bytes | None = None
         self.track_cfg = TrackConfig()
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.track: LevelTracker | None = None
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
         self._pose_fn = None  # camera pose from commanded joints while tracking
         self._q_hist: deque = deque(maxlen=400)
+        self._qm_hist: deque = deque(maxlen=400)  # MEASURED joints while tracking (servo sag included)
         self._ext_reach_start: float | None = None  # reach where the last extend began (for Retreat)
         self.hand_guide = False
         self._apply_level()
@@ -157,6 +164,10 @@ class FaceServoSession:
                     self.depth_status = "no depth frame"
                 else:
                     found = self.depth_det.landmarks(frame.rgb, self.robot.now())
+                    if self.depth_render is not None:
+                        jpg = self.depth_render(frame, None if found is None else found[0], self)
+                        with self._lock:
+                            self._depth_jpeg = jpg
                     if found is None:
                         self.depth_status = "depth ok, no face in it"
                     else:
@@ -212,6 +223,10 @@ class FaceServoSession:
     def jpeg(self) -> bytes | None:
         with self._lock:
             return self._jpeg
+
+    def depth_jpeg(self) -> bytes | None:
+        with self._lock:
+            return self._depth_jpeg
 
     def latest(self) -> dict:
         with self._lock:
@@ -275,6 +290,8 @@ class FaceServoSession:
             self.taught.save(self.path)
             self._apply_level()
             return self._event("level", f"saved: spoon is level when the tool pitch is {self.taught.spoon_level['tool_pitch_deg']:+.2f} deg")
+        if action == "set_tuning":
+            return self._event("tuning", self._set_tuning(**kw))
         if action == "set_params":
             self._require_idle()
             fields = {k: float(v) for k, v in kw.items() if k in ("stop_tip_distance", "joint_speed_degs")}
@@ -289,6 +306,7 @@ class FaceServoSession:
             raise RuntimeError("Extend is disabled (start the dashboard with --allow-extend)")
         self._require_idle()
         self._stop.clear()
+        self._kw = kw
         self.mode, self.reason = action, "starting"
         self._worker = threading.Thread(target=self._run, args=(action,), daemon=True)
         self._worker.start()
@@ -458,6 +476,39 @@ class FaceServoSession:
         except OSError:
             pass
 
+    BASE_VEL = (30.0, 20.0, 20.0, 15.0)
+
+    def _set_tuning(self, gain=None, speed_pct=None, accel=None, deadband_cm=None, smoothing_cm=None,
+                    rate_hz=None) -> str:
+        """Live smoothness tuning. Applies to the running tracker too."""
+        c = asdict(self.track_cfg)
+        if gain is not None:
+            c["gain"] = float(np.clip(float(gain), 0.3, 4.0))
+        if speed_pct is not None:
+            k = float(np.clip(float(speed_pct), 20.0, 150.0)) / 100.0
+            c["max_vel_deg"] = tuple(round(v * k, 2) for v in self.BASE_VEL)
+        if accel is not None:
+            c["max_acc_deg"] = float(np.clip(float(accel), 10.0, 200.0))
+        if deadband_cm is not None:
+            c["deadband_m"] = float(np.clip(float(deadband_cm), 0.2, 4.0)) / 100.0
+        if rate_hz is not None:
+            c["rate_hz"] = float(np.clip(float(rate_hz), 10.0, 60.0))
+        self.track_cfg = TrackConfig(**c)
+        if self.track is not None:
+            self.track.cfg = self.track_cfg
+        if smoothing_cm is not None:
+            kp = KalmanParams(sigma_meas=float(np.clip(float(smoothing_cm), 0.2, 5.0)) / 100.0, sigma_accel=0.3)
+            self.tracker.p = TrackerParams(**{**asdict(self.tracker.p), "kalman": kp})
+            self.tracker.kf.p = kp
+        t = self.tuning()
+        return ", ".join(f"{k} {v}" for k, v in t.items())
+
+    def tuning(self) -> dict:
+        c, kp = self.track_cfg, self.tracker.kf.p
+        return {"gain": c.gain, "speed_pct": round(100 * c.max_vel_deg[0] / self.BASE_VEL[0]), "accel": c.max_acc_deg,
+                "deadband_cm": round(c.deadband_m * 100, 2), "smoothing_cm": round(kp.sigma_meas * 100, 2),
+                "rate_hz": c.rate_hz}
+
     def _apply_level(self) -> None:
         """Use the saved spoon-level calibration as "level" for tracking and level aiming."""
         lvl = (self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)
@@ -469,6 +520,14 @@ class FaceServoSession:
         """Commanded joints at time t (robot clock), from the setpoint history."""
         best = self._q_hist[0][1]
         for ti, qi in self._q_hist:
+            if ti > t:
+                break
+            best = qi
+        return best
+
+    def _qm_at(self, t: float) -> np.ndarray:
+        best = self._qm_hist[0][1]
+        for ti, qi in self._qm_hist:
             if ti > t:
                 break
             best = qi
@@ -496,8 +555,14 @@ class FaceServoSession:
         self._q_hist.clear()
         self._q_hist.append((self.robot.now(), tr.q.copy()))
 
+        self._qm_hist.clear()
+        fast = getattr(self.robot, "joints_fast", None)
+
         def pose_at(t):
-            T = so101_fk(self._q_at(t - self.servo_lag)) @ offset
+            # The camera is where the arm REALLY is: measured joints (gravity sag included) at the
+            # frame's time; commanded joints minus the servo lag only if measurements are missing.
+            q_at = self._qm_at(t) if self._qm_hist else self._q_at(t - self.servo_lag)
+            T = so101_fk(q_at) @ offset
             return Pose.from_matrix(T[:3, 3], T[:3, :3])
 
         self._pose_fn = pose_at
@@ -510,7 +575,7 @@ class FaceServoSession:
                 now = self.robot.now()
                 st = self.tracker.state(now)
                 face = st.position if (st is not None and st.age <= 0.5) else None
-                ext_reason = ""
+                ext_reason, ext_log = "", {}
                 if extend:
                     e0 = tr.last or {}
                     tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool) if face is not None else 9.9
@@ -532,10 +597,26 @@ class FaceServoSession:
                     held_since = (held_since or time.monotonic()) if ext_reason.startswith("at the stop") else None
                     if direction > 0 and tr.travelled - tr.actual_travelled() > 0.015:
                         direction, ext_reason = 0, "arm at its reach limit here: not moving in further"
+                    if direction > 0 and tr.travelled >= getattr(self, "_ext_max_travel", 9.9):
+                        direction, ext_reason = 0, "at the arm's reach for a level spoon: not moving in further"
+                    if ext_reason != getattr(self, "_last_ext_reason", None) and ext_reason.split(":")[0] != \
+                            (getattr(self, "_last_ext_reason", "") or "").split(":")[0]:
+                        self._event("extend", ext_reason)
+                    self._last_ext_reason = ext_reason
+                    ext_log = {"ext_dir": direction, "ext_reason": ext_reason, "tip_cm": round(tip * 100, 1),
+                               "travel_target_cm": round(tr.travelled * 100, 1),
+                               "travel_actual_cm": round(tr.actual_travelled() * 100, 1),
+                               "head_speed_cm_s": None if st is None else round(st.speed * 100, 1)}
                     tr.advance(direction, dt, self.ext_cfg)
                 q = tr.step(face, dt, blind=extend and backing_out)
                 self.robot.stream_joints(q)
                 self._q_hist.append((self.robot.now(), q.copy()))
+                if fast is not None:
+                    try:
+                        self._qm_hist.append((self.robot.now(), np.asarray(fast(timeout=0.3), float)))
+                    except Exception:
+                        pass
+                c, dt = tr.cfg, 1.0 / tr.cfg.rate_hz  # tuning can change live
                 e = tr.last
                 if extend and ext_reason:
                     self.reason = f"extend: {ext_reason} | travelled {tr.travelled * 100:.1f} cm"
@@ -547,15 +628,21 @@ class FaceServoSession:
                     self.reason = "tracking: waiting for the face (holding still)"
                 if time.monotonic() - last_check > 0.5:  # is the real arm following?
                     last_check = time.monotonic()
-                    lag = float(np.max(np.abs(self.robot.joints(timeout=1.0) - self._q_at(self.robot.now() - 0.3))))
+                    q_real = self._qm_hist[-1][1] if self._qm_hist else self.robot.joints(timeout=1.0)
+                    lag = float(np.max(np.abs(q_real - self._q_at(self.robot.now() - 0.3))))
                     if lag > 10.0:
                         self.stop(f"arm is {lag:.0f} deg behind its commands (blocked?): stopped")
                         raise Stopped()
                 tick += 1
                 if tick % 4 == 0:
-                    self._log_plan({"kind": "track", "q_cmd": _r(q, 2), "v": _r(tr.v, 2), **e,
+                    Tq = so101_fk(q)
+                    self._log_plan({"kind": "extend" if extend else "track", "q_cmd": _r(q, 2), "v": _r(tr.v, 2), **e,
+                                    **ext_log, "tool_mm": _mm(Tq[:3, 3]),
+                                    "cam_mm": _mm(pose_at(self.robot.now()).position),
                                     "face_mm": _mm(face) if face is not None else None,
-                                    "face_age_s": None if st is None else round(st.age, 3)})
+                                    "face_age_s": None if st is None else round(st.age, 3),
+                                    "eye_span_mm": round(getattr(self.det, "params").eye_span_m * 1000, 1)
+                                    if hasattr(self.det, "params") else None})
                 next_t += dt
                 pause = next_t - time.monotonic()
                 if pause > 0:
@@ -597,14 +684,62 @@ class FaceServoSession:
         self.reason = f"spoon level ({self._spoon_tilt():+.1f} deg)"
         self._event("level", self.reason)
 
+    def _do_jog(self, speed_degs: float = 12.0) -> None:
+        """Debug jog with the spoon kept level: yaw (+ = to the right, seen from behind the arm
+        looking out along the spoon) by base pan only; up/down by shoulder+elbow+wrist together."""
+        kw = getattr(self, "_kw", {}) or {}
+        yaw = float(np.clip(float(kw.get("yaw_deg", 0.0)), -10.0, 10.0))
+        dz = float(np.clip(float(kw.get("dz_cm", 0.0)), -5.0, 5.0)) / 100.0
+        self._require_level()
+        q = self.robot.joints()
+        T0, T1 = so101_fk(q), so101_fk(q + np.array([1.0, 0, 0, 0, 0]))
+        az0, az1 = np.arctan2(T0[1, 2], T0[0, 2]), np.arctan2(T1[1, 2], T1[0, 2])  # spoon heading
+        pan_per_right = -1.0 if az1 > az0 else 1.0  # turning right = heading decreasing
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        target, rep = jog_level(q, pan_per_right * yaw, dz, level)
+        if not rep["ok"]:
+            raise RuntimeError(f"out of the arm's reach with a level spoon here (gets within {rep['miss_cm']} cm): try a smaller step")
+        try:
+            self.robot.set_speed(speed_degs)
+            what = (f"yaw {'right' if yaw > 0 else 'left'} {abs(yaw):g} deg" if yaw else "") + \
+                   (f"{' + ' if yaw else ''}{'up' if dz > 0 else 'down'} {abs(dz) * 100:g} cm" if dz else "")
+            self.reason = f"jog: {what}"
+            self._move(target)
+        finally:
+            self.robot.set_speed(self.cfg.joint_speed_degs)
+        self.reason = (f"jogged {what}: spoon height {rep['height_cm']} cm, reach {rep['reach_cm']} cm, "
+                       f"tilt {self._spoon_tilt():+.1f} deg")
+        self._event("jog", self.reason)
+
     def _do_center(self) -> None:
         self._require_level()
         self._track_loop()
 
     def _do_extend(self) -> None:
         self._require_level()
+        self._check_extend_reach()
         self.mode = "extend"
         self._track_loop(extend=True)
+
+    def _check_extend_reach(self) -> None:
+        """Refuse up front when the spoon can't get to the stop distance from here (instead of
+        stretching the arm out to its limit and backing off)."""
+        face, st = self._face_target(need=2, timeout=1.5)
+        if face is None:
+            raise RuntimeError("no face in view: centre on the person first")
+        q = self.robot.joints()
+        T = so101_fk(q)
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        tip = float(np.linalg.norm(face - T[:3, 3])) - self.ext_cfg.spoon_tip_from_tool
+        need = tip - self.ext_cfg.stop_tip_distance
+        avail = max_level_reach(q, level, self.track_cfg) - float(np.linalg.norm(T[:3, 3][:2]))
+        self._event("extend", f"check: spoon tip {tip * 100:.0f} cm from the lips, needs {need * 100:.0f} cm "
+                              f"more reach, the arm has {avail * 100:.0f} cm at this height")
+        if need > avail + 0.01:
+            raise RuntimeError(f"the person is out of reach: the spoon can only get to {tip * 100 - avail * 100:.0f} cm "
+                               f"from the lips here (stop distance {self.ext_cfg.stop_tip_distance * 100:.0f} cm): "
+                               f"move them about {(need - avail) * 100:.0f} cm closer")
+        self._ext_max_travel = avail
 
     def _do_auto_center(self) -> None:
         """One button, no calibration: find the face (sweep from start toward the look side if
@@ -693,7 +828,7 @@ class FaceServoSession:
             "params": {"stop_tip_distance_cm": round(self.ext_cfg.stop_tip_distance * 100, 1),
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
-            "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
+            "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend, "tuning": self.tuning(),
             "depth": {"status": self.depth_status, **self.depth.last,
                       "eye_span_mm": round(self.depth.eye_span_m * 1000, 1), "samples": len(self.depth.samples)},
             "level": {"saved_tool_pitch_deg": (self.taught.spoon_level or {}).get("tool_pitch_deg"),

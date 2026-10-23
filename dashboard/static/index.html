@@ -52,6 +52,12 @@
     <div style="color:var(--dim);font-size:12px;margin-top:6px">
       Cyan cross = where the spoon points (tolerance circle). Red dot = lips. Arrow = centring error (green when centred).
     </div>
+    <h2>Depth (Depth Anything 3 on the Orin, a few frames/s)</h2>
+    <img id="depthcam" alt="depth camera" style="width:100%;border-radius:6px;background:#000;aspect-ratio:4/3;object-fit:contain">
+    <div style="color:var(--dim);font-size:12px;margin-top:6px">
+      Red = near, blue = far. White box = the face, with its distance from depth (forehead, nose bridge, cheeks).
+      Cross = distance straight ahead.
+    </div>
   </section>
   <section>
     <div class="card">
@@ -79,6 +85,21 @@
         <button class="step nudge" data-deg="-5">▼ 5°</button>
         <button class="step" data-a="save_level" style="border-color: var(--ok)">Save spoon level</button>
       </div>
+      <h2>Jog (spoon stays level)</h2>
+      <div class="row" style="margin-bottom:6px">
+        Yaw:
+        <button class="step jog" data-yaw="-5">◀ 5°</button>
+        <button class="step jog" data-yaw="-1">◀ 1°</button>
+        <button class="step jog" data-yaw="1">1° ▶</button>
+        <button class="step jog" data-yaw="5">5° ▶</button>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Height:
+        <button class="step jog" data-dz="3">▲ 3 cm</button>
+        <button class="step jog" data-dz="1">▲ 1 cm</button>
+        <button class="step jog" data-dz="-1">▼ 1 cm</button>
+        <button class="step jog" data-dz="-3">▼ 3 cm</button>
+      </div>
       <h2>Motion tests</h2>
       <div class="steps">
         <button class="step" data-a="home"><b>1</b>Start centered</button>
@@ -100,6 +121,20 @@
         Speed <input type="number" id="speed" min="12" max="60" step="1"> °/s
         <button class="step" id="apply">Apply</button>
       </div>
+      <h2>Tuning (smoothness; applies live)</h2>
+      <div class="row" style="margin-bottom:6px">
+        Response <input type="number" id="t_gain" step="0.1" min="0.3" max="4"> /s
+        Speed <input type="number" id="t_speed" step="10" min="20" max="150"> %
+        Accel <input type="number" id="t_accel" step="10" min="10" max="200"> °/s²
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Deadband <input type="number" id="t_dead" step="0.2" min="0.2" max="4"> cm
+        Face smoothing <input type="number" id="t_smooth" step="0.2" min="0.2" max="5"> cm
+        Rate <input type="number" id="t_rate" step="5" min="10" max="60"> Hz
+        <button class="step" id="t_apply">Apply tuning</button>
+      </div>
+      <div style="color:var(--dim);font-size:12px">Smoother: lower Response and Accel, raise Deadband and Face smoothing.
+        Snappier: the opposite. Rate: more setpoints per second = finer steps on the servos.</div>
       <div id="msg"></div>
     </div>
     <div class="card" style="margin-top:16px">
@@ -117,6 +152,7 @@
 <script>
 const token = new URLSearchParams(location.search).get("token") || "";
 document.getElementById("cam").src = "/stream.mjpg?token=" + encodeURIComponent(token);
+document.getElementById("depthcam").src = "/depth.mjpg?token=" + encodeURIComponent(token);
 const $ = id => document.getElementById(id);
 let paramsLoaded = false;
 
@@ -137,8 +173,13 @@ document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
 });
 $("stop").onclick = () => cmd("stop");
 document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nudge_spoon", { deg: parseFloat(b.dataset.deg) }));
+document.querySelectorAll("button.jog").forEach(b => b.onclick = () => cmd("jog", {
+  yaw_deg: parseFloat(b.dataset.yaw || 0), dz_cm: parseFloat(b.dataset.dz || 0) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
 $("apply").onclick = () => cmd("set_params", { stop_tip_distance: $("stopcm").value / 100, joint_speed_degs: $("speed").value });
+$("t_apply").onclick = () => cmd("set_tuning", { gain: $("t_gain").value, speed_pct: $("t_speed").value, accel: $("t_accel").value,
+  deadband_cm: $("t_dead").value, smoothing_cm: $("t_smooth").value, rate_hz: $("t_rate").value });
+let tuningLoaded = false;
 
 function rows(el, obj) {
   el.innerHTML = Object.entries(obj).map(([k, v]) =>
@@ -176,6 +217,10 @@ async function poll() {
     });
     document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
       el.style.display = s.allow_extend ? "" : "none");
+    if (!tuningLoaded && s.tuning) {
+      const t = s.tuning; $("t_gain").value = t.gain; $("t_speed").value = t.speed_pct; $("t_accel").value = t.accel;
+      $("t_dead").value = t.deadband_cm; $("t_smooth").value = t.smoothing_cm; $("t_rate").value = t.rate_hz; tuningLoaded = true;
+    }
     if (!paramsLoaded) { $("stopcm").value = s.params.stop_tip_distance_cm; $("speed").value = s.params.joint_speed_degs; paramsLoaded = true; }
     const L = s.level || {};
     $("lvl").textContent = (L.hand_guide ? "HAND-GUIDE ON · " : "") + "spoon tilt now " +

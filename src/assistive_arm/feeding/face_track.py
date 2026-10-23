@@ -30,11 +30,11 @@ ROLL = 4
 
 @dataclass(frozen=True)
 class TrackConfig:
-    rate_hz: float = 20.0
+    rate_hz: float = 30.0  # setpoints per second (more = finer steps = smoother on the servos)
     gain: float = 1.6  # 1/s: errors decay with a ~0.6 s time constant
     max_vel_deg: tuple = (30.0, 20.0, 20.0, 15.0)  # deg/s: pan, lift, elbow, flex (flex gentle: it swings the camera)
     max_acc_deg: float = 80.0  # deg/s^2 (smoothness)
-    deadband_m: float = 0.006  # miss below this: no correction
+    deadband_m: float = 0.010  # miss below this: no correction (above the face estimate's ~1 cm jitter: no hunting)
     taper_m: float = 0.02  # correction ramps in over this much more miss (soft deadband)
     pitch_scale: float = 0.5  # m per rad: weight of spoon level vs. aim (level wins)
     pitch_target_deg: float = 0.0  # tool pitch at which the SPOON is level (dashboard: Save spoon level)
@@ -62,7 +62,7 @@ class ExtendConfig:
     """Moving the spoon in toward the lips with the tracker (every number: safety lead review)."""
 
     approach_speed: float = 0.015  # m/s the reach target moves in
-    retreat_speed: float = 0.04  # m/s back out
+    retreat_speed: float = 0.025  # m/s back out (gentle: a fast back-out after a slow approach looked jumpy)
     stop_tip_distance: float = 0.20  # m spoon tip to lips: stop here. FIRST RUNS: 0.20
     min_tip_distance_floor: float = 0.03  # hard floor (person mode, AGENTS.md section 4)
     spoon_tip_from_tool: float = 0.21  # m from the tool frame to the spoon tip. TODO: measure
@@ -229,3 +229,93 @@ class LevelTracker:
         self.v = (q_new - self.q) / dt  # a joint at its limit stops
         self.q = q_new
         return self.q.copy()
+
+
+def solve_level_pose(q_deg, reach_m: float, height_m: float, level_pitch_deg: float = 0.0, fk=so101_fk,
+                     limits=None, posture=None, iters: int = 200) -> tuple[np.ndarray, bool]:
+    """Shoulder, elbow and wrist flex for a tool at (reach, height) with the spoon at level, base
+    pan and wrist roll unchanged. Returns (joints, reached within 5 mm / 1 deg)."""
+    q = np.asarray(q_deg, float).copy()
+    lim = joint_limits() if limits is None else np.asarray(limits, float)
+    lo, hi = lim[:, 0] + 3, lim[:, 1] - 3
+    if posture is not None:
+        lo[1:4] = np.maximum(lo[1:4], posture[0]); hi[1:4] = np.minimum(hi[1:4], posture[1])
+    target = np.array([reach_m, height_m, np.radians(level_pitch_deg)])
+    w = np.array([1.0, 1.0, 0.5])
+
+    def task(qq):
+        T = fk(qq)
+        return np.array([np.linalg.norm(T[:3, 3][:2]), T[2, 3], np.arcsin(np.clip(T[2, 2], -1, 1))])
+
+    for _ in range(iters):
+        e = (target - task(q)) * w
+        if np.max(np.abs(e)) < 5e-5:
+            break
+        J = np.zeros((3, 3))
+        for i, j in enumerate((1, 2, 3)):
+            dq = np.zeros(5); dq[j] = 0.05
+            J[:, i] = (task(q + dq) - task(q)) * w / 0.05
+        q[1:4] = np.clip(q[1:4] + np.clip(J.T @ np.linalg.solve(J @ J.T + 1e-6 * np.eye(3), e), -5, 5), lo[1:4], hi[1:4])
+    err = target - task(q)
+    return q, bool(abs(err[0]) < 0.005 and abs(err[1]) < 0.005 and abs(np.degrees(err[2])) < 1.0)
+
+
+def max_level_reach(q_deg, level_pitch_deg: float = 0.0, cfg: "TrackConfig | None" = None, fk=so101_fk,
+                    extra_m: float = 0.45) -> float:
+    """Largest tool reach (m from the base axis) at the current height with a level spoon, inside
+    the tracker's comfort posture. Binary search on ``solve_level_pose``."""
+    c = cfg or TrackConfig()
+    T = fk(q_deg)
+    r0, z0 = float(np.linalg.norm(T[:3, 3][:2])), float(T[2, 3])
+    posture = (np.asarray(c.posture_lo[1:]), np.asarray(c.posture_hi[1:]))
+    lo, hi, q = r0, r0 + extra_m, np.asarray(q_deg, float)
+    if not solve_level_pose(q, r0, z0, level_pitch_deg, fk, posture=posture)[1]:
+        return r0
+    for _ in range(14):
+        mid = 0.5 * (lo + hi)
+        qm, ok = solve_level_pose(q, mid, z0, level_pitch_deg, fk, posture=posture)
+        if ok:
+            lo, q = mid, qm
+        else:
+            hi = mid
+    return lo
+
+
+def jog_level(q_deg, d_yaw_deg: float = 0.0, d_z_m: float = 0.0, level_pitch_deg: float = 0.0,
+              fk=so101_fk, limits=None, iters: int = 200) -> tuple[np.ndarray, dict]:
+    """Joint target for a debug jog that keeps the spoon level: yaw = base pan only (a pure
+    rotation about the base axis, so level and reach are untouched); height = shoulder, elbow
+    and wrist flex solved together for (height + d_z, same reach, spoon pitch = level).
+    Returns (joints, report); report["ok"] is False if the target is outside the arm's reach."""
+    q = np.asarray(q_deg, float).copy()
+    lim = joint_limits() if limits is None else np.asarray(limits, float)
+    q[0] = float(np.clip(q[0] + d_yaw_deg, lim[0, 0] + 3, lim[0, 1] - 3))
+    T0 = fk(q)
+    if d_z_m == 0.0:  # yaw only: a pure base rotation; nothing else moves
+        return q, {"ok": True, "height_cm": round(float(T0[2, 3]) * 100, 1),
+                   "reach_cm": round(float(np.linalg.norm(T0[:3, 3][:2])) * 100, 1),
+                   "tilt_deg": round(float(np.degrees(np.arcsin(np.clip(T0[2, 2], -1, 1)))) - level_pitch_deg, 1),
+                   "miss_cm": 0.0}
+    target = np.array([np.linalg.norm(T0[:3, 3][:2]), T0[2, 3] + d_z_m, np.radians(level_pitch_deg)])
+
+    def task(qq):
+        T = fk(qq)
+        return np.array([np.linalg.norm(T[:3, 3][:2]), T[2, 3], np.arcsin(np.clip(T[2, 2], -1, 1))])
+
+    w = np.array([1.0, 1.0, 0.5])  # m, m, rad (0.5 m per rad)
+    for _ in range(iters):
+        e = (target - task(q)) * w
+        if np.max(np.abs(e)) < 5e-5:
+            break
+        J = np.zeros((3, 3))
+        for i, j in enumerate((1, 2, 3)):
+            dq = np.zeros(5); dq[j] = 0.05
+            J[:, i] = (task(q + dq) - task(q)) * w / 0.05
+        step = J.T @ np.linalg.solve(J @ J.T + 1e-6 * np.eye(3), e)
+        q[1:4] = np.clip(q[1:4] + np.clip(step, -5, 5), lim[1:4, 0] + 3, lim[1:4, 1] - 3)
+    got = task(q)
+    err = (target - got) * np.array([100, 100, np.degrees(1)])
+    ok = abs(err[0]) < 0.5 and abs(err[1]) < 0.5 and abs(err[2]) < 1.0
+    return q, {"ok": bool(ok), "height_cm": round(float(got[1]) * 100, 1), "reach_cm": round(float(got[0]) * 100, 1),
+               "tilt_deg": round(float(np.degrees(got[2])) - level_pitch_deg, 1),
+               "miss_cm": round(float(np.hypot(err[0], err[1])), 1)}
