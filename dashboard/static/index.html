@@ -62,17 +62,36 @@
       </div>
       <h2>Teach (with teleop on)</h2>
       <div class="steps">
-        <button class="step" data-a="teach_look"><b>1</b>Teach look</button>
-        <button class="step" data-a="teach_near"><b>2</b>Teach near</button>
+        <button class="step" data-a="teach_look"><b>T1</b>Teach look (facing the person)</button>
+        <button class="step" data-a="teach_home"><b>T0</b>Teach start (optional)</button>
       </div>
-      <h2>Run</h2>
+      <h2>Spoon level (calibrate once)</h2>
+      <div class="row" style="margin-bottom:6px">
+        <button class="step" data-a="hand_guide_on">Hand-guide on</button>
+        <button class="step" data-a="hand_guide_off">Hand-guide off</button>
+        <span id="lvl" style="color:var(--dim)"></span>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Spoon tip:
+        <button class="step nudge" data-deg="5">▲ 5°</button>
+        <button class="step nudge" data-deg="1">▲ 1°</button>
+        <button class="step nudge" data-deg="-1">▼ 1°</button>
+        <button class="step nudge" data-deg="-5">▼ 5°</button>
+        <button class="step" data-a="save_level" style="border-color: var(--ok)">Save spoon level</button>
+      </div>
+      <h2>Motion tests</h2>
       <div class="steps">
-        <button class="step" data-a="sweep"><b>3</b>Sweep to person</button>
-        <button class="step" data-a="find_face"><b>4</b>Find face</button>
-        <button class="step" data-a="calibrate"><b>5</b>Calibrate (hold still)</button>
-        <button class="step" data-a="center"><b>6</b>Center on face</button>
-        <button class="step danger" data-a="extend" id="extend"><b>7</b>Extend toward face</button>
-        <button class="step" data-a="retreat">Retreat to look</button>
+        <button class="step" data-a="home"><b>1</b>Start centered</button>
+        <button class="step" data-a="search"><b>2</b>Sweep to look for person</button>
+        <button class="step" data-a="sweep"><b>3</b>Sweep to look pose</button>
+        <button class="step" data-a="find_face">Find face near look pose</button>
+      </div>
+      <h2>Face servo (smooth 20 Hz tracking, spoon kept level)</h2>
+      <div class="steps">
+        <button class="step" data-a="auto_center" style="grid-column: span 2; border-color: var(--accent)"><b>★</b>Auto center: find face → keep the spoon pointed at the lips</button>
+        <button class="step" data-a="center"><b>4</b>Center (face already in view)</button>
+        <button class="step danger" data-a="extend" id="extend"><b>5</b>Extend toward face</button>
+        <button class="step" data-a="retreat">Retreat</button>
       </div>
       <label class="chk"><input type="checkbox" id="consent"> The person is ready, can move away, and someone is watching STOP</label>
       <div class="row">
@@ -86,6 +105,11 @@
       <h2 style="margin-top:0">Face</h2><table id="face"></table>
       <h2>Arm</h2><table id="arm"></table>
       <h2>Log</h2><div id="log"></div>
+      <h2>Depth view (Depth Anything 3, from the Orin)</h2>
+      <details><summary style="cursor:pointer;color:var(--dim)">show the depth preview</summary>
+        <iframe src="http://localhost:8766" style="width:100%;height:520px;border:1px solid var(--line);border-radius:6px;margin-top:8px;background:#000"></iframe>
+        <div style="color:var(--dim);font-size:12px">The module's own page, tunnelled over the cable by run_mac.sh (port 8766).</div>
+      </details>
     </div>
   </section>
 </main>
@@ -111,6 +135,7 @@ document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
   cmd(a);
 });
 $("stop").onclick = () => cmd("stop");
+document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nudge_spoon", { deg: parseFloat(b.dataset.deg) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
 $("apply").onclick = () => cmd("set_params", { stop_tip_distance: $("stopcm").value / 100, joint_speed_degs: $("speed").value });
 
@@ -134,15 +159,27 @@ async function poll() {
       "facing camera": f.frontalness, "mouth": f.open == null ? null : (f.open ? "open" : "closed") + ` (${f.open_ratio})`,
       "head speed": f.speed_cm_s != null ? f.speed_cm_s + " cm/s" : null, "fix age": f.age_s != null ? f.age_s + " s" : null,
       "mouth (base, mm)": f.position_mm,
+      "distance from depth": s.depth && s.depth.depth_cm != null ? s.depth.depth_cm + " cm (eye-span guess " + s.depth.eye_span_estimate_cm + " cm)" : null,
+      "depth calibration": s.depth ? s.depth.status + " · eye span " + s.depth.eye_span_mm + " mm (" + s.depth.samples + " samples)" : null,
     });
     rows($("arm"), {
-      "joints (deg)": s.joints, "look pose": s.taught.look, "near pose": s.taught.near,
-      "calibrated": s.taught.calibrated ? "yes" : "no",
-      "path progress s": s.servo ? s.servo.s : null, "offset pan/flex (deg)": s.servo ? s.servo.offset_deg : null,
+      "joints (deg)": s.joints, "start pose": s.taught.home || "look with pan 0", "look pose": s.taught.look,
+      "lips off the spoon line": s.track ? s.track.miss_cm + " cm (side " + s.track.lateral_cm + ", up " + s.track.vertical_cm + ")"
+        : (s.servo && s.servo.miss_cm != null ? s.servo.miss_cm + " cm" : null),
+      "spoon tilt (level = 0)": s.track ? s.track.pitch_deg + "°" : (s.servo && s.servo.spoon_tilt_deg != null ? s.servo.spoon_tilt_deg + "°" : null),
+      "spoon tip → lips (servo)": s.servo ? s.servo.tip_distance_cm + " cm" : null,
+      "extended": s.servo ? s.servo.travelled_cm + " cm" : null,
+      "planner": s.planner ? (s.planner.failures_in_a_row ? s.planner.failures_in_a_row + " failed: " + s.planner.last_error : "ok") : null,
       "stop distance": s.params.stop_tip_distance_cm + " cm (floor " + s.params.floor_cm + ")",
       "speed cap": s.params.joint_speed_degs + " °/s",
     });
+    document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
+      el.style.display = s.allow_extend ? "" : "none");
     if (!paramsLoaded) { $("stopcm").value = s.params.stop_tip_distance_cm; $("speed").value = s.params.joint_speed_degs; paramsLoaded = true; }
+    const L = s.level || {};
+    $("lvl").textContent = (L.hand_guide ? "HAND-GUIDE ON · " : "") + "spoon tilt now " +
+      (L.spoon_tilt_now_deg == null ? "?" : L.spoon_tilt_now_deg + "°") +
+      (L.saved_tool_pitch_deg == null ? " (not calibrated: tool level = 0°)" : " (calibrated: level at tool pitch " + L.saved_tool_pitch_deg + "°)");
     $("log").innerHTML = s.log.map(e => `<div>${e.t} <b>${e.kind}</b> ${e.msg}</div>`).join("");
   } catch (e) { $("mode").textContent = "disconnected"; }
   setTimeout(poll, 300);

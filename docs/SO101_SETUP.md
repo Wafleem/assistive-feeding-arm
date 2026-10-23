@@ -166,3 +166,87 @@ Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3
 - **Venue Wi-Fi:** 300-600 ms pings and failed WebRTC connections made live commands
   (`DoCommand`, `GetImages`) time out, even while the part showed online. Config still got
   through, which is why teleop now uses `auto_start: true`.
+
+## Network: give the Orin the laptop's internet over the USB cable (2026-10-23)
+At its spot the Orin's Wi-Fi was at −80 dBm (6 Mbit/s uplink, 300–600 ms pings), so
+viam-server kept dropping off the cloud: 32 of 45 WebRTC connections failed in 10 minutes,
+and teammates couldn't connect from app.viam.com. Routing its traffic through a laptop on
+the Jetson's USB link fixed it (about 22 ms pings, 6 of 7 connections succeeding, no
+log-upload errors).
+
+1. USB-C cable from the laptop to the Orin's **device-mode port** (next to the 40-pin
+   header). The Orin is `192.168.55.1`, the laptop `192.168.55.100`.
+2. On the laptop (macOS, Wi-Fi on `en0`), once per laptop boot. You run this yourself; it needs your password:
+   ```bash
+   sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on en0 from 192.168.55.0/24 to any -> (en0) static-port" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
+   ```
+   Undo: `sudo pfctl -a com.apple/jetson-share -F all && sudo sysctl -w net.inet.ip.forwarding=0`
+3. On the Orin, once per Orin boot (it doesn't survive a reboot, on purpose):
+   ```bash
+   sudo setsid nohup ~/assistive-arm-servo/scripts/usb_uplink_watchdog.sh >/dev/null 2>&1 </dev/null &
+   ```
+   Every 10 s it checks 1.1.1.1 through the laptop. While that works, the default route goes
+   via the laptop (metric 50) with DNS 1.1.1.1/8.8.8.8. After 3 failures (cable out, laptop
+   asleep, sharing off), it removes that route and the Orin's own Wi-Fi (metric 600) takes over.
+   Its switches are logged under `usb-uplink` in the system log.
+   Stop it with `sudo pkill -f usb_uplink_watchdog.sh` (run from a separate shell, not over
+   an `ssh host '...'` line that contains the same text).
+
+`static-port` matters: without it, macOS's NAT randomises source ports, Viam's network check
+reports a "hard" NAT, and the app labels the machine **Degraded** (UDP/STUN). The direct
+WebRTC paths get weaker and connections fall back to TURN relays.
+
+Teammates still SSH in over Wi-Fi as usual (`ssh ultraviolet@10.55.13.77` or `rm-sentry.local`):
+the watchdog adds a source rule (table 100) so anything addressed to the Wi-Fi IP answers over Wi-Fi.
+
+Keep the laptop awake and on the cable while others rely on the machine. SSH to the Orin
+over the cable with `HostKeyAlias=rm-sentry.local`, because every Jetson uses `192.168.55.1`.
+
+## Face servo: "zero IK solutions" errors (2026-10-23), found and fixed
+**Symptom:** Auto center worked for small corrections, then failed with `move to position failed
+with the caller-supplied pose_cloud: ... zero IK solutions produced, goal positions appears
+to be physically unreachable`. This happened when the person shifted sideways: the aim error
+jumped to 14-15° and the next 8° turn failed. Small turns also never quite converged (3-5° left over).
+
+**Cause:** the SO-101 has 5 joints and **no wrist yaw**. Its tool axis always lies in the
+vertical plane through the base axis, so aiming left or right *requires* the base pan, which
+carries the whole gripper sideways (about 2.8 cm for 8° at a 20 cm reach). The servo asked
+the planner to turn the tool sideways while holding its position within ±8 mm. That pose doesn't
+exist for this arm, so the IK was right to find no solution.
+
+**Fix** (`feeding/face_servo.py: aim_pan_tilt`): every target is reachable by construction.
+The tool pose is swung about the base axis toward the face's azimuth (≤ 8°/step), then tilted
+inside the arm's plane toward the lips (≤ 8°/step); extend steps stay in that plane. A failed
+plan is retried once with a 3× wider pose cloud, and the servo stops only after 3 failures in a
+row. Every planner call (inputs, target, joints before/after, result, error, timing) is appended
+to `data/logs/face_servo-YYYYMMDD.jsonl` (git-ignored). The test fake now rejects
+out-of-plane targets the way the real arm does.
+
+## Face servo: smooth continuous tracking (2026-10-23)
+**Symptom:** centring was jerky and didn't settle on the mouth. The plan log showed why:
+every tight `MoveToPosition` timed out after about 1 s with no solution, and the wider retry
+"succeeded" in 25 ms without moving (the arm was already inside the looser goal). So each step
+was a 1 s stall followed by nothing, with occasional real moves.
+
+**Now** (`feeding/face_track.py: LevelTracker`): a 20 Hz loop computes the next joint setpoint
+from local forward kinematics (`robot_iface/so101_kinematics.py`, from `Arm.GetKinematics`,
+checked to 0.2 mm / 0.3° against the arm). Each tick it reduces the lips' sideways and
+vertical miss from the spoon line, the spoon's tilt (level = 0) and any reach change, using
+pan, lift, elbow and flex (wrist roll is held). It uses a soft deadband (no hunting),
+per-joint velocity limits (20–30 °/s) and an acceleration limit (80 °/s²). Setpoints are
+streamed (`streamed: true`, the teleop path) over the direct cable connection. While tracking,
+the camera pose comes from the commanded joints at each frame's time (minus 0.12 s servo lag),
+so moving doesn't skew the face estimate. The loop stops if the real arm falls more than 10°
+behind its commands. Extend still uses the planner and stays off by default.
+
+## Depth Anything 3 corrects the face range (2026-10-23)
+The `depth-anything-3` module (`modules/depth-anything-3`, merged from `core/depth-anything-3`)
+serves `webcam-2-depth`: metric depth aligned to `webcam-2`, at about 5 Hz on the Orin's GPU.
+That's too slow to drive the 20 Hz face loop, so the dashboard uses it to calibrate instead:
+a background thread reads the face's depth (forehead, nose bridge, cheeks; never the mouth)
+about 4×/s and learns this person's eye-corner span (`mouth_perception/depth_range.py`, a
+running median of plausible samples). The fast pipeline then ranges the face with that span,
+so distance, and with it the lips' height, are metric. That was the up/down offset seen
+when the 90 mm average span didn't fit the person. Both cameras use fx = 772.5 px (hfov 45°).
+The dashboard shows the depth distance next to the fast estimate and embeds the module's
+own preview page (tunnelled to `localhost:8766` by `dashboard/run_mac.sh`).

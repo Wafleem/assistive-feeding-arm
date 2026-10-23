@@ -1,0 +1,13 @@
+# torch + torchvision are installed by setup.sh (the right build depends on the machine).
+# Depth Anything 3 itself is installed by setup.sh without its export-only dependencies;
+# these are what its inference path imports.
+viam-sdk>=0.85
+numpy<2
+pillow
+einops
+huggingface_hub
+safetensors
+omegaconf
+addict
+opencv-python-headless
+imageio

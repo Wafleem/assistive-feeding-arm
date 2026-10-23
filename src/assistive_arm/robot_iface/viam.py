@@ -204,8 +204,11 @@ class ViamRobot(RobotInterface):
 async def connect(address: str | None = None):
     """RobotClient from VIAM_ADDRESS / VIAM_API_KEY / VIAM_API_KEY_ID.
 
-    ``VIAM_ADDRESS=localhost:8080`` (on the machine itself) dials viam-server directly,
-    without the cloud: use it on the Orin, where the venue Wi-Fi made cloud dialling flaky."""
+    ``VIAM_ADDRESS=localhost:<port>`` dials viam-server directly over TLS, without the cloud:
+    on the Orin itself (port 8080), or from a laptop through an SSH tunnel over the Jetson's
+    USB link (``ssh -L 18080:localhost:8080 ultraviolet@192.168.55.1``, then
+    ``localhost:18080``). The venue Wi-Fi made cloud (WebRTC) dialling unreliable.
+    The SDK skips certificate hostname checks for localhost only."""
     from viam.robot.client import RobotClient
     from viam.rpc.dial import DialOptions
 
@@ -214,12 +217,10 @@ async def connect(address: str | None = None):
     if address.startswith(("localhost", "127.0.0.1")):
         opts.dial_options = DialOptions.with_api_key(os.environ["VIAM_API_KEY"], os.environ["VIAM_API_KEY_ID"])
         opts.dial_options.disable_webrtc = True
-        opts.dial_options.insecure = True
-        opts.dial_options.allow_insecure_with_creds_downgrade = True
     return await RobotClient.at_address(address, opts)
 
 # Logitech C270 at 640x480 (~60 deg diagonal FOV) until a checkerboard calibration exists.
-C270_640x480 = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
+C270_640x480 = CameraIntrinsics(772.5, 772.5, 320.0, 240.0, 640, 480)  # = hfov 45 deg, as the depth module assumes
 
 
 def _rgb_and_depth(images):
@@ -233,7 +234,7 @@ def _rgb_and_depth(images):
     depth = next((i for i in images if "dep" in i.mime_type), None)
     if depth is None:  # plain webcam: no depth; detectors fall back to monocular priors
         return rgb, np.zeros(rgb.shape[:2], np.float32)
-    return rgb, depth.bytes_to_depth_array().astype(np.float32) / 1000.0
+    return rgb, np.asarray(depth.bytes_to_depth_array(), dtype=np.float32) / 1000.0  # mm -> m
 
 
 class ViamCameraRig:
@@ -251,10 +252,37 @@ class ViamCameraRig:
         from viam.components.camera import Camera
 
         self._io = io or _Loop()
+        self._address = address  # None + client given: reconnect via the env VIAM_ADDRESS is not attempted
+        self._own_client = client is None or address is not None
         self.client = client or self._io.run(connect(address))
-        self._cams = {c: Camera.from_robot(self.client, c) for c in cameras}
+        self._names = tuple(cameras)
+        self._cams = {c: self._find(Camera, c) for c in cameras}
+        self._failures = 0
         self._k = dict(intrinsics or {})
         self.pose_error: str | None = None
+
+    def _find(self, kind, name: str, wait: float = 15.0):
+        """``kind.from_robot`` that rides out a machine reconfiguring (its resource list is
+        briefly incomplete while a config change applies): refresh and retry for ``wait`` s."""
+        import time
+
+        from viam.errors import ResourceNotFoundError
+
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                return kind.from_robot(self.client, name)
+            except ResourceNotFoundError:
+                # Over a direct (non-WebRTC) connection the SDK's resource manager can miss
+                # module-provided resources that the machine does list; talk to it directly.
+                if any(r.name == name for r in self.client.resource_names):
+                    from viam.components.camera.client import CameraClient
+
+                    return CameraClient(name, self.client._channel)
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(1.0)
+                self._io.run(self.client.refresh(), timeout=10)
 
     def now(self) -> float:
         import time
@@ -271,13 +299,33 @@ class ViamCameraRig:
     def cameras(self) -> dict[str, CameraSpec]:
         return {c: CameraSpec(c, "wrist", self.intrinsics(c)) for c in self._cams}
 
-    def get_frames(self, names=None) -> dict[str, RGBDFrame]:
+    def reconnect(self) -> None:
+        """Fresh connection (e.g. after viam-server restarted and the SDK's own reconnect stalled)."""
+        from viam.components.camera import Camera
+
+        old = self.client
+        try:
+            self._io.run(old.close(), timeout=3)
+        except Exception:
+            pass
+        self.client = self._io.run(connect(self._address), timeout=30)
+        self._cams = {c: self._find(Camera, c) for c in self._names}
+        self._failures = 0
+
+    def get_frames(self, names=None, timeout: float = 5.0) -> dict[str, RGBDFrame]:
         out = {}
-        for name in names or list(self._cams):
-            t = self.now()
-            images, _ = self._io.run(self._cams[name].get_images(), timeout=10)
-            rgb, depth = _rgb_and_depth(images)
-            out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
+        try:
+            for name in names or list(self._cams):
+                t = self.now()
+                images, _ = self._io.run(self._cams[name].get_images(), timeout=timeout)
+                rgb, depth = _rgb_and_depth(images)
+                out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
+        except Exception:
+            self._failures += 1
+            if self._failures >= 2 and self._own_client:
+                self.reconnect()
+            raise
+        self._failures = 0
         return out
 
     def camera_pose(self, name: str) -> Pose:

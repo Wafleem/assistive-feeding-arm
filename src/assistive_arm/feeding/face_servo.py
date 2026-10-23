@@ -174,3 +174,200 @@ class FaceServoController:
             self.s, self.approaching = 0.0, False
             return ServoCommand("retreat", reason=reason)
         return ServoCommand("hold", reason=reason)
+
+
+# --------------------------------------------------------------------------------------------
+# Pointing servo: no calibration. The face's 3D position (camera + frame system) and the
+# tool's pose give the direction from the gripper to the lips; the arm's own planner
+# (MoveToPosition) turns the spoon toward it in small steps, and (extend) moves along it.
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PointingConfig:
+    aligned_deg: float = 3.0  # spoon within this angle of the lips = centred
+    max_turn_deg: float = 8.0  # largest re-aim per step
+    approach_step: float = 0.03  # m per extend step
+    spoon_tip_from_tool: float = 0.21  # m from the tool frame to the spoon tip along tool +Z. TODO: measure
+    stop_tip_distance: float = 0.20  # m spoon tip to lips: stop here. FIRST RUNS: 0.20
+    min_tip_distance_floor: float = 0.03  # hard floor (person mode, AGENTS.md section 4)
+    max_head_speed: float = 0.05  # m/s: faster => no approach
+    retreat_head_speed: float = 0.12  # m/s: faster during an approach => retreat
+    max_age: float = 0.6  # s since the last face fix (a few dropped frames are fine)
+    position_leeway_mm: float = 8.0  # planner leeway on the tool position while re-aiming
+    orientation_leeway: float = 0.03  # planner leeway on each orientation-vector component (~2 deg)
+    max_joint_jump_deg: float = 25.0  # a single planned step moving any joint more than this => stop
+    joint_speed_degs: float = 20.0
+    # Level spoon (don't spill): aim by base pan + raising/lowering the gripper, never by tilting.
+    level_spoon: bool = True
+    level_tol_deg: float = 2.0  # spoon pitch within this of horizontal = level
+    aim_tol_m: float = 0.015  # level mode: the spoon line passes within this of the lips = centred
+    max_dz_step: float = 0.03  # m height change per step
+    spoon_dz: float = 0.0  # m: spoon line height above the tool axis (taped in the fixed jaw). TODO: measure
+    roll_leeway_deg: float = 4.0  # wrist roll held at its starting value (bowl up) within this
+    level_pitch_deg: float = 0.0  # tool pitch at which the SPOON is level (saved by "Save spoon level")
+
+    def __post_init__(self):
+        if self.stop_tip_distance < self.min_tip_distance_floor:
+            raise ValueError(f"stop_tip_distance {self.stop_tip_distance} m is below the "
+                             f"{self.min_tip_distance_floor} m floor")
+
+
+@dataclass
+class PointCommand:
+    kind: str  # "hold" | "point" | "approach" | "retreat" | "done"
+    position: np.ndarray | None = None  # tool position target (m, base frame)
+    direction: np.ndarray | None = None  # tool +Z target (unit, base frame)
+    reason: str = ""
+    angle_deg: float = 0.0
+    tip_distance: float = 0.0
+
+
+def _unit(v) -> np.ndarray:
+    v = np.asarray(v, float)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def turn_toward(a, b, max_deg: float) -> np.ndarray:
+    """Rotate unit vector a toward b by at most max_deg (in their common plane)."""
+    a, b = _unit(a), _unit(b)
+    ang = float(np.degrees(np.arccos(np.clip(np.dot(a, b), -1, 1))))
+    if ang <= max_deg or ang < 1e-6:
+        return b
+    t = max_deg / ang
+    w = np.radians(ang)
+    return _unit((np.sin((1 - t) * w) * a + np.sin(t * w) * b) / np.sin(w))
+
+
+def _rot_z(v, a: float) -> np.ndarray:
+    c, s = np.cos(a), np.sin(a)
+    v = np.asarray(v, float)
+    return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]])
+
+
+def _wrap(a: float) -> float:
+    return float((a + np.pi) % (2 * np.pi) - np.pi)
+
+
+def arm_plane_normal(tool_pos) -> np.ndarray:
+    """Normal of the vertical plane through the base axis and the tool (SO-101: the tool axis
+    always lies in this plane, because the arm has no wrist yaw)."""
+    az = np.arctan2(tool_pos[1], tool_pos[0])
+    return np.array([-np.sin(az), np.cos(az), 0.0])
+
+
+def aim_pan_tilt(tool_pos, tool_z, face, max_pan_deg: float, max_tilt_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Next aiming step that a 5-DOF pan + planar arm (no wrist yaw, like the SO-101) can
+    actually reach: swing the whole tool pose about the base axis toward the face's azimuth
+    (base pan, <= max_pan_deg), then tilt within the arm's vertical plane toward the face
+    (<= max_tilt_deg). Turning sideways while holding the tool position still is
+    impossible for this arm (the planner reports zero IK solutions)."""
+    tool_pos, face = np.asarray(tool_pos, float), np.asarray(face, float)
+    az_plane = np.arctan2(tool_pos[1], tool_pos[0])
+    az_face = np.arctan2(face[1], face[0])
+    d_az = float(np.clip(_wrap(az_face - az_plane), -np.radians(max_pan_deg), np.radians(max_pan_deg)))
+    p_new, z_rot = _rot_z(tool_pos, d_az), _rot_z(_unit(tool_z), d_az)
+    remaining = _wrap(az_face - (az_plane + d_az))
+    face_in_plane = _rot_z(face, -remaining)  # same radius and height, in the new plane
+    return p_new, turn_toward(z_rot, face_in_plane - p_new, max_tilt_deg)
+
+
+def spoon_tilt_deg(tool_z) -> float:
+    """Pitch of the spoon axis from horizontal (+ = tip up)."""
+    return float(np.degrees(np.arcsin(np.clip(_unit(tool_z)[2], -1, 1))))
+
+
+def line_miss(tool_pos, direction, face) -> float:
+    """Distance from the lips to the spoon's line (m)."""
+    v = np.asarray(face, float) - np.asarray(tool_pos, float)
+    d = _unit(direction)
+    return float(np.linalg.norm(v - np.dot(v, d) * d))
+
+
+def aim_level(tool_pos, tool_z, face, max_pan_deg: float, max_dz: float, max_tilt_deg: float,
+              spoon_dz: float = 0.0, level_pitch_deg: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Next aiming step that keeps the spoon level: swing about the base axis toward the face's
+    azimuth (<= max_pan_deg), move the gripper up/down toward lip height (<= max_dz), and bring
+    the spoon axis to horizontal (<= max_tilt_deg per step if it starts tilted). Reachable for
+    the SO-101: the target stays in the arm's vertical plane."""
+    tool_pos, face = np.asarray(tool_pos, float), np.asarray(face, float)
+    az_plane = np.arctan2(tool_pos[1], tool_pos[0])
+    az_face = np.arctan2(face[1], face[0])
+    d_az = float(np.clip(_wrap(az_face - az_plane), -np.radians(max_pan_deg), np.radians(max_pan_deg)))
+    p_new = _rot_z(tool_pos, d_az)
+    p_new[2] += float(np.clip(face[2] - (tool_pos[2] + spoon_dz), -max_dz, max_dz))
+    az_new = az_plane + d_az
+    lp = np.radians(level_pitch_deg)  # the tool pitch at which the spoon itself is level
+    level = np.array([np.cos(az_new) * np.cos(lp), np.sin(az_new) * np.cos(lp), np.sin(lp)])
+    return p_new, turn_toward(_rot_z(_unit(tool_z), d_az), level, max_tilt_deg)
+
+
+class PointingServo:
+    def __init__(self, cfg: PointingConfig | None = None, approach: bool = False):
+        self.cfg, self.approach = cfg or PointingConfig(), approach
+        self.travelled = 0.0  # m moved toward the face (retreat undoes it)
+
+    def step(self, tool_pos, tool_z, face, state: MouthState | None) -> PointCommand:
+        c = self.cfg
+        if face is None or state is None or state.age > c.max_age:
+            return self._fail("face lost")
+        if state.speed > c.retreat_head_speed:
+            return self._fail(f"head moving fast ({state.speed:.2f} m/s)")
+        tool_pos, tool_z, face = np.asarray(tool_pos, float), _unit(tool_z), np.asarray(face, float)
+        to_face = face - tool_pos
+        d = _unit(to_face)
+        tip = float(np.linalg.norm(to_face)) - c.spoon_tip_from_tool
+        ang = float(np.degrees(np.arccos(np.clip(np.dot(tool_z, d), -1, 1))))
+        if tip < c.stop_tip_distance - 0.02:
+            return self._fail(f"spoon tip {tip * 100:.0f} cm from the lips: inside the stop distance", tip, ang)
+        if c.level_spoon:
+            return self._step_level(tool_pos, tool_z, face, state, tip, ang)
+        if ang > c.aligned_deg:
+            p_new, z_new = aim_pan_tilt(tool_pos, tool_z, face, c.max_turn_deg, c.max_turn_deg)
+            pan = np.degrees(_wrap(np.arctan2(p_new[1], p_new[0]) - np.arctan2(tool_pos[1], tool_pos[0])))
+            return PointCommand("point", p_new, z_new, f"re-aim {ang:.1f} deg (pan {pan:+.1f})", ang, tip)
+        if not self.approach:
+            return PointCommand("hold", reason=f"centred ({ang:.1f} deg)", angle_deg=ang, tip_distance=tip)
+        if tip <= c.stop_tip_distance + 0.005:  # within 5 mm: no zero-length steps
+            return PointCommand("done", reason=f"spoon tip {tip * 100:.0f} cm from the lips", angle_deg=ang,
+                                tip_distance=tip)
+        if state.speed > c.max_head_speed:
+            return PointCommand("hold", reason=f"waiting for a still head ({state.speed:.2f} m/s)", angle_deg=ang,
+                                tip_distance=tip)
+        step = min(c.approach_step, tip - c.stop_tip_distance)
+        self.travelled += step
+        n = arm_plane_normal(tool_pos)
+        d = _unit(d - np.dot(d, n) * n)  # stay in the arm's plane (reachable)
+        return PointCommand("approach", tool_pos + step * d, d,
+                            f"extend {step * 100:.0f} cm (tip {tip * 100:.0f} -> stop at {c.stop_tip_distance * 100:.0f} cm)",
+                            ang, tip)
+
+    def _step_level(self, tool_pos, tool_z, face, state, tip, ang) -> PointCommand:
+        c = self.cfg
+        spoon_pos = tool_pos + np.array([0.0, 0.0, c.spoon_dz])
+        miss, tilt = line_miss(spoon_pos, tool_z, face), spoon_tilt_deg(tool_z) - c.level_pitch_deg
+        info = dict(angle_deg=ang, tip_distance=tip)
+        if miss > c.aim_tol_m or abs(tilt) > c.level_tol_deg:
+            p_new, z_new = aim_level(tool_pos, tool_z, face, c.max_turn_deg, c.max_dz_step, c.max_turn_deg, c.spoon_dz,
+                                     c.level_pitch_deg)
+            pan = np.degrees(_wrap(np.arctan2(p_new[1], p_new[0]) - np.arctan2(tool_pos[1], tool_pos[0])))
+            return PointCommand("point", p_new, z_new, f"aim: miss {miss * 100:.1f} cm, tilt {tilt:+.1f} deg "
+                                f"(pan {pan:+.1f} deg, height {(p_new[2] - tool_pos[2]) * 100:+.1f} cm)", **info)
+        if not self.approach:
+            return PointCommand("hold", reason=f"centred, level (miss {miss * 100:.1f} cm, tilt {tilt:+.1f} deg)", **info)
+        if tip <= c.stop_tip_distance + 0.005:  # within 5 mm: no zero-length steps
+            return PointCommand("done", reason=f"spoon tip {tip * 100:.0f} cm from the lips", **info)
+        if state.speed > c.max_head_speed:
+            return PointCommand("hold", reason=f"waiting for a still head ({state.speed:.2f} m/s)", **info)
+        step = min(c.approach_step, tip - c.stop_tip_distance)
+        self.travelled += step
+        az = np.arctan2(tool_pos[1], tool_pos[0])
+        d = np.array([np.cos(az), np.sin(az), 0.0])  # straight in, level
+        return PointCommand("approach", tool_pos + step * d, d,
+                            f"extend {step * 100:.0f} cm level (tip {tip * 100:.0f} -> stop at "
+                            f"{c.stop_tip_distance * 100:.0f} cm)", **info)
+
+    def _fail(self, reason: str, tip: float = 0.0, ang: float = 0.0) -> PointCommand:
+        if self.approach and self.travelled > 0:  # the executor backs out by .travelled, then zeroes it
+            return PointCommand("retreat", reason=reason, angle_deg=ang, tip_distance=tip)
+        return PointCommand("hold", reason=reason, angle_deg=ang, tip_distance=tip)

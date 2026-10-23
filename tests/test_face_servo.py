@@ -86,3 +86,119 @@ def test_stop_distance_floor_cannot_be_configured_away():
 def test_degenerate_probes_are_rejected():
     with pytest.raises(ValueError):
         ImageJacobian.from_probes([0.0, 0.0], [3.0, 35.0], 3.0)
+
+
+# --- pointing servo (no calibration) ------------------------------------------------------
+from assistive_arm.feeding.face_servo import PointingConfig, PointingServo, turn_toward  # noqa: E402
+
+FACE = np.array([0.8, -0.3, 0.3])
+TOOL = np.array([0.15, 0.0, 0.2])
+
+
+def angle(a, b):
+    return np.degrees(np.arccos(np.clip(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
+
+
+def reachable(pos, z, tol_deg=0.5):
+    """The SO-101 constraint: the tool axis lies in the vertical plane through the base axis."""
+    from assistive_arm.feeding.face_servo import arm_plane_normal
+    return abs(np.degrees(np.arcsin(np.dot(z / np.linalg.norm(z), arm_plane_normal(pos))))) <= tol_deg
+
+
+def test_tilt_mode_turns_toward_a_sideways_face_with_reachable_steps_then_holds():
+    p = PointingServo(PointingConfig(max_turn_deg=8.0, level_spoon=False))
+    pos, z = TOOL.copy(), np.array([1.0, 0.0, 0.0])  # facing straight ahead; the face is 25 deg right
+    for _ in range(20):
+        cmd = p.step(pos, z, FACE, mstate())
+        if cmd.kind != "point":
+            break
+        assert reachable(cmd.position, cmd.direction), "a target the 5-DOF arm can't reach"
+        assert abs(np.linalg.norm(cmd.position[:2]) - np.linalg.norm(pos[:2])) < 1e-9  # same reach
+        assert abs(cmd.position[2] - pos[2]) < 1e-9  # same height
+        pos, z = cmd.position, cmd.direction
+    assert cmd.kind == "hold" and angle(z, FACE - pos) <= 3.0
+
+
+def test_pointing_tolerates_short_dropouts_but_not_long_ones():
+    p = PointingServo(PointingConfig(level_spoon=False))
+    az = np.arctan2(FACE[1], FACE[0])
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    assert p.step(pos, FACE - pos, FACE, mstate(age=0.3)).kind == "hold"  # still centred
+    assert "lost" in p.step(pos, FACE - pos, FACE, mstate(age=1.0)).reason
+
+
+def test_extend_moves_along_the_line_and_stops_at_the_stop_distance():
+    cfg = PointingConfig(stop_tip_distance=0.20, approach_step=0.05)
+    p = PointingServo(cfg, approach=True)
+    az = np.arctan2(FACE[1], FACE[0])  # a reachable start: the arm already swung toward the face
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    z = FACE - pos
+    for _ in range(60):
+        cmd = p.step(pos, z, FACE, mstate())
+        if cmd.kind not in ("approach", "point"):
+            break
+        assert reachable(cmd.position, cmd.direction)
+        pos, z = cmd.position, cmd.direction
+    assert cmd.kind == "done"
+    tip = np.linalg.norm(FACE - pos) - cfg.spoon_tip_from_tool
+    assert 0.195 <= tip <= 0.21
+
+
+def test_extend_retreats_when_the_face_is_lost_after_moving():
+    p = PointingServo(PointingConfig(level_spoon=False), approach=True)
+    az = np.arctan2(FACE[1], FACE[0])
+    pos = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.2])
+    assert p.step(pos, FACE - pos, FACE, mstate()).kind == "approach"
+    assert p.step(TOOL, FACE - TOOL, None, None).kind == "retreat"
+
+
+def test_turn_toward_is_exact_when_close():
+    a, b = np.array([1.0, 0, 0]), np.array([np.cos(0.05), np.sin(0.05), 0])
+    assert np.allclose(turn_toward(a, b, 8.0), b)
+
+
+
+# --- level spoon (default): aim by pan + height, never by tilting ------------------------
+from assistive_arm.feeding.face_servo import line_miss, spoon_tilt_deg  # noqa: E402
+
+
+def run_level(pos, z, face, approach=False, n=60, **cfg):
+    p = PointingServo(PointingConfig(**cfg), approach=approach)
+    cmds = []
+    for _ in range(n):
+        cmd = p.step(pos, z, face, mstate())
+        cmds.append(cmd)
+        if cmd.kind not in ("point", "approach"):
+            break
+        assert reachable(cmd.position, cmd.direction)
+        pos, z = cmd.position, cmd.direction
+    return cmds, pos, z
+
+
+def test_level_aim_reaches_a_face_to_the_side_and_above_without_tilting():
+    face = np.array([0.7, -0.4, 0.33])  # 30 deg right, 13 cm above the spoon
+    level_z = np.array([1.0, 0.0, 0.0])
+    cmds, pos, z = run_level(TOOL.copy(), level_z, face)
+    assert cmds[-1].kind == "hold" and "level" in cmds[-1].reason
+    for c in cmds[:-1]:
+        assert abs(spoon_tilt_deg(c.direction)) < 1e-6  # never tilted on the way
+        assert c.position[2] - TOOL[2] <= 0.13 + 1e-9
+    assert line_miss(pos, z, face) <= 0.015 and abs(pos[2] - face[2]) <= 0.015
+
+
+def test_a_tilted_spoon_is_levelled_first_in_limited_steps():
+    tilted = np.array([np.cos(np.radians(20)), 0.0, np.sin(np.radians(20))])
+    cmds, pos, z = run_level(TOOL.copy(), tilted, np.array([0.8, 0.0, 0.2]), max_turn_deg=8.0)
+    tilts = [spoon_tilt_deg(c.direction) for c in cmds if c.kind == "point"]
+    assert tilts[:3] == pytest.approx([12.0, 4.0, 0.0], abs=1e-6)
+    assert cmds[-1].kind == "hold"
+
+
+def test_level_extend_moves_straight_in_at_constant_height():
+    face = np.array([0.6, -0.3, 0.25])
+    az = np.arctan2(face[1], face[0])
+    start = np.array([0.15 * np.cos(az), 0.15 * np.sin(az), 0.25])
+    cmds, pos, z = run_level(start, np.array([np.cos(az), np.sin(az), 0.0]), face, approach=True)
+    approaches = [c for c in cmds if c.kind == "approach"]
+    assert approaches and all(abs(c.position[2] - 0.25) < 1e-9 and abs(c.direction[2]) < 1e-9 for c in approaches)
+    assert cmds[-1].kind == "done"
