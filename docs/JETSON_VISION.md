@@ -1,6 +1,6 @@
 # Jetson spoon and mouth preview
 
-This milestone reads the arm-mounted camera and runs RF-DETR Nano for spoon
+This milestone reads a selected camera and runs RF-DETR Nano for spoon
 boxes and MediaPipe Face Landmarker for real-person lip contours. Outputs are
 image pixels and a raw mouth aperture ratio. They do not authorize a grasp or
 feeding movement, and do not estimate metric depth or feeding readiness.
@@ -22,11 +22,15 @@ from the implementation.
 - Models: RF-DETR 1.11.2 and MediaPipe 1.1.1. Viam SDK 0.85.0.
 - MediaPipe uses CPU/XNNPACK; RF-DETR uses CUDA. Both models run from verified
   local weights with Hugging Face offline mode enabled.
-- Physical USB source: `/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0`,
+- Active camera: Logitech C270, Viam `orin-dev-kit` / `webcam-2`, selected by
+  the user on 2026-10-23. Its device is
+  `/dev/v4l/by-id/usb-046d_C270_HD_WEBCAM_7DEF8890-video-index0`, configured
+  for 640 × 480 MJPEG at a requested 30 fps.
+- Original USB source: `/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0`,
   640 × 480 at a requested 30 fps. The camera was physically moved to the Jetson;
   a direct capture succeeded on 2026-10-23. `UsbCameraReader` implements the same
   RGB-only `RobotInterface` and continuously drains capture to keep the latest frame.
-- Viam source: `orin-dev-kit` / `arm-camera`; added by the team after relocating
+- Original Viam source: `orin-dev-kit` / `arm-camera`; added by the team after relocating
   the camera. `GetImages` successfully returned a 640 × 480 JPEG on 2026-10-23.
 - Viam authentication uses a dedicated machine-scoped Operator key stored in
   `vision.env` with mode 0600, inside a private directory. Operator is not a
@@ -82,6 +86,10 @@ The vendor package is unmodified. This is a documented exception, not a clean
 `pip check` result. See the [official package listing](https://pypi.org/pypi/nvidia-cusparselt-cu13/0.8.1/json).
 
 From the deployed checkout on the Jetson:
+
+The deployed private `vision.env` sets `ASSIST_VISION_CAMERA=webcam-2`.
+The launcher reads this selection; `--camera NAME` can override it for a run.
+When unset, the launcher retains `arm-camera` as its default.
 
 ```sh
 sh deploy/run-vision.sh --smoke-frames 3
@@ -158,8 +166,11 @@ The blank frames correctly produced no detections. MediaPipe's no-face path
 skips full landmark inference; these measurements do not establish real-face
 latency or spoon/mouth accuracy.
 
-Current live acceptance blocker: after the Jetson reboot, Viam authenticates
-successfully but the icSpring `arm-camera` returns `read timeout`. A reconnect of
-only that USB camera did not recover frames; a physical camera reconnection was
-requested. The preview retries reads and hides imagery during errors. Neither
+Live verification on 2026-10-23: the user selected the Logitech C270 after the
+icSpring disappeared from USB. The running preview now reads `webcam-2` through
+Viam and processes 640 × 480 RGB frames with both models. Multiple successive
+snapshots reported `live`, no errors, and Unix capture timestamps. Representative
+timings were 37–38 ms camera read, 84–88 ms RF-DETR, 12 ms MediaPipe, and 4–5 ms
+rendering. Those frames had no detected spoons or mouths; positive target
+validation is still outstanding. The preview was restarted on its own; neither
 Viam nor any arm process was restarted.
