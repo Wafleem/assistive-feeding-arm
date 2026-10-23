@@ -29,8 +29,12 @@ class TrackerParams:
     open_hysteresis: float = 0.10  # must drop below threshold - hysteresis to count as closed
     normal_alpha: float = 0.3  # smoothing of the face normal
     min_confidence: float = 0.5
-    max_consecutive_rejects: int = 5  # then re-initialise at the new position
-    reset_after: float = 0.5  # s without an accepted fix: re-initialise on the next one
+    max_consecutive_rejects: int = 5  # then re-initialise at the new position, if those agree
+    reject_agree_m: float = 0.04  # ... i.e. the rejected fixes lie within this of each other
+    reset_after: float = 1.5  # s without an accepted fix: re-initialise on the next one
+    # Monocular range (eye span) is much noisier than the direction: along the camera ray the
+    # measurement noise is range_rel x distance (at least sigma_meas); across it, sigma_meas.
+    range_rel: float = 0.06
     kalman: KalmanParams | None = None
 
 
@@ -44,6 +48,7 @@ class MouthTracker:
         self.confidence = 0.0
         self.last_accept: float | None = None
         self._rejects = 0
+        self._rejected: list = []
 
     def reset(self) -> None:
         self.__init__(self.p)
@@ -53,13 +58,17 @@ class MouthTracker:
         if obs is None or obs.confidence < self.p.min_confidence:
             return False
         stale = self.last_accept is not None and obs.t - self.last_accept > self.p.reset_after
-        if stale or self._rejects >= self.p.max_consecutive_rejects:
+        moved = (self._rejects >= self.p.max_consecutive_rejects and
+                 np.max(np.ptp(np.asarray(self._rejected[-self.p.max_consecutive_rejects:]), axis=0))
+                 < self.p.reject_agree_m)  # several rejected fixes that agree: the person really moved
+        if stale or moved:
             self.kf = ConstantVelocityKF(self.p.kalman)  # lost and found again: start over here
-            self._rejects = 0
-        if not self.kf.update(obs.position, obs.t):
+            self._rejects, self._rejected = 0, []
+        if not self.kf.update(obs.position, obs.t, self._meas_cov(obs)):
             self._rejects += 1
+            self._rejected = (self._rejected + [np.asarray(obs.position, float)])[-10:]
             return False
-        self._rejects = 0
+        self._rejects, self._rejected = 0, []
         n = np.asarray(obs.normal, float)
         n = n / (np.linalg.norm(n) or 1.0)
         if self.normal is None:
@@ -75,6 +84,18 @@ class MouthTracker:
         self.confidence = float(obs.confidence)
         self.last_accept = float(obs.t)
         return True
+
+    def _meas_cov(self, obs: MouthObservation) -> np.ndarray:
+        """Measurement covariance: tight across the camera ray, loose along it (range)."""
+        s = self.kf.p.sigma_meas
+        origin = (obs.extras or {}).get("ray_origin")
+        if origin is None:
+            return s**2 * np.eye(3)
+        ray = np.asarray(obs.position, float) - np.asarray(origin, float)
+        dist = float(np.linalg.norm(ray)) or 1.0
+        u = ray / dist
+        s_r = max(s, self.p.range_rel * dist)
+        return s**2 * np.eye(3) + (s_r**2 - s**2) * np.outer(u, u)
 
     def state(self, now: float, compensate_latency: bool = True) -> MouthState | None:
         """Predicted mouth state for a command issued at ``now`` (None before the first fix)."""

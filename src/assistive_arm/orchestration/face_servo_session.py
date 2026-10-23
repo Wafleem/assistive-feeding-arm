@@ -27,7 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level, max_level_reach
+from ..feeding.face_track import (ExtendConfig, LevelTracker, TrackConfig, approach_scale, extend_decision, jog_level,
+                                  max_level_reach)
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
@@ -49,6 +50,9 @@ class Taught:
     near: list[float] | None = None
     jacobian: dict | None = None
     spoon_level: dict | None = None  # {"tool_pitch_deg": ..., "wrist_roll_deg": ...}: tool pose when the SPOON is level
+    # Taught close pose: {"joints", "lips_in_tool_mm": [x, y, z], "t"}: where the lips were, in the
+    # tool frame, with the spoon held where Extend should stop (z = along the spoon).
+    close: dict | None = None
     notes: dict = field(default_factory=dict)
 
     @classmethod
@@ -138,12 +142,15 @@ class FaceServoSession:
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.track: LevelTracker | None = None
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
+        self.sag_gain = 1.5  # 1/s: servo-sag integrator (0 = off)
+        self.sag_max = 6.0  # deg: most it will add to any joint
         self._pose_fn = None  # camera pose from commanded joints while tracking
         self._q_hist: deque = deque(maxlen=400)
         self._qm_hist: deque = deque(maxlen=400)  # MEASURED joints while tracking (servo sag included)
         self._ext_reach_start: float | None = None  # reach where the last extend began (for Retreat)
         self.hand_guide = False
         self._apply_level()
+        self._apply_close()
         self.plan_log = Path(log_dir) / f"face_servo-{time.strftime('%Y%m%d')}.jsonl" if log_dir else None
         self.plan_failures = 0
         self.last_plan_error = ""
@@ -282,6 +289,14 @@ class FaceServoSession:
             self.robot.move_joints(q1)
             self.hand_guide = False  # any motion command ends manual mode
             return self._event("level", f"spoon tip {'up' if deg > 0 else 'down'} {abs(deg):g} deg (tool pitch {_tool_pitch(q1):+.1f})")
+        if action == "teach_close":
+            return self._event("close", self._teach_close())
+        if action == "forget_close":
+            self._require_idle()
+            self.taught.close = None
+            self.taught.save(self.path)
+            self._apply_close()
+            return self._event("close", "close pose forgotten: Extend uses the stop distance again")
         if action == "save_level":
             self._require_idle()
             q = self.robot.joints()
@@ -293,7 +308,17 @@ class FaceServoSession:
         if action == "set_tuning":
             return self._event("tuning", self._set_tuning(**kw))
         if action == "set_params":
+            if "aim_raise_cm" in kw and self.taught.close:
+                self.taught.close["raised_cm"] = float(np.clip(float(kw.pop("aim_raise_cm")), -5.0, 8.0))
+                self.taught.save(self.path)
+                self._apply_close()
+                if self.track is not None:
+                    self.track.cfg = self.track_cfg  # live, also while tracking
+                return self._event("params", f"spoon aim raised {self.taught.close['raised_cm']:g} cm")
             self._require_idle()
+            if "close_margin" in kw:
+                m = float(np.clip(float(kw.pop("close_margin")), self.ext_cfg.min_tip_distance_floor, 0.20))
+                self.ext_cfg = ExtendConfig(**{**asdict(self.ext_cfg), "close_margin": m})
             fields = {k: float(v) for k, v in kw.items() if k in ("stop_tip_distance", "joint_speed_degs")}
             self.cfg = FaceServoConfig(**{**asdict(self.cfg), **fields})  # validates the floor
             self.pcfg = PointingConfig(**{**asdict(self.pcfg), **fields})
@@ -304,7 +329,11 @@ class FaceServoSession:
             raise ValueError(f"unknown action {action!r}")
         if action == "extend" and not self.allow_extend:
             raise RuntimeError("Extend is disabled (start the dashboard with --allow-extend)")
-        self._require_idle()
+        if action in ("extend", "retreat", "center", "auto_center") and self._tracking_live():
+            if action in ("center", "auto_center"):
+                return {"ok": True, "mode": self.mode, "note": "already tracking"}
+            self._ext_request = action  # the running loop switches over: no STOP, no re-level
+            return self._event(action, "requested while tracking")
         self._stop.clear()
         self._kw = kw
         self.mode, self.reason = action, "starting"
@@ -327,6 +356,10 @@ class FaceServoSession:
     def close(self) -> None:
         self._running = False
         self.stop("shutdown")
+
+    def _tracking_live(self) -> bool:
+        return (self._worker is not None and self._worker.is_alive() and not self._stop.is_set()
+                and getattr(self, "_in_track_loop", False))
 
     def _require_idle(self) -> None:
         if self._worker is not None and self._worker.is_alive() and self._stop.is_set():
@@ -476,7 +509,7 @@ class FaceServoSession:
         except OSError:
             pass
 
-    BASE_VEL = (30.0, 20.0, 20.0, 15.0)
+    BASE_VEL = (120.0, 80.0, 80.0, 60.0)
 
     def _set_tuning(self, gain=None, speed_pct=None, accel=None, deadband_cm=None, smoothing_cm=None,
                     rate_hz=None) -> str:
@@ -485,10 +518,10 @@ class FaceServoSession:
         if gain is not None:
             c["gain"] = float(np.clip(float(gain), 0.3, 4.0))
         if speed_pct is not None:
-            k = float(np.clip(float(speed_pct), 20.0, 150.0)) / 100.0
+            k = float(np.clip(float(speed_pct), 5.0, 150.0)) / 100.0
             c["max_vel_deg"] = tuple(round(v * k, 2) for v in self.BASE_VEL)
         if accel is not None:
-            c["max_acc_deg"] = float(np.clip(float(accel), 10.0, 200.0))
+            c["max_acc_deg"] = float(np.clip(float(accel), 10.0, 800.0))
         if deadband_cm is not None:
             c["deadband_m"] = float(np.clip(float(deadband_cm), 0.2, 4.0)) / 100.0
         if rate_hz is not None:
@@ -514,6 +547,55 @@ class FaceServoSession:
         lvl = (self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)
         self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), "pitch_target_deg": float(lvl)})
         self.pcfg = PointingConfig(**{**asdict(self.pcfg), "level_pitch_deg": float(lvl)})
+
+    def _apply_close(self) -> None:
+        """Use the taught close pose: aim the measured spoon line, stop where it was taught."""
+        c = self.taught.close
+        if c and c.get("lips_in_tool_measured_mm") is not None:
+            # aim = where the lips were (measured) with the spoon raised by ``raised_cm`` (straight up
+            # at the taught pose, expressed in the tool frame): the spoon sits lower than the camera thinks
+            up = so101_fk(np.asarray(c["joints"], float))[:3, :3].T @ np.array([0.0, 0.0, 1.0])
+            lips = np.asarray(c["lips_in_tool_measured_mm"], float) / 1000 - float(c.get("raised_cm", 0.0)) / 100 * up
+            c["lips_in_tool_mm"] = [round(float(v) * 1000, 1) for v in lips]
+        off = (0.0, 0.0) if not c else (c["lips_in_tool_mm"][0] / 1000, c["lips_in_tool_mm"][1] / 1000)
+        self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), "aim_offset_m": off})
+        # Taught: aim the measured spoon line; stop by the spoon tip's distance to the lips.
+        fwd = None if not c else self.ext_cfg.spoon_tip_from_tool
+        self.ext_cfg = ExtendConfig(**{**asdict(self.ext_cfg), "close_fwd": fwd})
+        # The taught pose is reachable by definition: let the comfort posture include it (3 deg spare).
+        lo, hi = np.asarray(TrackConfig.posture_lo, float), np.asarray(TrackConfig.posture_hi, float)
+        if c:
+            qc = np.asarray(c["joints"][:4], float)
+            lo, hi = np.minimum(lo, qc - 3.0), np.maximum(hi, qc + 3.0)
+        self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), "posture_lo": tuple(lo), "posture_hi": tuple(hi)})
+
+    def _teach_close(self) -> str:
+        """Record the close pose: the arm where the spoon should stop (hand-guided), the person
+        still. The lips come from the latest face fix (up to 5 s old: very close, the camera may
+        no longer see the whole face), in the base frame, so the arm's pose doesn't matter."""
+        self._require_idle()
+        st = self.tracker.state(self.robot.now())
+        if st is None or st.age > 5.0:
+            raise RuntimeError("no recent face fix: let the camera see the person, then move in and teach again")
+        q = self.robot.joints()
+        T = so101_fk(q)
+        lips = np.linalg.inv(T) @ np.r_[np.asarray(st.position, float), 1.0]
+        x, y, z = (float(v) for v in lips[:3])
+        if not (0.03 < z < 0.6 and abs(x) < 0.15 and abs(y) < 0.15):
+            raise RuntimeError(f"lips at {x * 100:+.1f}/{y * 100:+.1f}/{z * 100:.1f} cm in the tool frame: "
+                               "not in front of the spoon: check the face fix and teach again")
+        self.taught.close = {"joints": [round(float(v), 2) for v in q],
+                             "lips_in_tool_mm": [round(x * 1000, 1), round(y * 1000, 1), round(z * 1000, 1)],
+                             "lips_base_mm": _mm(st.position), "face_age_s": round(float(st.age), 2),
+                             "spoon_tilt_deg": round(self._spoon_tilt(q), 1),
+                             "t": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        self.taught.save(self.path)
+        self._apply_close()
+        Tc = so101_fk(q)
+        line = self.track_cfg.aim_offset_m
+        return (f"close pose saved: lips {z * 100:.1f} cm ahead of the tool along the spoon, spoon line "
+                f"{line[0] * 100:+.1f}/{line[1] * 100:+.1f} cm off the tool axis (tool x/y); Extend stops here. "
+                f"Tool at {Tc[2, 3] * 100:.1f} cm height, face fix {st.age:.1f} s old")
 
     # ---------------------------------------------------------------- continuous tracking
     def _q_at(self, t: float) -> np.ndarray:
@@ -569,16 +651,40 @@ class FaceServoSession:
         next_t = last_check = time.monotonic()
         tick = 0
         held_since, backing_out = None, retreat_only
+        prog = [0.0, time.monotonic()]  # (best actual travel, when): stall detection while extending
+        # Servo-sag feedback: the servos settle short of their setpoints under gravity. An
+        # integrator per joint adds the measured shortfall back onto the setpoint, so the arm
+        # really is where the tracker thinks (spoon level, aim and reach all from the same q).
+        sag = np.zeros(5)
+        self._sag = sag
+        self._ext_request = None
+        self._in_track_loop = True
         try:
             while True:
                 self._check_stop()
                 now = self.robot.now()
                 st = self.tracker.state(now)
-                face = st.position if (st is not None and st.age <= 0.5) else None
+                face = st.position if (st is not None and st.age <= 0.8) else None  # coasts through short dropouts
+                req, self._ext_request = self._ext_request, None
+                if req == "extend" and not extend:
+                    extend, backing_out, held_since = True, False, None
+                    prog = [0.0, time.monotonic()]
+                    tr.reach0 = tr.reach_start = float(np.linalg.norm(so101_fk(tr.q)[:3, 3][:2]))
+                    self._ext_reach_start = tr.reach_start
+                    tr.set_extending(True)
+                    self._check_extend_reach(face, tr.q)
+                    self.mode = "extend"
+                elif req == "retreat" and extend:
+                    backing_out = True
                 ext_reason, ext_log = "", {}
                 if extend:
                     e0 = tr.last or {}
-                    tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool) if face is not None else 9.9
+                    if face is None:
+                        tip = 9.9
+                    elif self.ext_cfg.close_fwd is not None:
+                        tip = tr.remaining(face, self.ext_cfg)
+                    else:
+                        tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool)
                     held = (time.monotonic() - held_since) if held_since else 0.0
                     direction, ext_reason = extend_decision(
                         self.ext_cfg, face is not None, st.age if st is not None else 9.9,
@@ -590,15 +696,40 @@ class FaceServoSession:
                         direction = -1
                         if tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01:  # the ARM is back
                             self._ext_reach_start = None
-                            self.reason = f"backed out to the start ({ext_reason or 'retreat'})"
-                            self._event("extend", self.reason)
-                            self.mode = "done"
-                            return
-                    held_since = (held_since or time.monotonic()) if ext_reason.startswith("at the stop") else None
-                    if direction > 0 and tr.travelled - tr.actual_travelled() > 0.015:
+                            self._event("extend", f"backed out to the start ({ext_reason or 'retreat'})")
+                            if retreat_only:
+                                self.reason = f"backed out to the start ({ext_reason or 'retreat'})"
+                                self.mode = "done"
+                                return
+                            # keep tracking (spoon level, on the lips): press Extend again any time
+                            extend, backing_out, held_since = False, False, None
+                            tr.set_extending(False)
+                            self.mode = "center"
+                            continue
+                    lead = tr.travelled - tr.actual_travelled()  # target ahead of the arm: at its limit
+                    if direction > 0 and lead > 0.015:
                         direction, ext_reason = 0, "arm at its reach limit here: not moving in further"
                     if direction > 0 and tr.travelled >= getattr(self, "_ext_max_travel", 9.9):
                         direction, ext_reason = 0, "at the arm's reach for a level spoon: not moving in further"
+                    # The eating hold starts at the stop OR as far in as the arm can go; re-aiming
+                    # there doesn't restart it, only moving in again does.
+                    # Stalled (no real progress for a while, e.g. re-aiming at a limit): this is as
+                    # close as it gets here, so the eating hold starts anyway.
+                    act = tr.actual_travelled()
+                    if direction < 0 or act > prog[0] + 0.005:
+                        prog = [act, time.monotonic()]
+                    elif not held_since and not backing_out and time.monotonic() - prog[1] > 2.5:
+                        ext_reason = "not getting closer: holding here"
+                    if not backing_out:
+                        if ext_reason.startswith(("at the stop", "arm at its reach", "at the arm's reach", "not getting closer")):
+                            held_since = held_since or time.monotonic()
+                        if held_since and direction > 0:
+                            direction = 0  # eating: the spoon stays put (aim still tracks the lips)
+                        if held_since and time.monotonic() - held_since >= self.ext_cfg.hold_s:
+                            direction, ext_reason, backing_out = -1, "hold time over: backing out", True
+                        elif held_since and not ext_reason.startswith("at the stop"):
+                            ext_reason = "holding here" if ext_reason.startswith(("moving in", "re-centring")) else ext_reason
+                            ext_reason += f" (holding {time.monotonic() - held_since:.0f}/{self.ext_cfg.hold_s:.0f} s)"
                     if ext_reason != getattr(self, "_last_ext_reason", None) and ext_reason.split(":")[0] != \
                             (getattr(self, "_last_ext_reason", "") or "").split(":")[0]:
                         self._event("extend", ext_reason)
@@ -607,10 +738,24 @@ class FaceServoSession:
                                "travel_target_cm": round(tr.travelled * 100, 1),
                                "travel_actual_cm": round(tr.actual_travelled() * 100, 1),
                                "head_speed_cm_s": None if st is None else round(st.speed * 100, 1)}
-                    tr.advance(direction, dt, self.ext_cfg)
+                    scale = 1.0
+                    if direction > 0:  # slow down smoothly as the aim drifts or the arm nears its limit
+                        scale = approach_scale(self.ext_cfg, e0.get("miss_cm", 99.0)) * \
+                            float(np.clip((0.015 - lead) / 0.01, 0.0, 1.0))
+                    ext_log["approach_scale"] = round(scale, 2)
+                    stop_at = (max(self.ext_cfg.close_margin, self.ext_cfg.min_tip_distance_floor)
+                               if self.ext_cfg.close_fwd is not None else self.ext_cfg.stop_tip_distance)
+                    tr.advance(direction, dt, self.ext_cfg, scale, room=(tip - stop_at) if face is not None else 0.0)
                 q = tr.step(face, dt, blind=extend and backing_out)
-                self.robot.stream_joints(q)
-                self._q_hist.append((self.robot.now(), q.copy()))
+                if self._qm_hist and self.sag_gain > 0:
+                    t_m, q_m = self._qm_hist[-1]
+                    err = self._q_at(t_m - self.servo_lag) - q_m  # setpoint (desired) vs where it is
+                    err[ROLL] = 0.0
+                    ok = np.abs(err) < 4.0  # bigger = moving/blocked, not sag: don't wind up
+                    sag += np.where(ok, self.sag_gain * err * dt, 0.0)
+                    np.clip(sag, -self.sag_max, self.sag_max, out=sag)
+                self.robot.stream_joints(q + sag)
+                self._q_hist.append((self.robot.now(), q.copy()))  # the DESIRED joints
                 if fast is not None:
                     try:
                         self._qm_hist.append((self.robot.now(), np.asarray(fast(timeout=0.3), float)))
@@ -630,7 +775,7 @@ class FaceServoSession:
                     last_check = time.monotonic()
                     q_real = self._qm_hist[-1][1] if self._qm_hist else self.robot.joints(timeout=1.0)
                     lag = float(np.max(np.abs(q_real - self._q_at(self.robot.now() - 0.3))))
-                    if lag > 10.0:
+                    if lag > 20.0:  # faster motion lags more; still catches a blocked arm
                         self.stop(f"arm is {lag:.0f} deg behind its commands (blocked?): stopped")
                         raise Stopped()
                 tick += 1
@@ -641,6 +786,7 @@ class FaceServoSession:
                                     "cam_mm": _mm(pose_at(self.robot.now()).position),
                                     "face_mm": _mm(face) if face is not None else None,
                                     "face_age_s": None if st is None else round(st.age, 3),
+                                    "sag_deg": _r(sag, 2),
                                     "eye_span_mm": round(getattr(self.det, "params").eye_span_m * 1000, 1)
                                     if hasattr(self.det, "params") else None})
                 next_t += dt
@@ -651,6 +797,7 @@ class FaceServoSession:
                     next_t = time.monotonic()  # fell behind: don't burst to catch up
         finally:
             self._pose_fn = None
+            self._in_track_loop = False
 
     def _spoon_tilt(self, q=None) -> float:
         """Spoon tilt from the saved level (deg, + = tip up)."""
@@ -658,11 +805,13 @@ class FaceServoSession:
         return _tool_pitch(q) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
 
     def _require_level(self) -> None:
+        """Level the spoon first if it isn't (slow wrist-only move), instead of refusing."""
         tilt = self._spoon_tilt()
         if abs(tilt) > self.LEVEL_TOL_DEG:
-            raise RuntimeError(f"the spoon is {tilt:+.0f} deg from level: press Level spoon first")
+            self._event("level", f"spoon {tilt:+.0f} deg from level: levelling first")
+            self._do_level_spoon()
 
-    def _do_level_spoon(self, speed_degs: float = 10.0) -> None:
+    def _do_level_spoon(self, speed_degs: float = 30.0) -> None:
         """Slowly turn only the wrist flex until the spoon is level (two passes for accuracy)."""
         try:
             self.robot.set_speed(speed_degs)
@@ -676,7 +825,7 @@ class FaceServoSession:
                 if abs(slope) < 0.2:
                     raise RuntimeError("the wrist can't level the spoon from this pose")
                 target = q.copy()
-                target[FLEX] = float(np.clip(q[FLEX] - tilt / slope, -92.0, 92.0))
+                target[FLEX] = float(np.clip(q[FLEX] - tilt / slope, -94.0, 94.0))
                 self.reason = f"levelling the spoon ({tilt:+.1f} deg)"
                 self._move(target)
         finally:
@@ -684,7 +833,7 @@ class FaceServoSession:
         self.reason = f"spoon level ({self._spoon_tilt():+.1f} deg)"
         self._event("level", self.reason)
 
-    def _do_jog(self, speed_degs: float = 12.0) -> None:
+    def _do_jog(self, speed_degs: float = 40.0) -> None:
         """Debug jog with the spoon kept level: yaw (+ = to the right, seen from behind the arm
         looking out along the spoon) by base pan only; up/down by shoulder+elbow+wrist together."""
         kw = getattr(self, "_kw", {}) or {}
@@ -721,25 +870,35 @@ class FaceServoSession:
         self.mode = "extend"
         self._track_loop(extend=True)
 
-    def _check_extend_reach(self) -> None:
-        """Refuse up front when the spoon can't get to the stop distance from here (instead of
-        stretching the arm out to its limit and backing off)."""
-        face, st = self._face_target(need=2, timeout=1.5)
+    def _check_extend_reach(self, face=None, q=None) -> None:
+        """How far the arm can move in from here (caps the approach) and how far it needs to.
+        Reports only: Extend then goes as far as it can and holds there."""
         if face is None:
-            raise RuntimeError("no face in view: centre on the person first")
-        q = self.robot.joints()
+            st = self.tracker.state(self.robot.now())
+            face = None if (st is None or st.age > 2.0) else np.asarray(st.position, float)
+        q = self.robot.joints() if q is None else np.asarray(q, float)
+        if face is None:
+            self._ext_max_travel = 9.9  # no fix right now: the loop waits for the face anyway
+            self._event("extend", "check skipped: no face fix yet (the approach waits for one)")
+            return
         T = so101_fk(q)
         level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
-        tip = float(np.linalg.norm(face - T[:3, 3])) - self.ext_cfg.spoon_tip_from_tool
-        need = tip - self.ext_cfg.stop_tip_distance
+        if self.ext_cfg.close_fwd is not None:  # taught close pose: distance to go along the spoon
+            probe = LevelTracker(self.track_cfg)
+            probe.reset(q)
+            tip = probe.remaining(face, self.ext_cfg)
+            need = tip - self.ext_cfg.close_margin
+        else:
+            tip = float(np.linalg.norm(face - T[:3, 3])) - self.ext_cfg.spoon_tip_from_tool
+            need = tip - self.ext_cfg.stop_tip_distance
         avail = max_level_reach(q, level, self.track_cfg) - float(np.linalg.norm(T[:3, 3][:2]))
-        self._event("extend", f"check: spoon tip {tip * 100:.0f} cm from the lips, needs {need * 100:.0f} cm "
+        what = "spoon tip to lips"
+        self._event("extend", f"check: {tip * 100:.0f} cm {what}, needs {need * 100:.0f} cm "
                               f"more reach, the arm has {avail * 100:.0f} cm at this height")
         if need > avail + 0.01:
-            raise RuntimeError(f"the person is out of reach: the spoon can only get to {tip * 100 - avail * 100:.0f} cm "
-                               f"from the lips here (stop distance {self.ext_cfg.stop_tip_distance * 100:.0f} cm): "
-                               f"move them about {(need - avail) * 100:.0f} cm closer")
-        self._ext_max_travel = avail
+            self._event("extend", f"note: the person is {(need - avail) * 100:.0f} cm beyond the arm's reach here: "
+                                  f"the spoon will stop {(need - avail) * 100:.0f} cm short")
+        self._ext_max_travel = max(avail, 0.0) + 0.005
 
     def _do_auto_center(self) -> None:
         """One button, no calibration: find the face (sweep from start toward the look side if
@@ -817,8 +976,10 @@ class FaceServoSession:
             joints = f"{last} (stale: {type(e).__name__})" if last else f"unavailable ({type(e).__name__})"
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
-            "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
-            "track": ({**self.track.last, "travelled_cm": round(self.track.travelled * 100, 1)}
+            "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None,
+                       "close": self.taught.close, "close_margin_cm": round(self.ext_cfg.close_margin * 100, 1)},
+            "track": ({**self.track.last, "travelled_cm": round(self.track.travelled * 100, 1),
+                       "sag_deg": _r(getattr(self, "_sag", np.zeros(5)), 1)}
                       if (self.track is not None and self.mode in ("center", "extend")) else None),
             "servo": None if self.last_cmd is None else {
                 **getattr(self, "_aim_info", {}),
