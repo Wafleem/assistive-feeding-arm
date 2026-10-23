@@ -126,13 +126,16 @@ Viewing detections:
   open/closed, distance, readiness) and bowls with ids and 3D positions. Needs
   `VIAM_ADDRESS`, `VIAM_API_KEY`, `VIAM_API_KEY_ID` in `.env` (Viam app → CONNECT → API keys).
 
-## Collision geometry: `table` and `spoon` (motion planner only)
-Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3D SCENE tab.
+## Collision geometry: `table`, `spoon` and the bowls (motion planner only)
+`table` and `spoon` are `viam:obstacle-pack:obstacle` boxes; the bowls are
+`viam:obstacle-pack:obstacle-from-mesh` meshes. All show in the Viam app's 3D SCENE tab.
 
 | Component | Parent | Geometry | Why |
 |---|---|---|---|
 | `table` | `world`, (x 698.1, y 266.7, z −15) | box x 1447.8 × y 685.8 × z 30 mm | the real table, 4 ft 9 in × 27 in (measured 2026-10-23): its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base sits on the short edge behind it (x −25.8, the back of the module's base box), and the long edge on the arm's right is 3 in (76.2 mm) from the base centre (y −76.2; the left edge is at y +609.6). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
 | `spoon` | `follower-gripper`, z +61.5 | box x 50 × y 45 × z 143 mm | the spoon sticks out **123 mm** past the jaw tips (measured 2026-10-23); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
+| `bowl-right` | `world`, (x 316.2, y 173.8, z 0) | mesh `bowl-150x70.ply` | paper bowl, 150 mm across the rim, ~70 mm tall (measured 2026-10-23; the 100 mm bottom is a guess). Its rim is 175 mm from the table's right edge and 267 mm from the back edge |
+| `bowl-left` | `world`, (x 316.2, y 323.8, z 0) | mesh `bowl-150x70.ply` | the same bowl, touching `bowl-right` on its left (centres 150 mm apart) |
 
 - `follower-gripper`'s frame is the module's TCP, the point between the jaw tips, with the arm
   tool's axes (+Z along the spoon). So the spoon box starts at the tips, and it moves with the
@@ -143,6 +146,18 @@ Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3
 - If the follower sits on a riser, lower `table` by the riser height. If the arm or table moves,
   re-measure: centre `x` = −25.8 + length / 2, centre `y` = −(base centre to the right edge) + width / 2.
 - Past the table's edges the planner lets the arm reach below z = 0, as the real arm can.
+- The bowl mesh is only the sloped wall: no top (so planned moves can put the spoon inside)
+  and no bottom (the table is the bottom). Viam treats meshes as surfaces, not solids, so the
+  spoon can't pass through the wall but can sit inside. Touching the bottom means touching the
+  table, so a scooping move has to allow `spoon` against `table` in its collision specification.
+- The mesh is `viam/meshes/bowl-150x70.ply`, written by `viam/meshes/bowl_ply.py` (rim
+  diameter, bottom diameter, height in mm; PLY units are metres). The Orin reads it from
+  `/home/ultraviolet/bowl-150x70.ply`; to install or update it:
+  `viam machines part cp --part af8aae81-2f68-46bb-a2a0-fdc12ed08ad0 viam/meshes/bowl-150x70.ply machine:/home/ultraviolet/bowl-150x70.ply`,
+  then restart both bowl components (the mesh is read once, at construction).
+- Moving a bowl: change its frame `translation` (bowl centre, on the table top). A frame at
+  `x = −25.8 + d_back + 75`, `y = −76.2 + d_right + 75` puts the rim `d_back` from the back
+  edge and `d_right` from the right edge.
 - **Only motion-service moves are checked.** Teleop and direct `MoveToJointPositions` ignore
   these boxes.
 - The planner ignores any contact that already exists when a move starts. That's why the base's

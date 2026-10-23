@@ -1,5 +1,5 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start on). Both calibration sensors are disabled (only needed to recalibrate). Cameras: arm-camera and webcam-2 (the wrist camera; its frame is an estimate, to be verified), detections-view (YOLOv8s detections drawn on webcam-2), and webcam-2-depth / webcam-2-range: Depth Anything 3 metric depth, a point cloud and lidar-style ranges from webcam-2, served by the local module in modules/depth-anything-3 (installed at /home/ultraviolet/depth-anything-3 on the Orin; preview page on 127.0.0.1:8766). spoon = collision box for the spoon taped in the fixed jaw (on follower-gripper, whose frame is the jaw-tip TCP), so the motion planner keeps it off the table. The ViamShellDanger shell service comes from a fragment, not listed here. No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start on). Both calibration sensors are disabled (only needed to recalibrate). Cameras: arm-camera and webcam-2 (the wrist camera; its frame is an estimate, to be verified), detections-view (YOLOv8s detections drawn on webcam-2), and webcam-2-depth / webcam-2-range: Depth Anything 3 metric depth, a point cloud and lidar-style ranges from webcam-2, served by the local module in modules/depth-anything-3 (installed at /home/ultraviolet/depth-anything-3 on the Orin; preview page on 127.0.0.1:8766). spoon = collision box for the spoon taped in the fixed jaw (on follower-gripper, whose frame is the jaw-tip TCP), so the motion planner keeps it off the table. bowl-right / bowl-left = the two bowls on the table as open-top meshes (viam/meshes/bowl-150x70.ply, installed at /home/ultraviolet/bowl-150x70.ply on the Orin). The ViamShellDanger shell service comes from a fragment, not listed here. No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
@@ -260,6 +260,56 @@
           "x": 0,
           "y": 0,
           "z": 61.5
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "bowl-right",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 316.2,
+          "y": 173.8,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "bowl-left",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x70.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 316.2,
+          "y": 323.8,
+          "z": 0
         },
         "orientation": {
           "type": "ov_degrees",
