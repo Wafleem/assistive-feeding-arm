@@ -34,7 +34,13 @@ def camera_sdk(monkeypatch):
             assert kwargs["api_key"] == "test-secret"
             assert kwargs["api_key_id"] == "test-id"
             assert kwargs["disable_sessions"] is True
-            return SimpleNamespace(disable_sessions=True)
+            options = SimpleNamespace(
+                disable_sessions=True,
+                dial_options=SimpleNamespace(timeout=20.0, initial_connection_attempt_timeout=None,
+                                             initial_connection_attempts=3),
+            )
+            state["options"] = options
+            return options
 
     class RobotClient:
         @staticmethod
@@ -163,3 +169,34 @@ def test_failed_camera_binding_disconnects_without_stop(camera_sdk):
     assert camera_sdk.calls == [
         ("connect", "camera.example", True), ("bind_camera", "missing-camera"), ("disconnect",),
     ]
+
+
+@pytest.mark.parametrize("connect_timeout_s", [45.0, 75.0])
+def test_connection_budget_is_longer_without_lengthening_camera_reads(camera_sdk, monkeypatch, connect_timeout_s):
+    from assistive_arm.robot_iface import viam
+
+    deadlines = []
+    run = viam._Loop.run
+
+    def record_deadline(loop, coroutine, timeout=60):
+        deadlines.append((coroutine.cr_code.co_name, timeout))
+        return run(loop, coroutine, timeout=timeout)
+
+    monkeypatch.setattr(viam._Loop, "run", record_deadline)
+    # Omit the argument in the default case to verify the deployed default too.
+    kwargs = {} if connect_timeout_s == 45.0 else {"connect_timeout_s": connect_timeout_s}
+    with ViamCameraReader(**kwargs) as reader:
+        dial = camera_sdk.state["options"].dial_options
+        assert dial.timeout == connect_timeout_s
+        assert dial.initial_connection_attempt_timeout == connect_timeout_s
+        assert dial.initial_connection_attempts == 1
+        reader.get_rgb_frames()
+    assert deadlines == [("at_address", connect_timeout_s + 1), ("get_images", 11.0), ("close", 10.0)]
+    assert ("get_images", "arm-camera", 10.0) in camera_sdk.calls
+
+
+@pytest.mark.parametrize("deadline", [0.0, -1.0, np.nan, np.inf, -np.inf])
+def test_invalid_connection_timeout_fails_before_connecting(camera_sdk, deadline):
+    with pytest.raises(ValueError, match="connect_timeout_s"):
+        ViamCameraReader(connect_timeout_s=deadline)
+    assert camera_sdk.calls == []

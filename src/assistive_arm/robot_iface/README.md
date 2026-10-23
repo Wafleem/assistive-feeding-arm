@@ -27,6 +27,13 @@
 
 ## RGB-only local camera preview
 
+For cameras hosted by Viam, `ViamCameraReader` disables sessions and binds only
+camera clients. Initial connection has a separate `connect_timeout_s` budget
+(default 45 seconds, one dial attempt) to allow cloud/WebRTC negotiation.
+Individual image reads retain the 10-second `timeout_s` default; a longer
+connection budget does not lengthen read deadlines. Closing only disconnects
+this client and never sends arm or gripper stop commands.
+
 When the wrist camera is plugged directly into the Jetson and no Viam camera
 resource owns it, use `UsbCameraReader(UsbCameraConfig(...))`. The default device
 is `/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0`, named `arm-camera`,

@@ -11,6 +11,8 @@ if [ "$VISION_SOURCE" = viam ]; then
 fi
 export HF_HOME="$VISION_ROOT/data/huggingface"
 export HF_HUB_DISABLE_TELEMETRY=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export RUST_LOG=error
 exec "$VISION_ROOT/.venv/bin/python" -m assistive_arm.orchestration.vision_preview \
   --camera arm-camera \
