@@ -146,3 +146,32 @@ def test_high_lips_tip_the_spoon_up_never_down_and_keep_the_face_in_view():
     offaxis = [np.degrees(np.arccos(np.clip(np.dot(fk(q)[:3, 2], (face - fk(q)[:3, 3]) / np.linalg.norm(face - fk(q)[:3, 3])), -1, 1))) for q in qs]
     assert max(offaxis) < 17.0  # the lips never leave the C270's vertical field of view (~+-17 deg)
     assert errs[-1]["miss_cm"] <= 3.0, errs[-1]
+
+
+# --- debug jogs that keep the spoon level -----------------------------------------------------
+from assistive_arm.feeding.face_track import jog_level  # noqa: E402
+
+
+def _tilt(q):
+    return float(np.degrees(np.arcsin(fk(q)[2, 2])))
+
+
+def test_jog_height_keeps_the_spoon_level_and_the_reach():
+    q0, _ = jog_level(Q0, d_z_m=1e-9, level_pitch_deg=-4.83)  # solve once: a level start
+    for dz in (0.03, -0.02, 0.01):  # -3 cm here runs the elbow into its limit
+        q1, rep = jog_level(q0, d_z_m=dz, level_pitch_deg=-4.83)
+        assert rep["ok"], rep
+        assert fk(q1)[2, 3] - fk(q0)[2, 3] == pytest.approx(dz, abs=0.003)
+        assert np.linalg.norm(fk(q1)[:3, 3][:2]) == pytest.approx(np.linalg.norm(fk(q0)[:3, 3][:2]), abs=0.003)
+        assert _tilt(q1) == pytest.approx(-4.83, abs=0.5)
+        assert q1[0] == q0[0] and q1[4] == q0[4]  # no yaw, no roll
+
+
+def test_jog_yaw_only_turns_the_base():
+    q1, rep = jog_level(Q0, d_yaw_deg=5.0)
+    assert q1[0] == pytest.approx(Q0[0] + 5.0) and np.allclose(q1[1:], Q0[1:], atol=0.05)
+
+
+def test_jog_out_of_reach_says_so():
+    q1, rep = jog_level(Q0, d_z_m=0.5)
+    assert not rep["ok"]

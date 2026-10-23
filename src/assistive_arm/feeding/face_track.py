@@ -229,3 +229,43 @@ class LevelTracker:
         self.v = (q_new - self.q) / dt  # a joint at its limit stops
         self.q = q_new
         return self.q.copy()
+
+
+def jog_level(q_deg, d_yaw_deg: float = 0.0, d_z_m: float = 0.0, level_pitch_deg: float = 0.0,
+              fk=so101_fk, limits=None, iters: int = 200) -> tuple[np.ndarray, dict]:
+    """Joint target for a debug jog that keeps the spoon level: yaw = base pan only (a pure
+    rotation about the base axis, so level and reach are untouched); height = shoulder, elbow
+    and wrist flex solved together for (height + d_z, same reach, spoon pitch = level).
+    Returns (joints, report); report["ok"] is False if the target is outside the arm's reach."""
+    q = np.asarray(q_deg, float).copy()
+    lim = joint_limits() if limits is None else np.asarray(limits, float)
+    q[0] = float(np.clip(q[0] + d_yaw_deg, lim[0, 0] + 3, lim[0, 1] - 3))
+    T0 = fk(q)
+    if d_z_m == 0.0:  # yaw only: a pure base rotation; nothing else moves
+        return q, {"ok": True, "height_cm": round(float(T0[2, 3]) * 100, 1),
+                   "reach_cm": round(float(np.linalg.norm(T0[:3, 3][:2])) * 100, 1),
+                   "tilt_deg": round(float(np.degrees(np.arcsin(np.clip(T0[2, 2], -1, 1)))) - level_pitch_deg, 1),
+                   "miss_cm": 0.0}
+    target = np.array([np.linalg.norm(T0[:3, 3][:2]), T0[2, 3] + d_z_m, np.radians(level_pitch_deg)])
+
+    def task(qq):
+        T = fk(qq)
+        return np.array([np.linalg.norm(T[:3, 3][:2]), T[2, 3], np.arcsin(np.clip(T[2, 2], -1, 1))])
+
+    w = np.array([1.0, 1.0, 0.5])  # m, m, rad (0.5 m per rad)
+    for _ in range(iters):
+        e = (target - task(q)) * w
+        if np.max(np.abs(e)) < 5e-5:
+            break
+        J = np.zeros((3, 3))
+        for i, j in enumerate((1, 2, 3)):
+            dq = np.zeros(5); dq[j] = 0.05
+            J[:, i] = (task(q + dq) - task(q)) * w / 0.05
+        step = J.T @ np.linalg.solve(J @ J.T + 1e-6 * np.eye(3), e)
+        q[1:4] = np.clip(q[1:4] + np.clip(step, -5, 5), lim[1:4, 0] + 3, lim[1:4, 1] - 3)
+    got = task(q)
+    err = (target - got) * np.array([100, 100, np.degrees(1)])
+    ok = abs(err[0]) < 0.5 and abs(err[1]) < 0.5 and abs(err[2]) < 1.0
+    return q, {"ok": bool(ok), "height_cm": round(float(got[1]) * 100, 1), "reach_cm": round(float(got[0]) * 100, 1),
+               "tilt_deg": round(float(np.degrees(got[2])) - level_pitch_deg, 1),
+               "miss_cm": round(float(np.hypot(err[0], err[1])), 1)}

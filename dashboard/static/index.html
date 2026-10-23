@@ -79,6 +79,21 @@
         <button class="step nudge" data-deg="-5">▼ 5°</button>
         <button class="step" data-a="save_level" style="border-color: var(--ok)">Save spoon level</button>
       </div>
+      <h2>Jog (spoon stays level)</h2>
+      <div class="row" style="margin-bottom:6px">
+        Yaw:
+        <button class="step jog" data-yaw="-5">◀ 5°</button>
+        <button class="step jog" data-yaw="-1">◀ 1°</button>
+        <button class="step jog" data-yaw="1">1° ▶</button>
+        <button class="step jog" data-yaw="5">5° ▶</button>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        Height:
+        <button class="step jog" data-dz="3">▲ 3 cm</button>
+        <button class="step jog" data-dz="1">▲ 1 cm</button>
+        <button class="step jog" data-dz="-1">▼ 1 cm</button>
+        <button class="step jog" data-dz="-3">▼ 3 cm</button>
+      </div>
       <h2>Motion tests</h2>
       <div class="steps">
         <button class="step" data-a="home"><b>1</b>Start centered</button>
@@ -137,6 +152,8 @@ document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
 });
 $("stop").onclick = () => cmd("stop");
 document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nudge_spoon", { deg: parseFloat(b.dataset.deg) }));
+document.querySelectorAll("button.jog").forEach(b => b.onclick = () => cmd("jog", {
+  yaw_deg: parseFloat(b.dataset.yaw || 0), dz_cm: parseFloat(b.dataset.dz || 0) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
 $("apply").onclick = () => cmd("set_params", { stop_tip_distance: $("stopcm").value / 100, joint_speed_degs: $("speed").value });
 

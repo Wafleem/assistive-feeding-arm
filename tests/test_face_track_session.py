@@ -235,3 +235,25 @@ def test_level_spoon_button_then_centring_is_allowed_and_tilted_starts_are_refus
         s.command("stop")
     finally:
         s.close()
+
+
+
+def test_jog_buttons_keep_the_spoon_level(tmp_path):
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    s.start()
+    try:
+        level_first(s)
+        T0 = fk(arm.q)
+        s.command("jog", dz_cm=2)
+        assert wait(lambda: s.mode == "idle" and "jogged" in s.reason), s.reason
+        T1 = fk(arm.q)
+        assert T1[2, 3] - T0[2, 3] == pytest.approx(0.02, abs=0.003) and abs(s._spoon_tilt()) < 0.6
+        heading = np.arctan2(T1[1, 2], T1[0, 2])  # the spoon's heading (the pan axis is 39 mm off the origin)
+        s.command("jog", yaw_deg=5)  # to the right
+        assert wait(lambda: s.mode == "idle" and "yaw right" in s.reason), s.reason
+        T2 = fk(arm.q)
+        assert np.degrees(heading - np.arctan2(T2[1, 2], T2[0, 2])) == pytest.approx(5.0, abs=0.3)  # turned right 5 deg
+        assert abs(s._spoon_tilt()) < 0.6
+    finally:
+        s.close()
