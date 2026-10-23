@@ -148,6 +148,8 @@ async function poll() {
       "stop distance": s.params.stop_tip_distance_cm + " cm (floor " + s.params.floor_cm + ")",
       "speed cap": s.params.joint_speed_degs + " °/s",
     });
+    document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
+      el.style.display = s.allow_extend ? "" : "none");
     if (!paramsLoaded) { $("stopcm").value = s.params.stop_tip_distance_cm; $("speed").value = s.params.joint_speed_degs; paramsLoaded = true; }
     $("log").innerHTML = s.log.map(e => `<div>${e.t} <b>${e.kind}</b> ${e.msg}</div>`).join("");
   } catch (e) { $("mode").textContent = "disconnected"; }

@@ -16,6 +16,15 @@ if [ -n "$WIFI" ]; then
   ip route replace "$WNET" dev "$WIFI" table 100
   ip rule show | grep -q "from $WIP lookup 100" || ip rule add from "$WIP" table 100 priority 100
 fi
+# Long-lived connections (viam-server/agent to the cloud) keep the source address they were
+# opened with and never re-route: after a switch, reset the ones on the old path for a few
+# seconds so they reconnect on the new one. Never touches SSH (port 22) or local traffic.
+flush_from() {  # $1 = source IP of the path we just left
+  [ -n "$1" ] || return 0
+  iptables -I OUTPUT 1 -s "$1" -p tcp ! --sport 22 ! -d 192.168.55.0/24 -m conntrack --ctstate ESTABLISHED -j REJECT --reject-with tcp-reset
+  sleep 15
+  iptables -D OUTPUT -s "$1" -p tcp ! --sport 22 ! -d 192.168.55.0/24 -m conntrack --ctstate ESTABLISHED -j REJECT --reject-with tcp-reset
+}
 fails=0
 while true; do
   if ping -c 1 -W 2 -I "$DEV" "$PROBE" >/dev/null 2>&1; then
@@ -24,6 +33,7 @@ while true; do
       ip route replace default via "$GW" dev "$DEV" metric "$METRIC"
       resolvectl dns "$DEV" 1.1.1.1 8.8.8.8; resolvectl default-route "$DEV" true; resolvectl domain "$DEV" "~."
       logger -t usb-uplink "laptop uplink up: default route via $GW"
+      flush_from "${WIP:-}"
     fi
   else
     fails=$((fails + 1))
@@ -31,6 +41,7 @@ while true; do
       ip route del default via "$GW" dev "$DEV" metric "$METRIC"
       resolvectl default-route "$DEV" false
       logger -t usb-uplink "laptop uplink down: back on Wi-Fi"
+      flush_from 192.168.55.1
     fi
   fi
   sleep 10
