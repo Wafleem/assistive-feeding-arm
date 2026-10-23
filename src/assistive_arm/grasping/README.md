@@ -9,6 +9,9 @@
 - `acquire_pinch / acquire_with_utensil / acquire_cup -> AcquisitionResult`
   (`bite_offset` tells feeding where the edible part is relative to the TCP)
 - `vla.run_vla(robot, ctx, policy, instruction)`: works today with `ScriptedPolicy`
+- `scoop.plan_scoop(q_start, BowlTarget, ScoopConfig, level_pitch_deg) -> ScoopPlan`: the SO-101
+  bench rig's scripted spoon scoop (spoon taped in the jaw), planned and checked offline, streamed by
+  `orchestration/face_servo_session.py` (dashboard: Teach bowl, Plan scoop, Scoop)
 
 ## Feasibility with a parallel-jaw gripper (85 mm)
 | Food | Strategy | Verdict |
@@ -30,11 +33,39 @@
 5. Cup: side grasp, keep upright, present the straw.
 6. Stretch: VLA for acquisition (see food_perception/README.md).
 
+## SO-101 scripted scoop (`scoop.py`, implemented)
+No trained model: no public scooping policy fits this rig. The SO-101 SmolVLA/ACT checkpoints
+on the Hugging Face Hub are pick-and-place; scooping research (CARBS, VAPORS) uses two Franka
+arms and a pusher. A learned scoop needs demos recorded on this arm (leader-arm teleop, LeRobot
+format) and a SmolVLA/ACT fine-tune: the stretch item below.
+
+The motion, in the vertical plane through the pan axis and the bowl (no wrist yaw):
+over the bowl → dip to 6 mm above the bottom, turning tip-down → **scoop**: turn back up to level
+(+3°) while the tip slides along the bottom toward the far wall, hollow leading → lift → back to
+the start joints. Every setpoint is solved with local IK (wrist roll held) and checked before
+anything moves: IK error, joint limits, no elbow flip, the spoon (with its width) inside the bowl
+below the rim and clear of the table. Each phase starts and ends at rest; tip, rotation and joint
+speeds are capped. A plan that fails a check is refused with the reason.
+
+What the kinematics allow (spoon tip 13.3 cm from the tool frame, from the Viam scene):
+- **No 90° dip.** Near the table the spoon tips at most ~45-65° with the elbow kept bent one
+  way (steeper needs the elbow to swing through straight mid-scoop). `dip_deg` (default 90) is
+  tried first, then 5° less at a time; the plan reports the dip it used.
+- **Bowl 28-34 cm from the pan axis** (the pan axis is 39 mm in front of the base origin). Closer,
+  a level spoon can't get over it; farther, it can't tip down at the bottom.
+- The dip point moves toward the bowl's centre as the dip gets shallower, so the handle clears
+  the near rim.
+
 ## TODO checklist
 - [ ] `pca_topdown_grasp` → `tests/test_grasping.py`
 - [ ] `acquire_pinch` on FakeRobot, then on grapes in the MuJoCo feeding scene
 - [ ] Gripper feedback from Viam (position/current) for the holding check
 - [ ] AnyGrasp / Contact-GraspNet wrappers
+- [x] SO-101 scripted scoop from a taught bowl (`scoop.py`, `tests/test_scoop*.py`)
+- [x] `spoon_tip_from_tool` = 13.3 cm (Viam scene; it decides the reachable dip and bowl distance)
+- [ ] Bowl from `food_perception` (rim centre − depth) instead of only a taught one
+- [ ] "Spoon loaded?" check after the lift (VLM on the gripper camera)
+- [ ] Learned scoop: record leader-arm demos, fine-tune SmolVLA/ACT, run it through `run_vla`
 - [ ] Utensil and cup strategies (stretch)
 
 ## Done when
