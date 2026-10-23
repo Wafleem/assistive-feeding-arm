@@ -27,6 +27,7 @@ docs/                     PLAN, WORKSTREAMS, SIMULATION, COMPUTE, PROPS (docs/RE
 sim/                      MuJoCo models and scenes (assets)
 scripts/                  thin CLIs (render the scene, eval, recording, calibration)
 tests/                    offline tests; @todo specs per section
+modules/                  Viam modules deployed to machines (own venv and tests; not imported by src/)
 src/assistive_arm/
   geometry.py  robot_iface/  vision/  motion/            SHARED CORE
   mouth_perception/  food_perception/  grasping/          SECTIONS 1-3

@@ -1,0 +1,19 @@
+{
+  "module_id": "assistive-arm:depth-anything-3",
+  "visibility": "private",
+  "description": "Depth Anything 3 metric depth on any RGB camera, served as a depth camera with a point cloud and a lidar-style range sensor.",
+  "models": [
+    {
+      "api": "rdk:component:camera",
+      "model": "assistive-arm:depth-anything-3:camera",
+      "short_description": "RGB camera + DA3 metric depth -> depth images and a point cloud (mm)"
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "assistive-arm:depth-anything-3:range",
+      "short_description": "Distance, nearest return and a 2D scan from the depth camera"
+    }
+  ],
+  "first_run": "setup.sh",
+  "entrypoint": "run.sh"
+}
