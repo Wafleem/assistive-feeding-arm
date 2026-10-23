@@ -31,7 +31,7 @@ import threading
 import numpy as np
 
 from ..geometry import Pose, interpolate_poses
-from ..vision.types import CameraIntrinsics, CameraSpec, RGBDFrame
+from ..vision.types import CameraIntrinsics, CameraSpec, RGBDFrame, RGBFrame
 from ..motion.safety import SafetyConfig
 from .base import GripperState, MoveResult, RobotInterface, Wrench
 from .viam_convert import pose_to_viam_dict, viam_dict_to_pose
@@ -42,10 +42,21 @@ class _Loop:
 
     def __init__(self):
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self._thread.start()
 
     def run(self, coro, timeout=60):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    def close(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join()
+        pending = asyncio.all_tasks(self.loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        self.loop.close()
 
 
 class ViamRobot(RobotInterface):
@@ -199,3 +210,118 @@ class ViamRobot(RobotInterface):
 
     def stop(self) -> None:
         self._io.run(self.arm.stop())
+
+
+class ViamCameraReader(RobotInterface):
+    """Read only RGB images from existing Viam cameras, with sessions disabled.
+
+    This adapter never binds arm, gripper, or motion clients. Unsupported robot
+    operations fail locally, including ``stop``. ``close`` only disconnects the
+    network client. The RGB-only stream cannot provide calibrated camera poses,
+    intrinsics, or metric mouth/handle positions.
+    """
+
+    def __init__(self, address: str | None = None,
+                 cameras: dict[str, str] | None = None, timeout_s: float = 10.0,
+                 connect_timeout_s: float = 45.0):
+        from viam.components.camera import Camera
+        from viam.robot.client import RobotClient
+
+        if not np.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("timeout_s must be positive and finite")
+        if not np.isfinite(connect_timeout_s) or connect_timeout_s <= 0:
+            raise ValueError("connect_timeout_s must be positive and finite")
+        camera_names = {"wrist": "arm-camera"} if cameras is None else dict(cameras)
+        if not camera_names or any(not alias or not name for alias, name in camera_names.items()):
+            raise ValueError("cameras must map nonempty aliases to Viam camera names")
+        address = address or os.environ["VIAM_ADDRESS"]
+        opts = RobotClient.Options.with_api_key(
+            api_key=os.environ["VIAM_API_KEY"], api_key_id=os.environ["VIAM_API_KEY_ID"],
+            disable_sessions=True,
+        )
+        self.timeout_s = float(timeout_s)
+        self.connect_timeout_s = float(connect_timeout_s)
+        opts.dial_options.timeout = self.connect_timeout_s
+        opts.dial_options.initial_connection_attempt_timeout = self.connect_timeout_s
+        opts.dial_options.initial_connection_attempts = 1
+        self._closed = True
+        self._io = _Loop()
+        self.client = None
+        try:
+            self.client = self._io.run(
+                RobotClient.at_address(address, opts), timeout=self.connect_timeout_s + 1.0,
+            )
+            self._cams = {alias: Camera.from_robot(self.client, name) for alias, name in camera_names.items()}
+        except BaseException:
+            try:
+                if self.client is not None:
+                    self._io.run(self.client.close(), timeout=self.timeout_s)
+            finally:
+                self._io.close()
+            raise
+        self._closed = False
+
+    def get_rgb_frames(self, names: list[str] | None = None) -> dict[str, RGBFrame]:
+        if self._closed:
+            raise RuntimeError("ViamCameraReader is closed")
+        selected = list(self._cams) if names is None else list(names)
+        unknown = set(selected).difference(self._cams)
+        if unknown:
+            raise KeyError(f"Unknown camera aliases: {sorted(unknown)}")
+        out = {}
+        for name in selected:
+            images, metadata = self._io.run(
+                self._cams[name].get_images(timeout=self.timeout_s), timeout=self.timeout_s + 1.0,
+            )
+            received_at = self.now()
+            color = next((im for im in images if str(im.mime_type).split(";", 1)[0] in
+                          {"image/jpeg", "image/png"}), None)
+            if color is None:
+                raise ValueError(f"Camera {name!r} returned no JPEG or PNG colour image")
+            from io import BytesIO
+            from PIL import Image
+
+            with Image.open(BytesIO(color.data)) as image:
+                rgb = np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
+            captured_at = None
+            if metadata is not None and metadata.HasField("captured_at"):
+                stamp = metadata.captured_at
+                captured_at = float(stamp.seconds) + float(stamp.nanos) / 1_000_000_000
+            out[name] = RGBFrame(name, rgb, received_at, captured_at,
+                                 "unix" if captured_at is not None else None)
+        return out
+
+    def close(self) -> None:
+        """Disconnect; never call StopAll, arm.stop, or a camera resource close."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._io.run(self.client.close(), timeout=self.timeout_s)
+        finally:
+            self._io.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    @staticmethod
+    def _unsupported(*args, **kwargs):
+        raise NotImplementedError("ViamCameraReader supports RGB camera reads only")
+
+    get_tcp_pose = _unsupported
+    move_to_pose = _unsupported
+    move_linear = _unsupported
+    open_gripper = _unsupported
+    close_gripper = _unsupported
+    get_wrench = _unsupported
+    tare_wrench = _unsupported
+    cameras = _unsupported
+    get_frames = _unsupported
+    camera_pose = _unsupported
+    stop = _unsupported
+    gripper_state = _unsupported
+    joint_positions = _unsupported
+    update_world = _unsupported
