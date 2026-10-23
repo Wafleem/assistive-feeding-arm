@@ -86,3 +86,57 @@ def test_stop_distance_floor_cannot_be_configured_away():
 def test_degenerate_probes_are_rejected():
     with pytest.raises(ValueError):
         ImageJacobian.from_probes([0.0, 0.0], [3.0, 35.0], 3.0)
+
+
+# --- pointing servo (no calibration) ------------------------------------------------------
+from assistive_arm.feeding.face_servo import PointingConfig, PointingServo, turn_toward  # noqa: E402
+
+FACE = np.array([0.8, -0.3, 0.3])
+TOOL = np.array([0.15, 0.0, 0.2])
+
+
+def angle(a, b):
+    return np.degrees(np.arccos(np.clip(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
+
+
+def test_pointing_turns_toward_the_face_in_limited_steps_then_holds():
+    p = PointingServo(PointingConfig(max_turn_deg=8.0))
+    z = np.array([1.0, 0.0, 0.0])
+    for _ in range(10):
+        cmd = p.step(TOOL, z, FACE, mstate())
+        if cmd.kind != "point":
+            break
+        assert angle(z, cmd.direction) <= 8.0 + 1e-6 and np.allclose(cmd.position, TOOL)
+        z = cmd.direction
+    assert cmd.kind == "hold" and angle(z, FACE - TOOL) <= 3.0
+
+
+def test_pointing_tolerates_short_dropouts_but_not_long_ones():
+    p = PointingServo()
+    assert p.step(TOOL, FACE - TOOL, FACE, mstate(age=0.3)).kind == "hold"  # still centred
+    assert "lost" in p.step(TOOL, FACE - TOOL, FACE, mstate(age=1.0)).reason
+
+
+def test_extend_moves_along_the_line_and_stops_at_the_stop_distance():
+    cfg = PointingConfig(stop_tip_distance=0.20, approach_step=0.05)
+    p = PointingServo(cfg, approach=True)
+    pos, z = TOOL.copy(), FACE - TOOL
+    for _ in range(40):
+        cmd = p.step(pos, z, FACE, mstate())
+        if cmd.kind != "approach":
+            break
+        pos, z = cmd.position, cmd.direction
+    assert cmd.kind == "done"
+    tip = np.linalg.norm(FACE - pos) - cfg.spoon_tip_from_tool
+    assert 0.195 <= tip <= 0.21
+
+
+def test_extend_retreats_when_the_face_is_lost_after_moving():
+    p = PointingServo(approach=True)
+    assert p.step(TOOL, FACE - TOOL, FACE, mstate()).kind == "approach"
+    assert p.step(TOOL, FACE - TOOL, None, None).kind == "retreat"
+
+
+def test_turn_toward_is_exact_when_close():
+    a, b = np.array([1.0, 0, 0]), np.array([np.cos(0.05), np.sin(0.05), 0])
+    assert np.allclose(turn_toward(a, b, 8.0), b)

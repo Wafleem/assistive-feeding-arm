@@ -1,4 +1,8 @@
-"""The dashboard's face-servo sequence end to end on a fake SO-101 and a fake face (offline)."""
+"""The dashboard's face-servo sequence end to end on a fake SO-101 and a fake face (offline).
+
+The fake arm aims its tool along (pan, elevation) from the joints; ``move_tool`` stands in for
+the module's planned MoveToPosition. The fake face sits off to the right, is visible within
+35 deg of the tool axis, and drops every 4th frame (MediaPipe misses happen)."""
 
 import time
 from types import SimpleNamespace
@@ -12,16 +16,27 @@ from assistive_arm.orchestration.face_servo_session import FaceServoSession
 from assistive_arm.vision.types import CameraIntrinsics, RGBDFrame
 
 K = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
-LOOK = np.array([60.0, -90.0, 80.0, 20.0, 0.0])
-NEAR = np.array([60.0, -50.0, 40.0, 15.0, 0.0])
-TRUE_J = np.array([[-12.0, 1.0], [0.5, 10.0]])  # px per degree (pan, flex)
+FACE = np.array([0.60, -0.60, 0.30])  # 45 deg to the right of straight ahead
+TOOL = np.array([0.15, 0.0, 0.20])
+LOOK = np.array([-40.0, -90.0, 80.0, 20.0, 0.0])
+
+
+def direction(q):
+    pan, el = np.radians(q[0]), np.radians(q[3] - 20.0)
+    return np.array([np.cos(el) * np.cos(pan), np.cos(el) * np.sin(pan), np.sin(el)])
+
+
+def angle(a, b):
+    return float(np.degrees(np.arccos(np.clip(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b), -1, 1))))
 
 
 class FakeSO101:
     def __init__(self):
-        self.q = np.array([0.0, -100.0, 90.0, 30.0, 0.0])
+        self.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])
+        self.pos = TOOL.copy()
         self.moves = 0
         self.teleop = True
+        self.flip_next = False
 
     def now(self):
         return time.monotonic()
@@ -31,6 +46,16 @@ class FakeSO101:
 
     def move_joints(self, q):
         self.q = np.asarray(q, float).copy()
+        self.moves += 1
+
+    def tool_pose(self, timeout=None):
+        return self.pos.copy(), direction(self.q), 0.0
+
+    def move_tool(self, position, d, theta=0.0, *a, **k):
+        d = np.asarray(d, float)
+        self.pos = np.asarray(position, float).copy()
+        self.q[0] = np.degrees(np.arctan2(d[1], d[0])) + (60.0 if self.flip_next else 0.0)
+        self.q[3] = np.degrees(np.arcsin(np.clip(d[2], -1, 1))) + 20.0
         self.moves += 1
 
     def set_speed(self, v):
@@ -55,100 +80,94 @@ class FakeSO101:
 
 
 class FakeFace:
-    """The face sits off to the side; the image responds to pan/flex with TRUE_J, and the
-    distance shrinks as the arm moves from LOOK toward NEAR (0.70 m -> 0.30 m)."""
-
     def __init__(self, robot):
-        self.robot = robot
-        self.last = None
-        self.last_landmarks = None
+        self.robot, self.n, self.present = robot, 0, True
+        self.last = self.last_landmarks = None
 
     def observe(self, robot):
-        q = self.robot.q
-        if abs(q[0] - LOOK[0]) > 40:  # facing the other way: no face
+        self.n += 1
+        r = self.robot
+        off = angle(direction(r.q), FACE - r.pos)
+        if not self.present or off > 35 or self.n % 4 == 0:
             self.last = self.last_landmarks = None
             return None
-        px = np.array([420.0, 300.0]) + TRUE_J @ np.array([q[0] - LOOK[0], q[3] - LOOK[3]])
-        s = np.clip((q[1] - LOOK[1]) / (NEAR[1] - LOOK[1]), 0, 1)
-        dist = 0.70 - 0.40 * s
         lm = np.zeros((478, 3))
-        lm[13, :2] = lm[14, :2] = px / [640, 480]
+        lm[13, :2] = lm[14, :2] = (np.array([320.0, 240.0]) + 13.6 * off) / [640, 480]
         self.last_landmarks = lm
-        self.last = SimpleNamespace(distance=dist, frontalness=0.95)
-        # The person sits still: in the base frame the mouth does not move while the arm does.
-        return MouthObservation(robot.now(), np.array([0.8, -0.3, 0.3]), np.array([-1.0, 0, 0]), 0.6, 0.95)
+        self.last = SimpleNamespace(distance=float(np.linalg.norm(FACE - r.pos)), frontalness=0.95)
+        return MouthObservation(robot.now(), FACE.copy(), np.array([-1.0, 0, 0]), 0.6, 0.95)
 
 
-def wait_idle(session, timeout=10.0):
+def wait(until, timeout=10.0):
     deadline = time.monotonic() + timeout
-    time.sleep(0.05)
-    while session.mode not in ("idle", "done") and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if until():
+            return True
         time.sleep(0.02)
-    return session.mode
+    return False
 
 
-def test_teach_sweep_calibrate_center_extend(tmp_path):
+def make(tmp_path, **cfg):
     robot = FakeSO101()
     s = FaceServoSession(robot, FakeFace(robot), poses_path=tmp_path / "p.json",
-                         cfg=FaceServoConfig(stop_tip_distance=0.20), settle=0.0)
+                         cfg=FaceServoConfig(**cfg), settle=0.0)
     s.start()
+    return robot, s
+
+
+def test_auto_center_finds_the_face_and_points_at_it_without_calibration(tmp_path):
+    robot, s = make(tmp_path)
     try:
         robot.q = LOOK.copy(); s.command("teach_look")
-        robot.q = NEAR.copy(); s.command("teach_near")
-        robot.q = np.array([0.0, -100.0, 90.0, 30.0, 0.0])
+        robot.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])  # straight ahead: face out of view
+        s.command("auto_center")
+        assert wait(lambda: angle(direction(robot.q), FACE - robot.pos) <= 3.0), s.reason
+        assert s.mode == "center" and robot.teleop is False
+        s.command("stop")
+        assert s.mode == "idle"
+    finally:
+        s.close()
 
-        s.command("home"); assert wait_idle(s) == "idle"
-        assert robot.q[0] == 0.0 and np.allclose(robot.q[1:], LOOK[1:]) and robot.teleop is False
 
-        s.command("search"); assert wait_idle(s) == "idle"
-        assert "face found" in s.reason and abs(robot.q[0] - LOOK[0]) <= 40  # stopped on the way, face in view
+def test_extend_stops_at_the_stop_distance_and_retreats_when_the_face_goes(tmp_path):
+    robot, s = make(tmp_path, stop_tip_distance=0.20)
+    try:
+        robot.q = LOOK.copy(); s.command("teach_look")
+        s.command("extend")
+        assert wait(lambda: s.mode == "done"), s.reason
+        tip = np.linalg.norm(FACE - robot.pos) - s.pcfg.spoon_tip_from_tool
+        assert 0.19 <= tip <= 0.215, tip
 
-        s.command("sweep"); assert wait_idle(s) == "idle"
+        s.command("retreat")
+        assert wait(lambda: s.mode == "idle")
         assert np.allclose(robot.q, LOOK)
 
-        s.command("calibrate"); assert wait_idle(s) == "idle", s.reason
-        J = np.asarray(s.taught.jacobian["J_px_per_deg"])
-        assert np.allclose(J, TRUE_J, atol=0.5), J
-
-        s.command("center"); time.sleep(1.0); s.command("stop")
-        st = s.state()
-        assert max(abs(e) for e in st["face"]["error_px"]) <= s.cfg.center_tol_px, st
-
-        s.command("extend"); assert wait_idle(s) == "done", s.reason
-        tip = s.state()["face"]["tip_distance_cm"]
-        assert 17.0 <= tip <= 21.0, tip  # stopped at the 20 cm stop distance, not closer
-    finally:
-        s.close()
-
-
-def test_extend_refuses_without_taught_poses(tmp_path):
-    robot = FakeSO101()
-    s = FaceServoSession(robot, FakeFace(robot), poses_path=tmp_path / "p.json")
-    s.start()
-    try:
+        robot.pos = TOOL.copy()
         s.command("extend")
-        assert wait_idle(s) == "idle" and "teach" in s.reason
-        assert robot.moves == 0
+        assert wait(lambda: s.pointer is not None and s.pointer.travelled > 0.05)
+        s.det.present = False  # the person leaves mid-approach
+        assert wait(lambda: s.mode == "idle" and "retreat" in s.reason), s.reason
+        assert np.allclose(robot.q, LOOK)
     finally:
         s.close()
 
 
-def test_auto_center_needs_only_the_look_pose(tmp_path):
-    robot = FakeSO101()
-    s = FaceServoSession(robot, FakeFace(robot), poses_path=tmp_path / "p.json", settle=0.0)
-    s.start()
+def test_a_planned_step_that_swings_a_joint_is_stopped(tmp_path):
+    robot, s = make(tmp_path)
     try:
-        robot.q = LOOK.copy(); s.command("teach_look")
-        robot.q = np.array([0.0, -90.0, 80.0, 20.0, 0.0])  # facing away: no face
+        robot.q = np.array([-30.0, -90.0, 80.0, 20.0, 0.0])
+        robot.flip_next = True  # the "planner" swings the base 60 deg
+        s.command("center")
+        assert wait(lambda: s.mode == "idle" and "planner moved a joint" in s.reason), s.reason
+    finally:
+        s.close()
+
+
+def test_auto_center_without_a_face_or_a_look_pose_explains_itself(tmp_path):
+    robot, s = make(tmp_path)
+    try:
         s.command("auto_center")
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:  # searches, calibrates, then centres (runs until STOP)
-            f = s.state()["face"]
-            if s.taught.jacobian and f and "error_px" in f and max(map(abs, f["error_px"])) <= s.cfg.center_tol_px:
-                break
-            time.sleep(0.05)
-        s.command("stop")
-        assert s.taught.jacobian is not None and s.taught.near is None
-        assert max(map(abs, s.state()["face"]["error_px"])) <= s.cfg.center_tol_px
+        assert wait(lambda: s.mode == "idle" and "teach the look pose" in s.reason), s.reason
+        assert robot.moves == 0
     finally:
         s.close()

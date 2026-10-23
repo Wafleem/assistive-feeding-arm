@@ -168,5 +168,8 @@ log-upload errors).
    Stop it with `sudo pkill -f usb_uplink_watchdog.sh` (run from a separate shell, not over
    an `ssh host '...'` line that contains the same text).
 
+Teammates still SSH in over Wi-Fi as usual (`ssh ultraviolet@10.55.13.77` or `rm-sentry.local`):
+the watchdog adds a source rule (table 100) so anything addressed to the Wi-Fi IP answers over Wi-Fi.
+
 Keep the laptop awake and on the cable while others rely on the machine. SSH to the Orin
 over the cable with `HostKeyAlias=rm-sentry.local`, because every Jetson uses `192.168.55.1`.

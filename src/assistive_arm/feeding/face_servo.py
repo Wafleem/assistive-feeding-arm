@@ -174,3 +174,100 @@ class FaceServoController:
             self.s, self.approaching = 0.0, False
             return ServoCommand("retreat", reason=reason)
         return ServoCommand("hold", reason=reason)
+
+
+# --------------------------------------------------------------------------------------------
+# Pointing servo: no calibration. The face's 3D position (camera + frame system) and the
+# tool's pose give the direction from the gripper to the lips; the arm's own planner
+# (MoveToPosition) turns the spoon toward it in small steps, and (extend) moves along it.
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PointingConfig:
+    aligned_deg: float = 3.0  # spoon within this angle of the lips = centred
+    max_turn_deg: float = 8.0  # largest re-aim per step
+    approach_step: float = 0.03  # m per extend step
+    spoon_tip_from_tool: float = 0.21  # m from the tool frame to the spoon tip along tool +Z. TODO: measure
+    stop_tip_distance: float = 0.20  # m spoon tip to lips: stop here. FIRST RUNS: 0.20
+    min_tip_distance_floor: float = 0.03  # hard floor (person mode, AGENTS.md section 4)
+    max_head_speed: float = 0.05  # m/s: faster => no approach
+    retreat_head_speed: float = 0.12  # m/s: faster during an approach => retreat
+    max_age: float = 0.6  # s since the last face fix (a few dropped frames are fine)
+    position_leeway_mm: float = 8.0  # planner leeway on the tool position while re-aiming
+    orientation_leeway: float = 0.03  # planner leeway on each orientation-vector component (~2 deg)
+    max_joint_jump_deg: float = 25.0  # a single planned step moving any joint more than this => stop
+    joint_speed_degs: float = 20.0
+
+    def __post_init__(self):
+        if self.stop_tip_distance < self.min_tip_distance_floor:
+            raise ValueError(f"stop_tip_distance {self.stop_tip_distance} m is below the "
+                             f"{self.min_tip_distance_floor} m floor")
+
+
+@dataclass
+class PointCommand:
+    kind: str  # "hold" | "point" | "approach" | "retreat" | "done"
+    position: np.ndarray | None = None  # tool position target (m, base frame)
+    direction: np.ndarray | None = None  # tool +Z target (unit, base frame)
+    reason: str = ""
+    angle_deg: float = 0.0
+    tip_distance: float = 0.0
+
+
+def _unit(v) -> np.ndarray:
+    v = np.asarray(v, float)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def turn_toward(a, b, max_deg: float) -> np.ndarray:
+    """Rotate unit vector a toward b by at most max_deg (in their common plane)."""
+    a, b = _unit(a), _unit(b)
+    ang = float(np.degrees(np.arccos(np.clip(np.dot(a, b), -1, 1))))
+    if ang <= max_deg or ang < 1e-6:
+        return b
+    t = max_deg / ang
+    w = np.radians(ang)
+    return _unit((np.sin((1 - t) * w) * a + np.sin(t * w) * b) / np.sin(w))
+
+
+class PointingServo:
+    def __init__(self, cfg: PointingConfig | None = None, approach: bool = False):
+        self.cfg, self.approach = cfg or PointingConfig(), approach
+        self.travelled = 0.0  # m moved toward the face (retreat undoes it)
+
+    def step(self, tool_pos, tool_z, face, state: MouthState | None) -> PointCommand:
+        c = self.cfg
+        if face is None or state is None or state.age > c.max_age:
+            return self._fail("face lost")
+        if state.speed > c.retreat_head_speed:
+            return self._fail(f"head moving fast ({state.speed:.2f} m/s)")
+        tool_pos, tool_z, face = np.asarray(tool_pos, float), _unit(tool_z), np.asarray(face, float)
+        to_face = face - tool_pos
+        d = _unit(to_face)
+        tip = float(np.linalg.norm(to_face)) - c.spoon_tip_from_tool
+        ang = float(np.degrees(np.arccos(np.clip(np.dot(tool_z, d), -1, 1))))
+        if tip < c.stop_tip_distance - 0.02:
+            return self._fail(f"spoon tip {tip * 100:.0f} cm from the lips: inside the stop distance", tip, ang)
+        if ang > c.aligned_deg:
+            new_z = turn_toward(tool_z, d, c.max_turn_deg)
+            return PointCommand("point", tool_pos, new_z, f"re-aim {ang:.1f} deg", ang, tip)
+        if not self.approach:
+            return PointCommand("hold", reason=f"centred ({ang:.1f} deg)", angle_deg=ang, tip_distance=tip)
+        if tip <= c.stop_tip_distance:
+            return PointCommand("done", reason=f"spoon tip {tip * 100:.0f} cm from the lips", angle_deg=ang,
+                                tip_distance=tip)
+        if state.speed > c.max_head_speed:
+            return PointCommand("hold", reason=f"waiting for a still head ({state.speed:.2f} m/s)", angle_deg=ang,
+                                tip_distance=tip)
+        step = min(c.approach_step, tip - c.stop_tip_distance)
+        self.travelled += step
+        return PointCommand("approach", tool_pos + step * d, d,
+                            f"extend {step * 100:.0f} cm (tip {tip * 100:.0f} -> stop at {c.stop_tip_distance * 100:.0f} cm)",
+                            ang, tip)
+
+    def _fail(self, reason: str, tip: float = 0.0, ang: float = 0.0) -> PointCommand:
+        if self.approach and self.travelled > 0:
+            self.travelled = 0.0
+            return PointCommand("retreat", reason=reason, angle_deg=ang, tip_distance=tip)
+        return PointCommand("hold", reason=reason, angle_deg=ang, tip_distance=tip)

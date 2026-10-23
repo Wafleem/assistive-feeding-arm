@@ -58,6 +58,24 @@ class SO101ViamRobot:
 
         self._io.run(self.arm.move_to_joint_positions(JointPositions(values=[float(v) for v in q])), timeout=timeout)
 
+    def tool_pose(self, timeout: float = 10.0) -> tuple[np.ndarray, np.ndarray, float]:
+        """(position m, tool +Z unit vector, roll theta deg) of the arm's end frame, base frame."""
+        p = self._io.run(self.arm.get_end_position(), timeout=timeout)
+        z = np.array([p.o_x, p.o_y, p.o_z], float)
+        return np.array([p.x, p.y, p.z], float) / 1000.0, z / (np.linalg.norm(z) or 1.0), float(p.theta)
+
+    def move_tool(self, position, direction, theta: float = 0.0, position_leeway_mm: float = 8.0,
+                  orientation_leeway: float = 0.03, timeout: float = 30.0) -> None:
+        """Planned move (the module's own IK/planner, frame-system obstacles included) of the end
+        frame to ``position`` with +Z along ``direction``; roll about +Z is left free."""
+        from viam.proto.common import Pose
+
+        p, d = np.asarray(position, float) * 1000.0, np.asarray(direction, float)
+        cloud = {"x": position_leeway_mm, "y": position_leeway_mm, "z": position_leeway_mm,
+                 "ox": orientation_leeway, "oy": orientation_leeway, "oz": orientation_leeway, "theta": 180.0}
+        pose = Pose(x=p[0], y=p[1], z=p[2], o_x=d[0], o_y=d[1], o_z=d[2], theta=theta)
+        self._io.run(self.arm.move_to_position(pose, extra={"pose_cloud": cloud}), timeout=timeout)
+
     def set_speed(self, degs_per_sec: float) -> float:
         out = self._io.run(self.arm.do_command({"set_speed": float(degs_per_sec)}), timeout=10)
         return float(out.get("speed_set", degs_per_sec))

@@ -4,14 +4,16 @@ as debuggable steps for the dashboard (dashboard/server.py).
 Two threads:
 * perception (always on): grab a frame, run the mouth detector, update the tracker,
   render the overlay JPEG, publish a snapshot (``snapshot()``);
-* motion (one action at a time): ``sweep``, ``find_face``, ``calibrate``, ``center``,
-  ``extend``, ``retreat``. ``stop`` always wins: it ends the action and stops the arm.
+* motion (one action at a time): ``home``, ``search``, ``sweep``, ``find_face``, ``center``,
+  ``extend``, ``retreat``, ``auto_center``. ``stop`` always wins: it ends the action and stops the arm.
 
-Every decision near the face is made by ``feeding.face_servo.FaceServoController`` (pure,
-tested); this module only sequences, waits for FRESH frames after each move (never acts
-on an image taken before the arm settled), and logs.
+Every decision near the face is made by ``feeding.face_servo.PointingServo`` (pure, tested):
+no calibration; the face's 3D position (camera + frame system) and the tool pose give the
+direction to the lips, and the arm's own planner (``MoveToPosition``) re-aims the spoon in
+small steps. This module only sequences, uses face fixes taken after the arm settled
+(median of a few, so dropped frames don't matter), and logs.
 
-Taught poses and the image Jacobian persist in ``poses/so101_face.json``.
+Taught poses persist in ``poses/so101_face.json``.
 """
 
 from __future__ import annotations
@@ -25,10 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_servo import (
-    FLEX, PAN, FaceServoConfig, FaceServoController, FaceView, ImageJacobian, joint_target, target_pixel,
-    tip_distance,
-)
+from ..feeding.face_servo import PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, target_pixel, tip_distance
 from ..mouth_perception.tracker import MouthTracker
 from ..mouth_perception.types import MouthState
 
@@ -73,7 +72,7 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "calibrate", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "center", "auto_center", "extend", "retreat")
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15):
@@ -81,10 +80,13 @@ class FaceServoSession:
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
         self.cfg = cfg or FaceServoConfig()
+        self.pcfg = PointingConfig(stop_tip_distance=self.cfg.stop_tip_distance,
+                                   joint_speed_degs=self.cfg.joint_speed_degs)
+        self.pointer: PointingServo | None = None
+        self.last_cmd = None
         self.render = render  # (frame, session_snapshot) -> jpeg bytes; None = no preview
         self.probe_deg, self.settle = probe_deg, settle
         self.tracker = MouthTracker()
-        self.ctrl: FaceServoController | None = None
         self.mode, self.reason = "idle", "ready"
         self.log: deque = deque(maxlen=300)
         self._snap: dict = {}
@@ -179,6 +181,7 @@ class FaceServoSession:
             self._require_idle()
             fields = {k: float(v) for k, v in kw.items() if k in ("stop_tip_distance", "joint_speed_degs")}
             self.cfg = FaceServoConfig(**{**asdict(self.cfg), **fields})  # validates the floor
+            self.pcfg = PointingConfig(**{**asdict(self.pcfg), **fields})
             return self._event("params", str(fields))
         if action not in self.ACTIONS:
             raise ValueError(f"unknown action {action!r}")
@@ -312,91 +315,88 @@ class FaceServoSession:
         self.reason = "no face in the sweep"
         self._event("find_face", self.reason)
 
-    def _do_calibrate(self) -> None:
-        q0 = self.robot.joints()
-        self.last_move_end = self.robot.now()
-        p0 = self._face_px()
-        if p0 is None:
-            raise RuntimeError("no face visible: find the face first, and hold still")
-        shifts = []
-        for j in (PAN, FLEX):
-            q = q0.copy()
-            q[j] += self.probe_deg
-            self.reason = f"probing joint {j + 1} by {self.probe_deg:+.0f} deg"
-            self._move(q)
-            p = self._face_px()
-            self._move(q0)
-            if p is None:
-                raise RuntimeError("face lost during the probe: hold still and retry")
-            shifts.append(p - p0)
-        jac = ImageJacobian.from_probes(shifts[0], shifts[1], self.probe_deg)
-        self.taught.jacobian = jac.to_dict()
-        self.taught.save(self.path)
-        self.reason = f"calibrated: J = {np.round(jac.J, 1).tolist()} px/deg"
-        self._event("calibrate", self.reason)
+    def _face_target(self, need: int = 2, timeout: float = 1.5):
+        """Median base-frame mouth position from fixes taken after the arm settled.
+        Dropped frames are skipped: ``need`` good fixes within ``timeout`` (one is enough if
+        the tracker is fresh). Returns (position or None, latest MouthState or None)."""
+        after, pts, st = self.last_move_end + self.settle, [], None
+        deadline = time.monotonic() + timeout
+        while len(pts) < need and time.monotonic() < deadline:
+            s = self.fresh(after, timeout=max(0.05, deadline - time.monotonic()))
+            if not s:
+                break
+            after = s["frame_t"]
+            st = s.get("state") or st
+            if s.get("obs") is not None:
+                pts.append(np.asarray(s["obs"].position, float))
+        if not pts:
+            return None, st
+        return np.median(np.asarray(pts), axis=0), st
 
-    def _controller(self, approach: bool) -> FaceServoController:
-        self._need("look", "jacobian", *(("near",) if approach else ()))
-        ctrl = FaceServoController(ImageJacobian.from_dict(self.taught.jacobian), self.cfg, approach)
-        q, look = self.robot.joints(), np.array(self.taught.look, float)
-        others = [i for i in range(5) if i not in (PAN, FLEX)]
-        if np.max(np.abs(q[others] - look[others])) > 4.0:
-            raise RuntimeError("the arm is not at the look pose: press Sweep first")
-        lim = np.asarray(self.cfg.max_offset_deg)
-        ctrl.offset = np.clip([q[PAN] - look[PAN], q[FLEX] - look[FLEX]], -lim, lim)
-        return ctrl
-
-    def _servo(self, approach: bool) -> None:
-        self.ctrl = ctrl = self._controller(approach)
+    def _point_loop(self, approach: bool) -> None:
+        self.pointer = ctrl = PointingServo(self.pcfg, approach)
         self.last_move_end = self.robot.now()
         while True:
-            s = self.fresh(self.last_move_end + self.settle, timeout=1.0)
-            view, state = (s.get("view"), s.get("state")) if s else (None, None)
-            cmd = ctrl.step(view, state)
+            face, st = self._face_target()
+            pos, z, theta = self.robot.tool_pose()
+            cmd = self.last_cmd = ctrl.step(pos, z, face, st)
             self.reason = f"{cmd.kind}: {cmd.reason}"
-            near = self.taught.near or self.taught.look  # centring alone never leaves the look pose
-            if cmd.kind in ("center", "approach"):
-                self._event(cmd.kind, cmd.reason + (f" (s={ctrl.s:.2f})" if cmd.kind == "approach" else ""))
-                self._move(joint_target(self.taught.look, near, ctrl.s, ctrl.offset))
+            if cmd.kind in ("point", "approach"):
+                self._event(cmd.kind, cmd.reason)
+                q0 = self.robot.joints()
+                self._check_stop()
+                self.robot.move_tool(cmd.position, cmd.direction, theta, self.pcfg.position_leeway_mm,
+                                     self.pcfg.orientation_leeway)
+                self.last_move_end = self.robot.now()
+                jump = float(np.max(np.abs(self.robot.joints() - q0)))
+                if jump > self.pcfg.max_joint_jump_deg:
+                    self.stop(f"planner moved a joint {jump:.0f} deg in one step: stopped (check the pose)")
+                    raise Stopped()
+                self._check_stop()
             elif cmd.kind == "retreat":
                 self._event("retreat", cmd.reason)
-                self._move(joint_target(self.taught.look, near, 0.0, ctrl.offset))
+                self._do_retreat()
+                return
             elif cmd.kind == "done":
                 self._event("done", cmd.reason)
                 self.mode = "done"
                 return
             else:
                 self._check_stop()
-                time.sleep(0.05)
-                self.last_move_end = min(self.last_move_end, self.robot.now())
+                time.sleep(0.1)
 
     def _do_center(self) -> None:
-        self._servo(approach=False)
+        self._point_loop(approach=False)
+
+    def _do_extend(self) -> None:
+        self._point_loop(approach=True)
 
     def _do_auto_center(self) -> None:
-        """One button: find the face (sweep from start toward the look side), calibrate if this
-        rig has no image Jacobian yet, then keep the face centred until STOP."""
-        self._need("look")
-        if self._face_px(2) is None:
+        """One button, no calibration: find the face (sweep from start toward the look side if
+        it isn't in view), then keep the spoon pointed at the lips until STOP."""
+        face, _ = self._face_target(need=1, timeout=1.0)
+        if face is None:
+            if self.taught.look is None:
+                raise RuntimeError("no face in view: point the arm at the person, or teach the look pose")
             self._do_search()
             if "face found" not in self.reason:
                 return
-        if self.taught.jacobian is None:
-            self._do_calibrate()
         self.mode = "center"
-        self._servo(approach=False)
-
-    def _do_extend(self) -> None:
-        self._servo(approach=True)
+        self._point_loop(approach=False)
 
     def _do_retreat(self) -> None:
-        self._need("look")
-        off = self.ctrl.offset if self.ctrl is not None else np.zeros(2)
-        near = self.taught.near or self.taught.look
-        self._move(joint_target(self.taught.look, near, 0.0, off))
-        if self.ctrl is not None:
-            self.ctrl.s = 0.0
-        self.reason = "retreated to the look pose"
+        if self.taught.look is not None:
+            self._move(self.taught.look)
+            self.reason = "retreated to the look pose"
+        else:  # no taught pose: back straight out along the spoon by what extend travelled
+            travelled = self.pointer.travelled if self.pointer else 0.0
+            if travelled > 0:
+                pos, z, theta = self.robot.tool_pose()
+                self.robot.move_tool(pos - travelled * z, z, theta)
+                self.last_move_end = self.robot.now()
+            self.reason = "retreated along the spoon line"
+        if self.pointer is not None:
+            self.pointer.travelled = 0.0
         self._event("retreat", self.reason)
 
     # ---------------------------------------------------------------- dashboard state
@@ -423,9 +423,11 @@ class FaceServoSession:
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
-            "servo": None if self.ctrl is None else {"s": round(self.ctrl.s, 2),
-                                                     "offset_deg": [round(float(v), 1) for v in self.ctrl.offset]},
-            "params": {"stop_tip_distance_cm": round(self.cfg.stop_tip_distance * 100, 1),
+            "servo": None if self.last_cmd is None else {
+                "aim_error_deg": round(self.last_cmd.angle_deg, 1),
+                "tip_distance_cm": round(self.last_cmd.tip_distance * 100, 1),
+                "travelled_cm": round((self.pointer.travelled if self.pointer else 0.0) * 100, 1)},
+            "params": {"stop_tip_distance_cm": round(self.pcfg.stop_tip_distance * 100, 1),
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
             "face": face, "log": list(self.log)[:60],
