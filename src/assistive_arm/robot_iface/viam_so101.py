@@ -1,27 +1,75 @@
-"""SO101ViamRobot: the pi-arm2 SO-101 follower + gripper through Viam. STUB (section 9).
+"""SO101ViamRobot: the SO-101 follower (+ gripper, teleop, cameras) through Viam.
 
-Differences from ``ViamRobot`` (the xArm6 adapter):
-* 5 joints + a separate gripper servo; joint-space moves are the primary API
-  (see the contract proposal in ``pick_place/README.md``).
-* No F/T sensor: ``move_linear(max_force=...)`` can't be force-guarded; use the
-  servos' load/overload condition flags (``servo_position`` reports ``condition``) as a
-  coarse contact signal, and keep speeds low.
-* Speed/acceleration are set on the arm via DoCommand ``{"set_speed": ...}`` /
-  ``{"set_acceleration": ...}``.
-* Teleop state comes from the ``teleop`` generic service: ``{"command": "status"}``.
+Joint-space first (degrees, SO-101 order: pan, lift, elbow, wrist flex, wrist roll):
+small profiled moves (``move_joints`` waits until they settle). The module's ``Stop``
+does NOT interrupt a joint move in progress, so callers near a person must keep every
+move small. Speed is capped with the arm's ``set_speed`` DoCommand (floor ~12 deg/s).
 
-TODO(pick_place):
-  1. Connect like ``ViamRobot`` (env VIAM_ADDRESS / VIAM_API_KEY / VIAM_API_KEY_ID).
-  2. ``get_joint_positions`` / ``move_to_joint_positions`` via the Arm API (degrees).
-  3. Gripper: ``open()`` / ``grab()`` (``grab`` returns whether something is held).
-  4. ``teleop_running()`` and ``stop_teleop()`` via DoCommand on the teleop service.
-  5. Cartesian methods: ``MoveToPosition`` with the module's orientation cone (later).
+Cameras come through ``ViamCameraRig`` on the same connection (``rig``), so perception
+code (``MouthDetector.observe(robot)``) can take this object directly.
+
+Not a full ``RobotInterface`` (no Cartesian guarded moves, no F/T sensor).
+TODO(pick_place): gripper open/grab; Cartesian ``MoveToPosition`` with the orientation cone.
 """
 
 from __future__ import annotations
 
+import numpy as np
+
+from .viam import ViamCameraRig, _Loop, connect
+
 
 class SO101ViamRobot:
     def __init__(self, address: str | None = None, arm: str = "follower-arm", gripper: str = "follower-gripper",
-                 teleop: str = "teleop"):
-        raise NotImplementedError("TODO(pick_place): SO101ViamRobot (see module docstring)")
+                 teleop: str = "teleop", cameras=("webcam-2",)):
+        from viam.components.arm import Arm
+        from viam.services.generic import Generic
+
+        self._io = _Loop()
+        self.client = self._io.run(connect(address))
+        self.arm = Arm.from_robot(self.client, arm)
+        self.teleop_name = teleop
+        self._teleop = Generic.from_robot(self.client, teleop) if teleop else None
+        self.rig = ViamCameraRig(cameras, client=self.client, io=self._io)
+
+    # perception passthrough (so detectors can use this object as their "robot")
+    def now(self) -> float:
+        return self.rig.now()
+
+    def get_frames(self, names=None):
+        return self.rig.get_frames(names)
+
+    def camera_pose(self, name: str):
+        return self.rig.camera_pose(name)
+
+    # arm
+    def joints(self) -> np.ndarray:
+        jp = self._io.run(self.arm.get_joint_positions(), timeout=10)
+        return np.asarray(jp.values, float)
+
+    def move_joints(self, q, timeout: float = 30.0) -> None:
+        from viam.proto.component.arm import JointPositions
+
+        self._io.run(self.arm.move_to_joint_positions(JointPositions(values=[float(v) for v in q])), timeout=timeout)
+
+    def set_speed(self, degs_per_sec: float) -> float:
+        out = self._io.run(self.arm.do_command({"set_speed": float(degs_per_sec)}), timeout=10)
+        return float(out.get("speed_set", degs_per_sec))
+
+    def stop(self) -> None:
+        self._io.run(self.arm.stop(), timeout=10)
+
+    # teleop (the follower must not be driven by the leader while servoing)
+    def teleop_status(self) -> dict:
+        return dict(self._io.run(self._teleop.do_command({"command": "status"}), timeout=10)) if self._teleop else {}
+
+    def stop_teleop(self) -> None:
+        if self._teleop:
+            self._io.run(self._teleop.do_command({"command": "stop"}), timeout=10)
+
+    def start_teleop(self) -> None:
+        if self._teleop:
+            self._io.run(self._teleop.do_command({"command": "start"}), timeout=10)
+
+    def close(self) -> None:
+        self._io.run(self.client.close())
