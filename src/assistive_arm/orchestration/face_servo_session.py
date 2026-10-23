@@ -943,13 +943,53 @@ class FaceServoSession:
         self.reason = f"scooped and back (spoon tipped {plan.report['dip_deg']:g} deg)"
         self._event("scoop", self.reason)
 
+    SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
+
     def _do_home_scoop(self) -> None:
-        """Home, then scoop from the bowl and come back to home (ready for Feed)."""
+        """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
+        scoop when there is one (poses/so101_scoop_demo.json), else the planned scoop."""
         self._event("scoop", "going home")
         self._glide(self.home_pose(), what="scoop: going home")
-        self._do_scoop()
+        if self.SCOOP_DEMO.exists():
+            self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()))
+        else:
+            self._do_scoop()
         self.reason = "scooped: back home (Feed next)"
         self._event("scoop", self.reason)
+
+    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
+        """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
+        up a little so the food stays on -> home."""
+        q = np.asarray(demo["q"], float)
+        k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
+        pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
+        q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
+        t = np.asarray(demo["t"], float) / max(speed, 0.1)
+        self.robot.stop_teleop()
+        self._glide(q[0], what="scoop: over the bowl")
+        t0, last_check = time.monotonic(), time.monotonic()
+        for i in range(len(q)):
+            self._check_stop()
+            self.robot.stream_joints(q[i])
+            self.reason = f"scoop: recorded dip ({t[i]:.1f}/{t[-1]:.1f} s)"
+            if time.monotonic() - last_check > 0.5:  # is the real arm following?
+                last_check = time.monotonic()
+                q_real = np.asarray(self.robot.joints(timeout=1.0), float)
+                recent = q[max(0, i - int(0.6 * demo.get("hz", 30))):i + 1]
+                lag = float(min(np.max(np.abs(q_real - qs)) for qs in recent))
+                if lag > 15.0:
+                    self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
+                    raise Stopped()
+            pause = t0 + t[i] - time.monotonic()
+            if pause > 0:
+                time.sleep(pause)
+        carry = q[-1].copy()  # tip the loaded spoon up (+5 deg from level) with the wrist only
+        q1 = carry.copy(); q1[FLEX] += 1.0
+        slope = _tool_pitch(q1) - _tool_pitch(carry)
+        if abs(slope) > 0.2:
+            carry[FLEX] = float(np.clip(carry[FLEX] - (self._spoon_tilt(carry) - 5.0) / slope, -94.0, 94.0))
+        self._glide(carry, speed_degs=40.0, what="scoop: tipping the spoon up")
+        self._glide(self.home_pose(), what="scoop: back home")
 
     def _do_center(self) -> None:
         self._require_level()
