@@ -97,6 +97,11 @@ class SeenFace:
         return MouthObservation(robot.now(), F.copy(), np.array([-1.0, 0, 0]), 0.6, 0.95)
 
 
+def level_first(s):
+    s.command("level_spoon")
+    assert wait(lambda: s.mode == "idle" and "spoon level" in s.reason), s.reason
+
+
 def wait(until, timeout=15.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -113,6 +118,7 @@ def test_auto_center_searches_then_tracks_smoothly_onto_the_lips_with_a_level_sp
     try:
         s.command("teach_look")
         arm.q = np.array([0.0, -89.1, 89.3, -12.7, -7.6])  # straight ahead: the face is out of view
+        level_first(s)
         s.command("auto_center")
         ok = wait(lambda: s.track is not None and s.track.last and s.track.last["miss_cm"] <= 1.2
                   and abs(s.track.last["pitch_deg"]) <= 1.0)
@@ -159,6 +165,7 @@ def test_extend_glides_in_to_the_stop_distance_holds_then_backs_out_level(tmp_pa
     s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0, approach_speed=0.05)  # faster for the test
     s.start()
     try:
+        level_first(s)
         start = np.linalg.norm(fk(arm.q)[:3, 3][:2])
         s.command("extend")
         assert wait(lambda: s.track is not None and s.track.travelled > 0.03, 20), s.reason
@@ -178,6 +185,7 @@ def test_retreat_after_a_stopped_extend_glides_back_out(tmp_path):
     s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, approach_speed=0.05)
     s.start()
     try:
+        level_first(s)
         start = np.linalg.norm(fk(arm.q)[:3, 3][:2])
         s.command("extend")
         assert wait(lambda: s.track is not None and s.track.actual_travelled() > 0.04, 20)
@@ -197,9 +205,33 @@ def test_extend_toward_an_out_of_reach_face_stops_at_the_arms_limit_and_says_so(
     s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, approach_speed=0.08)
     s.start()
     try:
+        level_first(s)
         s.command("extend")
         assert wait(lambda: "reach limit" in s.reason, 20), s.reason
         assert s.mode == "extend"  # still tracking the face, not lost, not crashed
+        s.command("stop")
+    finally:
+        s.close()
+
+
+
+def test_level_spoon_button_then_centring_is_allowed_and_tilted_starts_are_refused(tmp_path):
+    from assistive_arm.orchestration.face_servo_session import _tool_pitch
+    tilted = LOOK.copy(); tilted[3] -= 20.0  # wrist flexed: spoon ~20 deg off level
+    arm = KinArm(tilted)
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    s.start()
+    try:
+        assert abs(s._spoon_tilt()) > 10
+        s.command("center")
+        assert wait(lambda: s.mode == "idle" and "Level spoon first" in s.reason), s.reason
+        assert arm.streamed == []  # nothing moved
+        s.command("level_spoon")
+        assert wait(lambda: s.mode == "idle" and "spoon level" in s.reason), s.reason
+        assert abs(s._spoon_tilt()) < 0.5
+        assert np.allclose(arm.q[[0, 1, 2, 4]], tilted[[0, 1, 2, 4]])  # only the wrist flex moved
+        s.command("center")
+        assert wait(lambda: s.mode == "center"), s.reason
         s.command("stop")
     finally:
         s.close()

@@ -11,6 +11,7 @@ the controller uses.
 | 3 | Sweep to person | stops teleop, moves to the look pose at the servo speed cap |
 | 4 | Find face | pans ±8/16/24° around the look pose until MediaPipe sees a face |
 | 5 | Calibrate | 4° probe moves of the base pan and wrist flex: measures how the lips move in the image (px/deg) |
+| 0 | Level spoon first | slow wrist-only move to the saved spoon level; Center / Auto center / Extend refuse to start more than 5° off level |
 | 6 | Center on face | closes the loop: steers pan + wrist flex until the lips sit on the spoon's aim point |
 | 7 | Extend toward face | moves along look → near in 5% steps while centred, still and facing; stops at the stop distance |
 | | Retreat / STOP | back to the look pose / stop now (Space or Esc also stop) |
