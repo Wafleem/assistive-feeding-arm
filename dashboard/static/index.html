@@ -62,16 +62,22 @@
       </div>
       <h2>Teach (with teleop on)</h2>
       <div class="steps">
-        <button class="step" data-a="teach_look"><b>1</b>Teach look</button>
-        <button class="step" data-a="teach_near"><b>2</b>Teach near</button>
+        <button class="step" data-a="teach_look"><b>T1</b>Teach look (facing the person)</button>
+        <button class="step" data-a="teach_near"><b>T2</b>Teach near (end of approach)</button>
+        <button class="step" data-a="teach_home"><b>T0</b>Teach start (optional)</button>
       </div>
-      <h2>Run</h2>
+      <h2>Motion tests</h2>
       <div class="steps">
-        <button class="step" data-a="sweep"><b>3</b>Sweep to person</button>
-        <button class="step" data-a="find_face"><b>4</b>Find face</button>
-        <button class="step" data-a="calibrate"><b>5</b>Calibrate (hold still)</button>
-        <button class="step" data-a="center"><b>6</b>Center on face</button>
-        <button class="step danger" data-a="extend" id="extend"><b>7</b>Extend toward face</button>
+        <button class="step" data-a="home"><b>1</b>Start centered</button>
+        <button class="step" data-a="search"><b>2</b>Sweep to look for person</button>
+        <button class="step" data-a="sweep"><b>3</b>Sweep to look pose</button>
+        <button class="step" data-a="find_face">Find face near look pose</button>
+      </div>
+      <h2>Face servo</h2>
+      <div class="steps">
+        <button class="step" data-a="calibrate"><b>4</b>Calibrate (person holds still)</button>
+        <button class="step" data-a="center"><b>5</b>Center on face</button>
+        <button class="step danger" data-a="extend" id="extend"><b>6</b>Extend toward face</button>
         <button class="step" data-a="retreat">Retreat to look</button>
       </div>
       <label class="chk"><input type="checkbox" id="consent"> The person is ready, can move away, and someone is watching STOP</label>
@@ -136,7 +142,7 @@ async function poll() {
       "mouth (base, mm)": f.position_mm,
     });
     rows($("arm"), {
-      "joints (deg)": s.joints, "look pose": s.taught.look, "near pose": s.taught.near,
+      "joints (deg)": s.joints, "start pose": s.taught.home || "look with pan 0", "look pose": s.taught.look, "near pose": s.taught.near,
       "calibrated": s.taught.calibrated ? "yes" : "no",
       "path progress s": s.servo ? s.servo.s : null, "offset pan/flex (deg)": s.servo ? s.servo.offset_deg : null,
       "stop distance": s.params.stop_tip_distance_cm + " cm (floor " + s.params.floor_cm + ")",
