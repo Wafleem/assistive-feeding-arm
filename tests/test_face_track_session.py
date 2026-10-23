@@ -78,21 +78,23 @@ class KinArm:
 
 
 class SeenFace:
-    def __init__(self, arm):
+    def __init__(self, arm, face=None):
         self.arm, self.n = arm, 0
+        self.face = FACE if face is None else face
         self.last = self.last_landmarks = None
 
     def observe(self, robot):
         self.n += 1
         T = fk(self.arm.q)
-        off = np.degrees(np.arccos(np.clip(np.dot(T[:3, 2], (FACE - T[:3, 3]) / np.linalg.norm(FACE - T[:3, 3])), -1, 1)))
+        F = self.face
+        off = np.degrees(np.arccos(np.clip(np.dot(T[:3, 2], (F - T[:3, 3]) / np.linalg.norm(F - T[:3, 3])), -1, 1)))
         if off > 25 or self.n % 5 == 0:  # out of view, or a dropped frame
             self.last = self.last_landmarks = None
             return None
         lm = np.zeros((478, 3)); lm[13, :2] = lm[14, :2] = 0.5
         self.last_landmarks = lm
-        self.last = SimpleNamespace(distance=float(np.linalg.norm(FACE - T[:3, 3])), frontalness=0.95)
-        return MouthObservation(robot.now(), FACE.copy(), np.array([-1.0, 0, 0]), 0.6, 0.95)
+        self.last = SimpleNamespace(distance=float(np.linalg.norm(F - T[:3, 3])), frontalness=0.95)
+        return MouthObservation(robot.now(), F.copy(), np.array([-1.0, 0, 0]), 0.6, 0.95)
 
 
 def wait(until, timeout=15.0):
@@ -145,5 +147,59 @@ def test_spoon_level_calibration_nudges_saves_and_becomes_the_trackers_level(tmp
         assert abs(s.state()["level"]["spoon_tilt_now_deg"]) < 0.1
         s2 = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json")  # survives a restart
         assert s2.track_cfg.pitch_target_deg == lvl
+    finally:
+        s.close()
+
+
+def test_extend_glides_in_to_the_stop_distance_holds_then_backs_out_level(tmp_path):
+    from assistive_arm.feeding.face_track import ExtendConfig
+    arm = KinArm(LOOK)
+    near = face_for(LOOK, dist=0.48, up=0.0)  # within the arm's reach for a 20 cm stop
+    s = FaceServoSession(arm, SeenFace(arm, near), poses_path=tmp_path / "p.json", settle=0.0, log_dir=tmp_path)
+    s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0, approach_speed=0.05)  # faster for the test
+    s.start()
+    try:
+        start = np.linalg.norm(fk(arm.q)[:3, 3][:2])
+        s.command("extend")
+        assert wait(lambda: s.track is not None and s.track.travelled > 0.03, 20), s.reason
+        assert wait(lambda: s.mode == "done", 30), s.reason
+        assert "backed out" in s.reason
+        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.01  # back where it began
+        q = np.array(arm.streamed)
+        assert np.allclose(q[:, 4], q[0, 4])  # roll held
+    finally:
+        s.close()
+
+
+def test_retreat_after_a_stopped_extend_glides_back_out(tmp_path):
+    from assistive_arm.feeding.face_track import ExtendConfig
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.48, up=0.0)), poses_path=tmp_path / "p.json", settle=0.0)
+    s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, approach_speed=0.05)
+    s.start()
+    try:
+        start = np.linalg.norm(fk(arm.q)[:3, 3][:2])
+        s.command("extend")
+        assert wait(lambda: s.track is not None and s.track.actual_travelled() > 0.04, 20)
+        s.command("stop")
+        assert np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start > 0.03  # still extended
+        s.command("retreat")
+        assert wait(lambda: s.mode == "done" and "backed out" in s.reason, 20), s.reason
+        assert abs(np.linalg.norm(fk(arm.q)[:3, 3][:2]) - start) < 0.01
+    finally:
+        s.close()
+
+
+def test_extend_toward_an_out_of_reach_face_stops_at_the_arms_limit_and_says_so(tmp_path):
+    from assistive_arm.feeding.face_track import ExtendConfig
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm, face_for(LOOK, dist=0.75, up=0.0)), poses_path=tmp_path / "p.json", settle=0.0)
+    s.ext_cfg = ExtendConfig(stop_tip_distance=0.20, approach_speed=0.08)
+    s.start()
+    try:
+        s.command("extend")
+        assert wait(lambda: "reach limit" in s.reason, 20), s.reason
+        assert s.mode == "extend"  # still tracking the face, not lost, not crashed
+        s.command("stop")
     finally:
         s.close()

@@ -82,3 +82,51 @@ def test_lips_above_reach_keep_the_spoon_level_at_the_cap_without_drifting():
     tail = np.abs(vs[-40:, :4]).max(axis=1)
     assert tail.max() < 2.0 and tail[-1] <= tail[0]  # slowing to a stop, not drifting into a folded pose
     assert (qs[:, 1:4] >= np.minimum(tr.lo[1:4], Q0[1:4]) - 1e-9).all() and (qs[:, 1:4] <= tr.hi[1:4] + 1e-9).all()
+
+
+# --- extend on the tracker -----------------------------------------------------------------
+from assistive_arm.feeding.face_track import ExtendConfig, extend_decision  # noqa: E402
+
+
+def test_extend_decision_rules():
+    c = ExtendConfig(stop_tip_distance=0.20)
+    ok = dict(face_seen=True, age=0.05, head_speed=0.0, miss_cm=0.8, tilt_deg=0.5, tip=0.40, travelled=0.0, held_s=0.0)
+    assert extend_decision(c, **ok)[0] == 1
+    assert extend_decision(c, **{**ok, "miss_cm": 3.0})[0] == 0  # centre first
+    assert extend_decision(c, **{**ok, "tilt_deg": 4.0})[0] == 0  # level first
+    assert extend_decision(c, **{**ok, "head_speed": 0.08})[0] == 0  # wait for stillness
+    assert extend_decision(c, **{**ok, "head_speed": 0.2, "travelled": 0.05})[0] == -1
+    assert extend_decision(c, **{**ok, "face_seen": False, "travelled": 0.05})[0] == -1
+    assert extend_decision(c, **{**ok, "face_seen": False})[0] == 0  # nothing to back out of
+    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 1.0})[0] == 0  # holding
+    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 9.0})[0] == -1  # hold over
+    assert extend_decision(c, **{**ok, "tip": 0.15, "travelled": 0.1})[0] == -1  # too close
+    with pytest.raises(ValueError):
+        ExtendConfig(stop_tip_distance=0.01)
+
+
+def test_tracker_extends_level_to_the_stop_distance_then_backs_out():
+    c = ExtendConfig(stop_tip_distance=0.20, hold_s=1.0)
+    face = face_ahead(Q0, dist=0.55, dz=0.0)
+    tr = LevelTracker(); tr.reset(Q0); tr.set_extending(True)
+    dt = 1 / tr.cfg.rate_hz
+    for _ in range(80):  # centre and level first
+        tr.step(face, dt)
+    reach, tips, pitches, held, phase = [], [], [], 0.0, "in"
+    for k in range(1200):
+        e = tr.last
+        tip = tr.tip_distance(face, c.spoon_tip_from_tool)
+        d, why = extend_decision(c, True, 0.05, 0.0, e["miss_cm"], e["pitch_deg"], tip, tr.travelled, held)
+        if phase == "out" or d < 0:
+            phase, d = "out", -1
+        held = held + dt if why.startswith("at the stop") else 0.0
+        before = tr.reach0
+        tr.advance(d, dt, c)
+        assert tr.reach0 - before <= c.approach_speed * dt + 1e-12
+        tr.step(face, dt)
+        reach.append(tr.travelled); tips.append(tip); pitches.append(tr.last["pitch_deg"])
+        if phase == "out" and tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01:
+            break
+    assert min(tips) >= c.stop_tip_distance - 0.02 and min(tips) <= c.stop_tip_distance + 0.02  # got there, not past
+    assert max(abs(p) for p in pitches) <= 2.5  # spoon stayed level all the way
+    assert tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01 and max(reach) > 0.05  # in, then back out

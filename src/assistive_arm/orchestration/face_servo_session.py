@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_track import LevelTracker, TrackConfig
+from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision
 from ..geometry import Pose
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
@@ -124,10 +124,12 @@ class FaceServoSession:
         self.fps = 0.0
         self.allow_extend = allow_extend
         self.track_cfg = TrackConfig()
+        self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.track: LevelTracker | None = None
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
         self._pose_fn = None  # camera pose from commanded joints while tracking
         self._q_hist: deque = deque(maxlen=400)
+        self._ext_reach_start: float | None = None  # reach where the last extend began (for Retreat)
         self.hand_guide = False
         self._apply_level()
         self.plan_log = Path(log_dir) / f"face_servo-{time.strftime('%Y%m%d')}.jsonl" if log_dir else None
@@ -249,6 +251,8 @@ class FaceServoSession:
             fields = {k: float(v) for k, v in kw.items() if k in ("stop_tip_distance", "joint_speed_degs")}
             self.cfg = FaceServoConfig(**{**asdict(self.cfg), **fields})  # validates the floor
             self.pcfg = PointingConfig(**{**asdict(self.pcfg), **fields})
+            if "stop_tip_distance" in fields:
+                self.ext_cfg = ExtendConfig(**{**asdict(self.ext_cfg), "stop_tip_distance": fields["stop_tip_distance"]})
             return self._event("params", str(fields))
         if action not in self.ACTIONS:
             raise ValueError(f"unknown action {action!r}")
@@ -402,81 +406,6 @@ class FaceServoSession:
             return None, st
         return np.median(np.asarray(pts), axis=0), st
 
-    def _point_loop(self, approach: bool) -> None:
-        self.pointer = ctrl = PointingServo(self.pcfg, approach)
-        self.plan_failures = 0
-        self.last_move_end = self.robot.now()
-        _, z0, self._theta0 = self.robot.tool_pose()  # hold this wrist roll (bowl up) throughout
-        self._roll0 = float(self.robot.joints()[ROLL])
-        while True:
-            face, st = self._face_target()
-            pos, z, theta = self.robot.tool_pose()
-            theta = self._theta0
-            self._aim_info = {"spoon_tilt_deg": round(spoon_tilt_deg(z), 1),
-                              "miss_cm": None if face is None else round(line_miss(pos, z, face) * 100, 1)}
-            cmd = self.last_cmd = ctrl.step(pos, z, face, st)
-            self.reason = f"{cmd.kind}: {cmd.reason}"
-            if cmd.kind in ("point", "approach"):
-                self._event(cmd.kind, cmd.reason)
-                q0 = self.robot.joints()
-                self._check_stop()
-                if not self._plan_move(cmd, pos, z, theta, face, q0):
-                    self.plan_failures += 1
-                    self._event("planner", f"no solution ({self.plan_failures}/3): {self.last_plan_error[:160]}")
-                    if self.plan_failures >= 3:
-                        raise RuntimeError("the arm's planner found no solution 3 times in a row: "
-                                           f"{self.last_plan_error[:200]} (log: {self.plan_log})")
-                    self.last_move_end = self.robot.now()
-                    continue
-                self.plan_failures = 0
-                self.last_move_end = self.robot.now()
-                q1 = self.robot.joints()
-                jump = float(np.max(np.abs(q1 - q0)))
-                if self.pcfg.level_spoon and abs(q1[ROLL] - self._roll0) > self.pcfg.roll_leeway_deg + 6.0:
-                    self.stop(f"wrist roll drifted {q1[ROLL] - self._roll0:+.0f} deg (spill risk): stopped")
-                    raise Stopped()
-                if jump > self.pcfg.max_joint_jump_deg:
-                    self.stop(f"planner moved a joint {jump:.0f} deg in one step: stopped (check the pose)")
-                    raise Stopped()
-                self._check_stop()
-            elif cmd.kind == "retreat":
-                self._event("retreat", cmd.reason)
-                self._do_retreat()
-                return
-            elif cmd.kind == "done":
-                self._event("done", cmd.reason)
-                self.mode = "done"
-                return
-            else:
-                self._check_stop()
-                time.sleep(0.1)
-
-    def _plan_move(self, cmd, pos, z, theta, face, q0) -> bool:
-        """One planned MoveToPosition; on failure retry once with a 3x wider pose cloud.
-        Every attempt is appended to the JSONL plan log (inputs, result, error, timing)."""
-        for wide in (False, True):
-            lw = self.pcfg.position_leeway_mm * (3.0 if wide else 1.0)
-            ol = self.pcfg.orientation_leeway * (3.0 if wide else 1.0)
-            t0, err = time.monotonic(), ""
-            roll_lw = (self.pcfg.roll_leeway_deg * (2.0 if wide else 1.0)) if self.pcfg.level_spoon else 180.0
-            try:
-                self.robot.move_tool(cmd.position, cmd.direction, theta, lw, ol, roll_lw)
-            except Exception as e:
-                err = f"{type(e).__name__}: {e}"
-            self._log_plan({
-                "kind": cmd.kind, "ok": not err, "error": err, "wide": wide, "duration_s": round(time.monotonic() - t0, 3),
-                "aim_error_deg": round(cmd.angle_deg, 2), "tip_distance_m": round(cmd.tip_distance, 3),
-                "tool_pos_mm": _mm(pos), "tool_z": _r(z), "theta_deg": round(theta, 1),
-                "target_pos_mm": _mm(cmd.position), "target_z": _r(cmd.direction),
-                "leeway_mm": lw, "leeway_orient": ol, "leeway_roll_deg": roll_lw,
-                "spoon_tilt_target_deg": round(spoon_tilt_deg(cmd.direction), 2), "face_mm": _mm(face) if face is not None else None,
-                "joints_before": _r(q0, 1), "joints_after": _r(self._joints_or_none(), 1),
-            })
-            if not err:
-                return True
-            self.last_plan_error = err
-        return False
-
     def _joints_or_none(self):
         try:
             return self.robot.joints(timeout=2.0)
@@ -514,13 +443,19 @@ class FaceServoSession:
         cam = self.robot.camera_pose(self.camera).as_matrix()
         return np.linalg.inv(so101_fk(q)) @ cam
 
-    def _track_loop(self) -> None:
-        """Smooth continuous centring: stream joint setpoints at ``track_cfg.rate_hz``."""
+    def _track_loop(self, extend: bool = False, retreat_only: bool = False) -> None:
+        """Smooth continuous centring (and, with ``extend``, moving in to the stop distance and
+        back out): stream joint setpoints at ``track_cfg.rate_hz``."""
         c = self.track_cfg
         dt = 1.0 / c.rate_hz
         q_meas = self.robot.joints()
         self.track = tr = LevelTracker(c)
         tr.reset(q_meas)
+        if retreat_only and self._ext_reach_start is not None:
+            tr.reach_start, extend = self._ext_reach_start, True  # back out to where extend began
+        elif extend:
+            self._ext_reach_start = tr.reach_start
+        tr.set_extending(extend)
         offset = self._camera_offset(q_meas)
         self._q_hist.clear()
         self._q_hist.append((self.robot.now(), tr.q.copy()))
@@ -532,17 +467,43 @@ class FaceServoSession:
         self._pose_fn = pose_at
         next_t = last_check = time.monotonic()
         tick = 0
+        held_since, backing_out = None, retreat_only
         try:
             while True:
                 self._check_stop()
                 now = self.robot.now()
                 st = self.tracker.state(now)
                 face = st.position if (st is not None and st.age <= 0.5) else None
-                q = tr.step(face, dt)
+                ext_reason = ""
+                if extend:
+                    e0 = tr.last or {}
+                    tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool) if face is not None else 9.9
+                    held = (time.monotonic() - held_since) if held_since else 0.0
+                    direction, ext_reason = extend_decision(
+                        self.ext_cfg, face is not None, st.age if st is not None else 9.9,
+                        st.speed if st is not None else 0.0, e0.get("miss_cm", 99.0), e0.get("pitch_deg", 99.0),
+                        tip, tr.travelled, held)
+                    if direction < 0:
+                        backing_out = True
+                    if backing_out:  # once backing out, finish backing out (then stop)
+                        direction = -1
+                        if tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01:  # the ARM is back
+                            self._ext_reach_start = None
+                            self.reason = f"backed out to the start ({ext_reason or 'retreat'})"
+                            self._event("extend", self.reason)
+                            self.mode = "done"
+                            return
+                    held_since = (held_since or time.monotonic()) if ext_reason.startswith("at the stop") else None
+                    if direction > 0 and tr.travelled - tr.actual_travelled() > 0.015:
+                        direction, ext_reason = 0, "arm at its reach limit here: not moving in further"
+                    tr.advance(direction, dt, self.ext_cfg)
+                q = tr.step(face, dt, blind=extend and backing_out)
                 self.robot.stream_joints(q)
                 self._q_hist.append((self.robot.now(), q.copy()))
                 e = tr.last
-                if face is not None and e:
+                if extend and ext_reason:
+                    self.reason = f"extend: {ext_reason} | travelled {tr.travelled * 100:.1f} cm"
+                elif face is not None and e:
                     self.reason = "tracking: miss {miss_cm} cm, spoon tilt {pitch_deg} deg".format(**e)
                     if e.get("lips_above_reach_cm"):
                         self.reason += f" | lips {e['lips_above_reach_cm']} cm above a level spoon's reach (spoon held level at the cap)"
@@ -572,7 +533,8 @@ class FaceServoSession:
         self._track_loop()
 
     def _do_extend(self) -> None:
-        self._point_loop(approach=True)
+        self.mode = "extend"
+        self._track_loop(extend=True)
 
     def _do_auto_center(self) -> None:
         """One button, no calibration: find the face (sweep from start toward the look side if
@@ -588,6 +550,13 @@ class FaceServoSession:
         self._track_loop()
 
     def _do_retreat(self) -> None:
+        if self._ext_reach_start is not None:  # after a (stopped) smooth extend: glide back out, level
+            self.mode = "extend"
+            self._track_loop(retreat_only=True)
+            return
+        self._do_retreat_planned()
+
+    def _do_retreat_planned(self) -> None:
         travelled = self.pointer.travelled if self.pointer else 0.0
         if travelled > 0 and self.pcfg.level_spoon:  # back straight out, level, in small planned steps
             pos, z, _ = self.robot.tool_pose()
@@ -643,13 +612,14 @@ class FaceServoSession:
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
-            "track": dict(self.track.last) if (self.track is not None and self.mode == "center") else None,
+            "track": ({**self.track.last, "travelled_cm": round(self.track.travelled * 100, 1)}
+                      if (self.track is not None and self.mode in ("center", "extend")) else None),
             "servo": None if self.last_cmd is None else {
                 **getattr(self, "_aim_info", {}),
                 "aim_error_deg": round(self.last_cmd.angle_deg, 1),
                 "tip_distance_cm": round(self.last_cmd.tip_distance * 100, 1),
                 "travelled_cm": round((self.pointer.travelled if self.pointer else 0.0) * 100, 1)},
-            "params": {"stop_tip_distance_cm": round(self.pcfg.stop_tip_distance * 100, 1),
+            "params": {"stop_tip_distance_cm": round(self.ext_cfg.stop_tip_distance * 100, 1),
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
             "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend,
