@@ -88,6 +88,7 @@
       </div>
       <h2>Face servo (smooth 20 Hz tracking, spoon kept level)</h2>
       <div class="steps">
+        <button class="step" data-a="level_spoon" style="grid-column: span 2; border-color: var(--ok)"><b>0</b>Level spoon first (slow wrist move)</button>
         <button class="step" data-a="auto_center" style="grid-column: span 2; border-color: var(--accent)"><b>★</b>Auto center: find face → keep the spoon pointed at the lips</button>
         <button class="step" data-a="center"><b>4</b>Center (face already in view)</button>
         <button class="step danger" data-a="extend" id="extend"><b>5</b>Extend toward face</button>
@@ -166,7 +167,7 @@ async function poll() {
       "joints (deg)": s.joints, "start pose": s.taught.home || "look with pan 0", "look pose": s.taught.look,
       "lips off the spoon line": s.track ? s.track.miss_cm + " cm (side " + s.track.lateral_cm + ", up " + s.track.vertical_cm + ")"
         : (s.servo && s.servo.miss_cm != null ? s.servo.miss_cm + " cm" : null),
-      "spoon tilt (level = 0)": s.track ? s.track.pitch_deg + "°" : (s.servo && s.servo.spoon_tilt_deg != null ? s.servo.spoon_tilt_deg + "°" : null),
+      "spoon tilt (level = 0)": s.track ? s.track.tilt_deg + "°" + (s.track.tip_up_allowed ? " (tip-up allowed: lips high)" : "") : (s.servo && s.servo.spoon_tilt_deg != null ? s.servo.spoon_tilt_deg + "°" : null),
       "spoon tip → lips (servo)": s.servo ? s.servo.tip_distance_cm + " cm" : null,
       "extended": s.servo ? s.servo.travelled_cm + " cm" : null,
       "planner": s.planner ? (s.planner.failures_in_a_row ? s.planner.failures_in_a_row + " failed: " + s.planner.last_error : "ok") : null,
