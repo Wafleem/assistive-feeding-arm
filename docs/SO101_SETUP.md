@@ -226,3 +226,21 @@ so distance, and with it the lips' height, are metric. That was the up/down offs
 when the 90 mm average span didn't fit the person. Both cameras use fx = 772.5 px (hfov 45°).
 The dashboard shows the depth distance next to the fast estimate and embeds the module's
 own preview page (tunnelled to `localhost:8766` by `dashboard/run_mac.sh`).
+
+## Scoop from a bowl (2026-10-23)
+Dashboard → **Scoop**: teach the bowl once, then **Plan scoop** (dry run) and **Scoop and come back**.
+1. Put the bowl **34-38 cm from the arm's pan axis** (about 38-42 cm in front of the base's
+   origin), any direction the arm can turn to. Weigh it down or tape it: the spoon slides along its bottom.
+2. **Hand-guide on**, put the spoon tip on the bowl's inside bottom centre, enter the rim radius
+   and depth, **Teach bowl**, **Hand-guide off** (saved in `poses/so101_face.json`).
+3. Move the arm back up (Start centered or teleop), **Level spoon first**, then **Plan scoop**:
+   the log says the dip it found and the duration, or why it refuses (nothing moves).
+4. **Scoop and come back**: over the bowl, dip to 6 mm above the bottom, turning tip-down, then
+   turn back up to level while sliding toward the far wall, lift, and return to the start joints.
+   Streamed at 30 Hz like the tracker; STOP works at any time, and it stops itself if the arm
+   falls more than 10° behind.
+
+Why not a 90° rotation: with the spoon tip ~21 cm out of the gripper, the SO-101 can tip it only
+~45-50° near the table while keeping its elbow bent one way. The planner tries 90° first and
+uses the deepest dip that fits. Details and checks: `src/assistive_arm/grasping/README.md`.
+

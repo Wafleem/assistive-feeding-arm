@@ -29,6 +29,7 @@ import numpy as np
 
 from ..feeding.face_track import ExtendConfig, LevelTracker, TrackConfig, extend_decision, jog_level, max_level_reach
 from ..geometry import Pose
+from ..grasping.scoop import BowlTarget, ScoopConfig, ScoopPlan, pan_axis_xy, plan_scoop
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
     FLEX, PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
@@ -49,6 +50,7 @@ class Taught:
     near: list[float] | None = None
     jacobian: dict | None = None
     spoon_level: dict | None = None  # {"tool_pitch_deg": ..., "wrist_roll_deg": ...}: tool pose when the SPOON is level
+    bowl: dict | None = None  # {"bottom_mm": [x, y, z], "rim_radius_mm", "depth_mm", "t"}: spoon tip on the inside bottom centre
     notes: dict = field(default_factory=dict)
 
     @classmethod
@@ -97,7 +99,8 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
+               "scoop")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -136,6 +139,9 @@ class FaceServoSession:
         self._depth_jpeg: bytes | None = None
         self.track_cfg = TrackConfig()
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
+        self.scoop_cfg = ScoopConfig(spoon_tip_from_tool=self.ext_cfg.spoon_tip_from_tool)
+        self.scoop_lag_deg = 10.0  # the arm this far behind the streamed scoop: stop
+        self.last_scoop: dict | None = None
         self.track: LevelTracker | None = None
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
         self._pose_fn = None  # camera pose from commanded joints while tracking
@@ -290,6 +296,21 @@ class FaceServoSession:
             self.taught.save(self.path)
             self._apply_level()
             return self._event("level", f"saved: spoon is level when the tool pitch is {self.taught.spoon_level['tool_pitch_deg']:+.2f} deg")
+        if action == "teach_bowl":
+            # hand-guide the spoon tip onto the bowl's inside bottom centre, then press Teach bowl
+            T = so101_fk(self.robot.joints())
+            tip = T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2]
+            rim, depth = float(kw.get("rim_radius_cm", 6.0)) / 100.0, float(kw.get("depth_cm", 4.0)) / 100.0
+            self.taught.bowl = {"bottom_mm": _mm(tip), "rim_radius_mm": round(rim * 1000, 1),
+                                "depth_mm": round(depth * 1000, 1), "t": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self.taught.save(self.path)
+            r = float(np.linalg.norm(tip[:2] - pan_axis_xy()))
+            return self._event("bowl", f"saved: bottom at {_mm(tip)} mm, {r * 100:.0f} cm from the pan axis "
+                                       f"(the scoop reaches about 34-38 cm), rim radius {rim * 100:g} cm, depth {depth * 100:g} cm")
+        if action == "plan_scoop":  # dry run from the current joints: nothing moves
+            plan = self._plan_scoop(self.robot.joints())
+            return self._event("scoop", f"plan {'OK' if plan.ok else 'REFUSED'}: {plan.reason}"
+                                        + (f" | {plan.report}" if plan.ok else ""))
         if action == "set_tuning":
             return self._event("tuning", self._set_tuning(**kw))
         if action == "set_params":
@@ -711,6 +732,56 @@ class FaceServoSession:
                        f"tilt {self._spoon_tilt():+.1f} deg")
         self._event("jog", self.reason)
 
+    def _bowl(self) -> BowlTarget:
+        b = self.taught.bowl
+        if not b:
+            raise RuntimeError("teach the bowl first (spoon tip on its inside bottom centre, then Teach bowl)")
+        return BowlTarget(np.asarray(b["bottom_mm"], float) / 1000.0, b["rim_radius_mm"] / 1000.0, b["depth_mm"] / 1000.0)
+
+    def _plan_scoop(self, q) -> ScoopPlan:
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        plan = plan_scoop(q, self._bowl(), self.scoop_cfg, level)
+        self.last_scoop = {"ok": plan.ok, "reason": plan.reason, **plan.report}
+        return plan
+
+    def _do_scoop(self) -> None:
+        """Scoop from the taught bowl and come back to where it started. ``grasping.scoop`` plans and
+        checks the whole motion before anything moves; it is streamed like the tracker (setpoints at
+        the plan's rate) and stopped if the real arm falls behind."""
+        self._require_level()
+        self.reason = "scoop: planning"
+        plan = self._plan_scoop(self.robot.joints())
+        if not plan.ok:
+            raise RuntimeError(f"scoop refused: {plan.reason}")
+        self._event("scoop", f"{plan.reason}: spoon tipped {plan.report['dip_deg']:g} deg, {plan.duration:.0f} s")
+        phase_at = np.searchsorted([e for _, _, e in plan.phases], plan.t - 1e-9)
+        names = [n for n, _, _ in plan.phases]
+        dt = 1.0 / self.scoop_cfg.rate_hz
+        fast = getattr(self.robot, "joints_fast", None)
+        sent: deque = deque(maxlen=int(2 * self.scoop_cfg.rate_hz))
+        t0 = last_check = time.monotonic()
+        for k, q in enumerate(plan.q):
+            self._check_stop()
+            phase = names[min(int(phase_at[k]), len(names) - 1)]
+            self.reason = f"scoop: {phase} (spoon tilt {plan.tilt_deg[k]:+.0f} deg, {plan.t[k]:.0f}/{plan.duration:.0f} s)"
+            self.robot.stream_joints(q)
+            now = time.monotonic()
+            sent.append((now, q))
+            if now - last_check > 0.5:  # is the real arm following?
+                last_check = now
+                q_real = fast(timeout=1.0) if fast else self.robot.joints(timeout=1.0)
+                recent = [qs for ts, qs in sent if ts >= now - 0.5]  # where it may be, given servo lag
+                lag = min(float(np.max(np.abs(q_real - qs))) for qs in recent)
+                if lag > self.scoop_lag_deg:
+                    self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
+                    raise Stopped()
+            pause = t0 + (k + 1) * dt - time.monotonic()
+            if pause > 0:
+                time.sleep(pause)
+        self._move(plan.q[-1])  # settle exactly where it started
+        self.reason = f"scooped and back (spoon tipped {plan.report['dip_deg']:g} deg)"
+        self._event("scoop", self.reason)
+
     def _do_center(self) -> None:
         self._require_level()
         self._track_loop()
@@ -835,6 +906,7 @@ class FaceServoSession:
                       "spoon_tilt_now_deg": None if isinstance(joints, str) else round(
                           _tool_pitch(np.array(self._last_joints)) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)), 1),
                       "hand_guide": self.hand_guide},
+            "bowl": self.taught.bowl, "scoop": self.last_scoop,
             "planner": {"failures_in_a_row": self.plan_failures, "last_error": self.last_plan_error[:300],
                         "log_file": str(self.plan_log) if self.plan_log else None},
         }

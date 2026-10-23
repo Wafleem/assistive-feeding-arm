@@ -10,7 +10,7 @@ Thin web layer over ``assistive_arm.orchestration.face_servo_session``:
   GET  /api/state        mode, reason, joints, face numbers, taught poses, log
   POST /api/cmd          {"action": "sweep" | "find_face" | "calibrate" | "center" | "extend" |
                           "retreat" | "stop" | "teach_look" | "teach_near" | "teleop_start" |
-                          "teleop_stop" | "set_params", ...}
+                          "teleop_stop" | "set_params" | "teach_bowl" | "plan_scoop" | "scoop", ...}
 Every request needs the token printed at start-up (anyone on the venue Wi-Fi could
 otherwise move the arm). Credentials come from .env (VIAM_API_KEY, VIAM_API_KEY_ID).
 """
