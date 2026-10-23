@@ -168,7 +168,12 @@ def main() -> int:
         from assistive_arm.robot_iface.viam import ViamCameraRig, ViamVisionDetector
 
         rig = ViamCameraRig(cameras=(args.camera,))
-        bowl_det = ViamVisionDetector(rig, args.bowl_service, args.camera) if args.bowl_service else None
+        bowl_det = None
+        if args.bowl_service:
+            try:
+                bowl_det = ViamVisionDetector(rig, args.bowl_service, args.camera)
+            except Exception as e:  # service not running: keep going with the face only
+                print(f"bowls off: vision service {args.bowl_service!r} not available ({e})", file=sys.stderr)
     else:
         rig = LocalRig(args.source, args.camera, args.fx)
         bowl_det = None
