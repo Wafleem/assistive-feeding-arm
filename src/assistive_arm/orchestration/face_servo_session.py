@@ -101,7 +101,8 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
+               "feed")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -327,7 +328,7 @@ class FaceServoSession:
             return self._event("params", str(fields))
         if action not in self.ACTIONS:
             raise ValueError(f"unknown action {action!r}")
-        if action == "extend" and not self.allow_extend:
+        if action in ("extend", "feed") and not self.allow_extend:
             raise RuntimeError("Extend is disabled (start the dashboard with --allow-extend)")
         if action in ("extend", "retreat", "center", "auto_center") and self._tracking_live():
             if action in ("center", "auto_center"):
@@ -620,7 +621,7 @@ class FaceServoSession:
         cam = self.robot.camera_pose(self.camera).as_matrix()
         return np.linalg.inv(so101_fk(q)) @ cam
 
-    def _track_loop(self, extend: bool = False, retreat_only: bool = False) -> None:
+    def _track_loop(self, extend: bool = False, retreat_only: bool = False, once: bool = False) -> None:
         """Smooth continuous centring (and, with ``extend``, moving in to the stop distance and
         back out): stream joint setpoints at ``track_cfg.rate_hz``."""
         c = self.track_cfg
@@ -697,7 +698,7 @@ class FaceServoSession:
                         if tr.travelled <= 1e-4 and abs(tr.actual_travelled()) < 0.01:  # the ARM is back
                             self._ext_reach_start = None
                             self._event("extend", f"backed out to the start ({ext_reason or 'retreat'})")
-                            if retreat_only:
+                            if retreat_only or once:  # once: one bite (Feed), then the caller goes home
                                 self.reason = f"backed out to the start ({ext_reason or 'retreat'})"
                                 self.mode = "done"
                                 return
@@ -899,6 +900,80 @@ class FaceServoSession:
             self._event("extend", f"note: the person is {(need - avail) * 100:.0f} cm beyond the arm's reach here: "
                                   f"the spoon will stop {(need - avail) * 100:.0f} cm short")
         self._ext_max_travel = max(avail, 0.0) + 0.005
+
+    # ---------------------------------------------------------------- one-button feed
+    FEED_GLIDE_DEGS = 60.0  # deg/s for the big joint moves (home, sweep), streamed and synchronised
+
+    def _glide(self, target, speed_degs: float | None = None, what: str = "") -> None:
+        """Smooth synchronised joint move: every joint starts and arrives together (cosine
+        profile), streamed at the tracker rate. Keeps the spoon level between two level poses
+        (and, for a pan-only sweep, exactly level the whole way)."""
+        q0 = np.asarray(self.robot.joints(), float)
+        q1 = np.asarray(target, float)
+        span = float(np.max(np.abs(q1 - q0)))
+        if span < 0.3:
+            return
+        rate = self.track_cfg.rate_hz
+        dur = max(0.6, span / (speed_degs or self.FEED_GLIDE_DEGS) * 1.6)  # cosine peak = 1.57 x mean speed
+        n = int(dur * rate)
+        t0 = time.monotonic()
+        for i in range(1, n + 1):
+            self._check_stop()
+            s = 0.5 - 0.5 * np.cos(np.pi * i / n)
+            self.robot.stream_joints(q0 + s * (q1 - q0))
+            if what:
+                self.reason = f"{what} ({100 * i // n}%)"
+            pause = t0 + i / rate - time.monotonic()
+            if pause > 0:
+                time.sleep(pause)
+        deadline = time.monotonic() + 2.0  # let the servos arrive
+        while time.monotonic() < deadline:
+            self._check_stop()
+            if float(np.max(np.abs(np.asarray(self.robot.joints(timeout=1.0), float) - q1))) < 3.0:
+                break
+            time.sleep(0.05)
+        self.last_move_end = self.robot.now()
+
+    def _person_pan(self) -> float:
+        """Where the person usually is: the taught close pose's heading, else the look pose's."""
+        if self.taught.close:
+            return float(self.taught.close["joints"][PAN])
+        self._need("look")
+        return float(self.taught.look[PAN])
+
+    def _do_feed(self) -> None:
+        """One bite: home -> sweep to where the person usually sits -> find the face -> centre
+        and extend (stop 3 cm from the lips, hold 10 s) -> back out -> home. STOP at any time
+        leaves the arm where it is."""
+        home = self.home_pose()
+        self._event("feed", "going home")
+        self._glide(home, what="feed: going home")
+        sweep = home.copy()
+        sweep[PAN] = self._person_pan()  # pan only: the spoon's tilt can't change on the way
+        self._event("feed", f"sweeping to the person (pan {sweep[PAN]:.0f} deg)")
+        self._glide(sweep, what="feed: sweeping to the person")
+        face, _ = self._face_target(need=1, timeout=1.5)
+        for d in (12.0, -12.0, 24.0, -24.0):  # not in view: look around the usual spot (pan only)
+            if face is not None:
+                break
+            q = sweep.copy()
+            q[PAN] = float(np.clip(sweep[PAN] + d, -108.0, 108.0))
+            self._glide(q, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
+            face, _ = self._face_target(need=1, timeout=1.0)
+        if face is None:
+            self._event("feed", "no face found: going home")
+            self._glide(home, what="feed: no face, going home")
+            self.reason = "feed: no face found near the person's usual spot (back home)"
+            return
+        self._require_level()
+        self._check_extend_reach()
+        self.mode = "extend"
+        self._track_loop(extend=True, once=True)
+        self.mode = "feed"
+        self._event("feed", "bite done: going home")
+        self._glide(home, what="feed: going home")
+        self.reason = "feed done: back home"
+        self._event("feed", self.reason)
 
     def _do_auto_center(self) -> None:
         """One button, no calibration: find the face (sweep from start toward the look side if

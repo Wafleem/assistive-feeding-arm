@@ -121,6 +121,7 @@
       <h2>Face servo (smooth 20 Hz tracking, spoon kept level)</h2>
       <div class="steps">
         <button class="step" data-a="level_spoon" style="grid-column: span 2; border-color: var(--ok)"><b>0</b>Level spoon first (slow wrist move)</button>
+        <button class="step danger" data-a="feed" id="feed" style="grid-column: span 2"><b>▶</b>Feed: home → sweep to person → bite (10 s) → home</button>
         <button class="step" data-a="auto_center" style="grid-column: span 2; border-color: var(--accent)"><b>★</b>Auto center: find face → keep the spoon pointed at the lips</button>
         <button class="step" data-a="center"><b>4</b>Center (face already in view)</button>
         <button class="step danger" data-a="extend" id="extend"><b>5</b>Extend toward face</button>
@@ -179,7 +180,7 @@ async function cmd(action, extra = {}) {
 
 document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
   const a = b.dataset.a;
-  if (a === "extend" && !$("consent").checked) { $("msg").textContent = "Tick the readiness box before Extend."; return; }
+  if ((a === "extend" || a === "feed") && !$("consent").checked) { $("msg").textContent = "Tick the readiness box before Extend."; return; }
   cmd(a);
 });
 $("stop").onclick = () => cmd("stop");
@@ -230,7 +231,7 @@ async function poll() {
         : s.params.stop_tip_distance_cm + " cm (floor " + s.params.floor_cm + ")",
       "speed cap": s.params.joint_speed_degs + " °/s",
     });
-    document.querySelectorAll('[data-a="extend"], #consent, label.chk').forEach(el =>
+    document.querySelectorAll('[data-a="extend"], [data-a="feed"], #consent, label.chk').forEach(el =>
       el.style.display = s.allow_extend ? "" : "none");
     if (!tuningLoaded && s.tuning) {
       const t = s.tuning; $("t_gain").value = t.gain; $("t_speed").value = t.speed_pct; $("t_accel").value = t.accel;
