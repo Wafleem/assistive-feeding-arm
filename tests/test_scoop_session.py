@@ -40,15 +40,15 @@ def session(arm, tmp_path):
     return s
 
 
-def test_scoop_without_a_taught_bowl_explains_itself_and_does_not_move(tmp_path):
+def test_scoop_without_a_taught_bowl_uses_the_viam_scene_bowl(tmp_path):
     arm = KinArm(LOOK)
     s = session(arm, tmp_path)
     s.start()
     try:
         level_first(s)
-        s.command("scoop")
-        assert wait(lambda: s.mode == "idle" and "teach the bowl first" in s.reason), s.reason
-        assert arm.streamed == []
+        s.command("plan_scoop")  # dry run: nothing moves
+        assert s.last_scoop is not None and arm.streamed == []
+        assert s._bowl().bottom[0] == 0.3162  # the scene's bowl-right until one is taught
     finally:
         s.close()
 

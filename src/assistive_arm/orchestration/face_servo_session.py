@@ -104,7 +104,7 @@ class Stopped(Exception):
 
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
-               "scoop", "feed")
+               "scoop", "home_scoop", "feed")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -890,10 +890,13 @@ class FaceServoSession:
                        f"tilt {self._spoon_tilt():+.1f} deg")
         self._event("jog", self.reason)
 
+    # Until a bowl is taught by hand (more accurate: it measures where the bottom really is): the
+    # Viam scene's "bowl-right" position with the scoop's default size (6 cm rim radius, 4 cm deep).
+    # The scene mesh is 60 mm tall; a bowl that deep is refused (the spoon can't get under the rim).
+    SCENE_BOWL = {"bottom_mm": [316.2, 173.8, 5.0], "rim_radius_mm": 60.0, "depth_mm": 40.0, "source": "viam scene bowl-right"}
+
     def _bowl(self) -> BowlTarget:
-        b = self.taught.bowl
-        if not b:
-            raise RuntimeError("teach the bowl first (spoon tip on its inside bottom centre, then Teach bowl)")
+        b = self.taught.bowl or self.SCENE_BOWL
         return BowlTarget(np.asarray(b["bottom_mm"], float) / 1000.0, b["rim_radius_mm"] / 1000.0, b["depth_mm"] / 1000.0)
 
     def _plan_scoop(self, q) -> ScoopPlan:
@@ -938,6 +941,14 @@ class FaceServoSession:
                 time.sleep(pause)
         self._move(plan.q[-1])  # settle exactly where it started
         self.reason = f"scooped and back (spoon tipped {plan.report['dip_deg']:g} deg)"
+        self._event("scoop", self.reason)
+
+    def _do_home_scoop(self) -> None:
+        """Home, then scoop from the bowl and come back to home (ready for Feed)."""
+        self._event("scoop", "going home")
+        self._glide(self.home_pose(), what="scoop: going home")
+        self._do_scoop()
+        self.reason = "scooped: back home (Feed next)"
         self._event("scoop", self.reason)
 
     def _do_center(self) -> None:
