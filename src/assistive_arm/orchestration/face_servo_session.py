@@ -27,7 +27,11 @@ from pathlib import Path
 
 import numpy as np
 
-from ..feeding.face_servo import PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, target_pixel, tip_distance
+from ..feeding.face_servo import (
+    PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
+)
+
+ROLL = 4  # SO-101 wrist roll joint index
 from ..mouth_perception.tracker import MouthTracker
 from ..mouth_perception.types import MouthState
 
@@ -352,9 +356,14 @@ class FaceServoSession:
         self.pointer = ctrl = PointingServo(self.pcfg, approach)
         self.plan_failures = 0
         self.last_move_end = self.robot.now()
+        _, z0, self._theta0 = self.robot.tool_pose()  # hold this wrist roll (bowl up) throughout
+        self._roll0 = float(self.robot.joints()[ROLL])
         while True:
             face, st = self._face_target()
             pos, z, theta = self.robot.tool_pose()
+            theta = self._theta0
+            self._aim_info = {"spoon_tilt_deg": round(spoon_tilt_deg(z), 1),
+                              "miss_cm": None if face is None else round(line_miss(pos, z, face) * 100, 1)}
             cmd = self.last_cmd = ctrl.step(pos, z, face, st)
             self.reason = f"{cmd.kind}: {cmd.reason}"
             if cmd.kind in ("point", "approach"):
@@ -371,7 +380,11 @@ class FaceServoSession:
                     continue
                 self.plan_failures = 0
                 self.last_move_end = self.robot.now()
-                jump = float(np.max(np.abs(self.robot.joints() - q0)))
+                q1 = self.robot.joints()
+                jump = float(np.max(np.abs(q1 - q0)))
+                if self.pcfg.level_spoon and abs(q1[ROLL] - self._roll0) > self.pcfg.roll_leeway_deg + 6.0:
+                    self.stop(f"wrist roll drifted {q1[ROLL] - self._roll0:+.0f} deg (spill risk): stopped")
+                    raise Stopped()
                 if jump > self.pcfg.max_joint_jump_deg:
                     self.stop(f"planner moved a joint {jump:.0f} deg in one step: stopped (check the pose)")
                     raise Stopped()
@@ -395,8 +408,9 @@ class FaceServoSession:
             lw = self.pcfg.position_leeway_mm * (3.0 if wide else 1.0)
             ol = self.pcfg.orientation_leeway * (3.0 if wide else 1.0)
             t0, err = time.monotonic(), ""
+            roll_lw = (self.pcfg.roll_leeway_deg * (2.0 if wide else 1.0)) if self.pcfg.level_spoon else 180.0
             try:
-                self.robot.move_tool(cmd.position, cmd.direction, theta, lw, ol)
+                self.robot.move_tool(cmd.position, cmd.direction, theta, lw, ol, roll_lw)
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
             self._log_plan({
@@ -404,7 +418,8 @@ class FaceServoSession:
                 "aim_error_deg": round(cmd.angle_deg, 2), "tip_distance_m": round(cmd.tip_distance, 3),
                 "tool_pos_mm": _mm(pos), "tool_z": _r(z), "theta_deg": round(theta, 1),
                 "target_pos_mm": _mm(cmd.position), "target_z": _r(cmd.direction),
-                "leeway_mm": lw, "leeway_orient": ol, "face_mm": _mm(face) if face is not None else None,
+                "leeway_mm": lw, "leeway_orient": ol, "leeway_roll_deg": roll_lw,
+                "spoon_tilt_target_deg": round(spoon_tilt_deg(cmd.direction), 2), "face_mm": _mm(face) if face is not None else None,
                 "joints_before": _r(q0, 1), "joints_after": _r(self._joints_or_none(), 1),
             })
             if not err:
@@ -448,6 +463,23 @@ class FaceServoSession:
         self._point_loop(approach=False)
 
     def _do_retreat(self) -> None:
+        travelled = self.pointer.travelled if self.pointer else 0.0
+        if travelled > 0 and self.pcfg.level_spoon:  # back straight out, level, in small planned steps
+            pos, z, _ = self.robot.tool_pose()
+            theta = getattr(self, "_theta0", 0.0)
+            az = np.arctan2(pos[1], pos[0])
+            d = np.array([np.cos(az), np.sin(az), 0.0])
+            while travelled > 1e-3:
+                step = min(self.pcfg.approach_step, travelled)
+                pos = pos - step * d
+                self.robot.move_tool(pos, d, theta, self.pcfg.position_leeway_mm * 3, self.pcfg.orientation_leeway,
+                                     self.pcfg.roll_leeway_deg * 2)
+                travelled -= step
+            self.last_move_end = self.robot.now()
+            self.pointer.travelled = 0.0
+            self.reason = "retreated straight out, spoon level"
+            self._event("retreat", self.reason)
+            return
         if self.taught.look is not None:
             self._move(self.taught.look)
             self.reason = "retreated to the look pose"
@@ -487,6 +519,7 @@ class FaceServoSession:
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
             "servo": None if self.last_cmd is None else {
+                **getattr(self, "_aim_info", {}),
                 "aim_error_deg": round(self.last_cmd.angle_deg, 1),
                 "tip_distance_cm": round(self.last_cmd.tip_distance * 100, 1),
                 "travelled_cm": round((self.pointer.travelled if self.pointer else 0.0) * 100, 1)},
