@@ -12,6 +12,18 @@ easy they are to pick, from an open vocabulary.
 - Shared infra that already works: `vision.Locator.locate_all` (detection + depth → 3D
   points per instance), `vision.detectors` (sim oracle, OWLv2, Grounding DINO wrappers)
 
+## Bowls (implemented: `bowls.py`)
+The current rig scoops small food from **bowls** with a spoon fixed in the gripper, so
+the first job is "where is each bowl, and which one is it?" while bowls may be moved:
+- detection: YOLOv8 COCO already knows `bowl` and `cup` (the Orin's `spoon-detector`
+  Viam service, or `vision.detectors.UltralyticsDetector` locally); YOLO-World / OWLv2 for
+  anything COCO lacks ("small white ramekin");
+- 3D from one RGB camera: the box centre's ray meets the plane `table_z + rim_height`
+  (depth is used instead when the camera has it); radius from the box width;
+- `BowlTracker`: stable ids while bowls slide, dropped after 10 missed frames.
+Next: what is in each bowl (crop → open-vocab query or VLM), per-bowl rim heights, and
+the scoop target inside the bowl (food centroid, not the rim centre).
+
 ## Plan
 1. Offline first: ~50 recorded RealSense frames of the real plate (grapes,
    strawberries, melon cubes, crackers, cup) → measure OWLv2 / Grounding DINO /
@@ -32,6 +44,7 @@ food in sim + ~20 real, LeRobot format, fine-tune on the Linux PC, score in the 
 sim eval as the scripted skill.
 
 ## TODO checklist
+- [x] Bowl finder + tracker (`bowls.py`, `tests/test_bowls.py`); live view in `scripts/perception_viewer.py`
 - [ ] `FoodPerception.find/scan` on sim renders (oracle detector) → `tests/test_food_perception.py`
 - [ ] Recorded-frame replay + accuracy/latency table (docs/COMPUTE.md)
 - [ ] SAM 2 / NanoSAM mask refiner; NanoOWL wrapper on the AGX

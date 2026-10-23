@@ -3,8 +3,9 @@
 ``SegmentationOracleDetector`` reads the simulator's ground-truth geom
 segmentation, so the rest of the pipeline (depth -> 3D -> normal -> skill)
 can be developed and regression-tested before any model is downloaded.
-The model-backed detectors are thin, lazily-imported wrappers around
-Hugging Face ``transformers``; they are not exercised by the offline tests.
+The model-backed detectors are thin, lazily-imported wrappers (Hugging Face
+``transformers``: OWLv2, Grounding DINO; ``ultralytics``: YOLOv8 / YOLO-World);
+they are not exercised by the offline tests.
 
 Open-vocabulary detectors are good at "grape" or "cup" and weaker at
 fine-grained or state questions ("the ripe strawberry", "is the spoon
@@ -125,6 +126,57 @@ class GroundingDinoDetector:
             text_threshold=self.text_threshold, target_sizes=[(h, w)],
         )[0]
         return [Detection(query, float(s), tuple(float(x) for x in b)) for s, b in zip(res["scores"], res["boxes"])]
+
+
+class UltralyticsDetector:
+    """YOLOv8 / YOLO11 (closed set, e.g. COCO: "bowl", "cup", "spoon", "person") or
+    YOLO-World (open vocabulary: any phrase) through ``ultralytics``. Real-time on the
+    AGX Orin (export to TensorRT with ``model.export(format="engine")`` for ~3x more).
+
+    * closed-set weights (``yolov8s.pt``): ``query`` must be one of ``model.names``;
+      unknown queries return [] (check ``known_queries()``).
+    * YOLO-World weights (``yolov8s-worldv2.pt``): the queries become the vocabulary.
+    One inference per frame, cached, however many queries are asked of it.
+    Optional dependency: ``pip install -e ".[yolo]"``; weights download on first use.
+    """
+
+    def __init__(self, weights: str = "yolov8s.pt", conf: float = 0.25, device: str | None = None, imgsz: int = 640):
+        from ultralytics import YOLO  # lazy: heavy optional dependency
+
+        self.model = YOLO(weights)
+        self.open_vocab = "world" in weights.lower()
+        self.conf, self.device, self.imgsz = conf, device, imgsz
+        self._vocab: tuple[str, ...] = ()
+        self._cache: tuple[int, tuple, list[Detection]] | None = None
+
+    def known_queries(self) -> list[str]:
+        return list(self._vocab) if self.open_vocab else sorted(self.model.names.values())
+
+    def set_vocabulary(self, queries) -> None:
+        """YOLO-World only: the phrases to look for (re-encodes the text prompts)."""
+        self._vocab = tuple(dict.fromkeys(q.lower().strip() for q in queries))
+        self.model.set_classes(list(self._vocab))
+        self._cache = None
+
+    def _run(self, frame: RGBDFrame) -> list[Detection]:
+        key = (id(frame.rgb), frame.timestamp)
+        if self._cache and self._cache[:2] == (key, self._vocab):
+            return self._cache[2]
+        res = self.model.predict(frame.rgb[..., ::-1], conf=self.conf, device=self.device, imgsz=self.imgsz,
+                                 verbose=False)[0]  # ultralytics expects BGR numpy arrays
+        names = res.names
+        dets = [
+            Detection(names[int(c)].lower(), float(s), tuple(float(x) for x in b))
+            for b, s, c in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist(), res.boxes.cls.tolist())
+        ]
+        self._cache = (key, self._vocab, dets)
+        return dets
+
+    def detect(self, frame: RGBDFrame, query: str) -> list[Detection]:
+        q = query.lower().strip()
+        if self.open_vocab and q not in self._vocab:
+            self.set_vocabulary((*self._vocab, q))
+        return [Detection(query, d.score, d.bbox) for d in self._run(frame) if d.label == q]
 
 
 def mask_or_box(det: Detection, shape, scale: float = 0.6) -> np.ndarray:
