@@ -86,12 +86,56 @@ def make_render():
     return render
 
 
+def make_depth_render(near_m: float = 0.25, far_m: float = 2.5):
+    """Depth as colour (near = red, far = blue), the face box with its measured distance."""
+    import cv2
+    from assistive_arm.mouth_perception import face_geometry as fg
+
+    def render(frame, landmarks, session) -> bytes:
+        d = frame.depth
+        norm = np.clip((d - near_m) / (far_m - near_m), 0, 1)
+        img = cv2.applyColorMap((255 * (1 - norm)).astype(np.uint8), cv2.COLORMAP_JET)
+        img[d <= 0] = 0
+        h, w = img.shape[:2]
+        if landmarks is not None:
+            px = fg.landmarks_to_pixels(landmarks, frame.intrinsics)
+            x0, y0 = px[:, :2].min(axis=0).astype(int)
+            x1, y1 = px[:, :2].max(axis=0).astype(int)
+            cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), 2)
+            z = fg.face_depth_from_image(px, d, getattr(session.det, "params", fg.FaceGeometryParams()))
+            lip = tuple(int(v) for v in px[13, :2])
+            cv2.circle(img, lip, 5, (255, 255, 255), -1)
+            if z is not None:
+                cv2.putText(img, f"face {z * 100:.0f} cm", (x0, max(18, y0 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                            (255, 255, 255), 2, cv2.LINE_AA)
+        cy, cx = h // 2, w // 2
+        c = d[cy - 4:cy + 5, cx - 4:cx + 5]
+        c = c[c > 0]
+        if c.size:
+            cv2.drawMarker(img, (cx, cy), (255, 255, 255), cv2.MARKER_CROSS, 16, 1)
+            cv2.putText(img, f"{np.median(c) * 100:.0f} cm", (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.rectangle(img, (0, h - 22), (w, h), (0, 0, 0), -1)
+        cv2.putText(img, f"depth {near_m:.2f} m (red) .. {far_m:.1f} m (blue)   {session.depth_status}"[:80],
+                    (8, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return buf.tobytes() if ok else b""
+
+    return render
+
+
 class Handler(BaseHTTPRequestHandler):
     session: FaceServoSession
     token: str
 
     def log_message(self, *a):  # quiet
         pass
+
+    def handle(self):  # a browser closing a stream or poll is normal: no tracebacks
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _authorised(self) -> bool:
         q = parse_qs(urlparse(self.path).query)
@@ -124,14 +168,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/api/state":
             self._json(self.session.state())
-        elif path == "/stream.mjpg":
+        elif path in ("/stream.mjpg", "/depth.mjpg"):
+            source = self.session.jpeg if path == "/stream.mjpg" else self.session.depth_jpeg
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
             try:
                 last = None
                 while True:
-                    jpg = self.session.jpeg()
+                    jpg = source()
                     if jpg and jpg is not last:
                         self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                                          + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
@@ -204,7 +249,8 @@ def main() -> int:
     depth_det = MediaPipeMouthDetector(camera=args.depth_camera, model_path=args.model) if args.depth_camera else None
     session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render(),
                                allow_extend=args.allow_extend, log_dir=ROOT / "data/logs",
-                               depth_camera=args.depth_camera or None, depth_detector=depth_det)
+                               depth_camera=args.depth_camera or None, depth_detector=depth_det,
+                               depth_render=make_depth_render() if args.depth_camera else None)
     session.start()
 
     Handler.session = session
