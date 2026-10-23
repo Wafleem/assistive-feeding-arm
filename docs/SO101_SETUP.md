@@ -131,7 +131,7 @@ Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3
 
 | Component | Parent | Geometry | Why |
 |---|---|---|---|
-| `table` | `world`, (x 647.7, y 0, z −15) | box x 1447.8 × y 685.8 × z 30 mm | the real table, 4 ft 9 in × 27 in (measured 2026-10-23): its long side runs straight ahead of the arm (+x, the way the arm points at zero joints), the base centre is 3 in (76.2 mm) in from the short edge behind it and centred across the width. Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
+| `table` | `world`, (x 698.1, y 266.7, z −15) | box x 1447.8 × y 685.8 × z 30 mm | the real table, 4 ft 9 in × 27 in (measured 2026-10-23): its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base sits on the short edge behind it (x −25.8, the back of the module's base box), and the long edge on the arm's right is 3 in (76.2 mm) from the base centre (y −76.2; the left edge is at y +609.6). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
 | `spoon` | `follower-gripper`, z +61.5 | box x 50 × y 45 × z 143 mm | the spoon sticks out **123 mm** past the jaw tips (measured 2026-10-23); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
 
 - `follower-gripper`'s frame is the module's TCP, the point between the jaw tips, with the arm
@@ -141,7 +141,7 @@ Both are `viam:obstacle-pack:obstacle` components; they show in the Viam app's 3
   weren't measured). Check it against the real spoon in the 3D SCENE tab and shrink it if
   close approaches get refused.
 - If the follower sits on a riser, lower `table` by the riser height. If the arm or table moves,
-  re-measure: `x` = length / 2 − (base centre to the short edge behind it).
+  re-measure: centre `x` = −25.8 + length / 2, centre `y` = −(base centre to the right edge) + width / 2.
 - Past the table's edges the planner lets the arm reach below z = 0, as the real arm can.
 - **Only motion-service moves are checked.** Teleop and direct `MoveToJointPositions` ignore
   these boxes.
