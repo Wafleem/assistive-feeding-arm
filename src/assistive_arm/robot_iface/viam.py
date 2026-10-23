@@ -200,6 +200,24 @@ class ViamRobot(RobotInterface):
 
 # --- Cameras only (no arm required): perception on the SO-101 bench rig -----------------
 
+
+async def connect(address: str | None = None):
+    """RobotClient from VIAM_ADDRESS / VIAM_API_KEY / VIAM_API_KEY_ID.
+
+    ``VIAM_ADDRESS=localhost:8080`` (on the machine itself) dials viam-server directly,
+    without the cloud: use it on the Orin, where the venue Wi-Fi made cloud dialling flaky."""
+    from viam.robot.client import RobotClient
+    from viam.rpc.dial import DialOptions
+
+    address = address or os.environ["VIAM_ADDRESS"]
+    opts = RobotClient.Options.with_api_key(api_key=os.environ["VIAM_API_KEY"], api_key_id=os.environ["VIAM_API_KEY_ID"])
+    if address.startswith(("localhost", "127.0.0.1")):
+        opts.dial_options = DialOptions.with_api_key(os.environ["VIAM_API_KEY"], os.environ["VIAM_API_KEY_ID"])
+        opts.dial_options.disable_webrtc = True
+        opts.dial_options.insecure = True
+        opts.dial_options.allow_insecure_with_creds_downgrade = True
+    return await RobotClient.at_address(address, opts)
+
 # Logitech C270 at 640x480 (~60 deg diagonal FOV) until a checkerboard calibration exists.
 C270_640x480 = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
 
@@ -229,14 +247,11 @@ class ViamCameraRig:
     """
 
     def __init__(self, cameras=("webcam-2",), address: str | None = None,
-                 intrinsics: dict[str, CameraIntrinsics] | None = None):
+                 intrinsics: dict[str, CameraIntrinsics] | None = None, client=None, io=None):
         from viam.components.camera import Camera
-        from viam.robot.client import RobotClient
 
-        self._io = _Loop()
-        opts = RobotClient.Options.with_api_key(
-            api_key=os.environ["VIAM_API_KEY"], api_key_id=os.environ["VIAM_API_KEY_ID"])
-        self.client = self._io.run(RobotClient.at_address(address or os.environ["VIAM_ADDRESS"], opts))
+        self._io = io or _Loop()
+        self.client = client or self._io.run(connect(address))
         self._cams = {c: Camera.from_robot(self.client, c) for c in cameras}
         self._k = dict(intrinsics or {})
         self.pose_error: str | None = None
