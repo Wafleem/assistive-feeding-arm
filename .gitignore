@@ -8,6 +8,8 @@ out/
 # Model downloads and recorded data stay out of git (see docs/SIMULATION.md)
 sim/assets/
 data/
+# ...except the SO-101 kinematics (Arm.GetKinematics) that so101_kinematics.py loads
+!src/assistive_arm/robot_iface/data/
 *.mp4
 *.npz
 .env
