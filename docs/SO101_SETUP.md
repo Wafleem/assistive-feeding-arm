@@ -154,7 +154,7 @@ log-upload errors).
    header). The Orin is `192.168.55.1`, the laptop `192.168.55.100`.
 2. On the laptop (macOS, Wi-Fi on `en0`), once per laptop boot. You run this yourself; it needs your password:
    ```bash
-   sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on en0 from 192.168.55.0/24 to any -> (en0)" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
+   sudo sysctl -w net.inet.ip.forwarding=1 && echo "nat on en0 from 192.168.55.0/24 to any -> (en0) static-port" | sudo pfctl -a com.apple/jetson-share -f - && sudo pfctl -E
    ```
    Undo: `sudo pfctl -a com.apple/jetson-share -F all && sudo sysctl -w net.inet.ip.forwarding=0`
 3. On the Orin, once per Orin boot (it doesn't survive a reboot, on purpose):
@@ -167,6 +167,10 @@ log-upload errors).
    Its switches are logged under `usb-uplink` in the system log.
    Stop it with `sudo pkill -f usb_uplink_watchdog.sh` (run from a separate shell, not over
    an `ssh host '...'` line that contains the same text).
+
+`static-port` matters: without it, macOS's NAT randomises source ports, Viam's network check
+reports a "hard" NAT, and the app labels the machine **Degraded** (UDP/STUN). The direct
+WebRTC paths get weaker and connections fall back to TURN relays.
 
 Teammates still SSH in over Wi-Fi as usual (`ssh ultraviolet@10.55.13.77` or `rm-sentry.local`):
 the watchdog adds a source rule (table 100) so anything addressed to the Wi-Fi IP answers over Wi-Fi.
