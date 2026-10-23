@@ -73,3 +73,29 @@ What happened at the move, and what fixed it:
   "Failed to load calibration … no such file" and silently falls back to the servo
   registers. Always `reload_calibration` + `get_calibration` after calibrating.
 - Leader and follower homing offsets differ (each arm is homed on its own); that's expected.
+
+## Wrist camera (`arm-camera`) frame: estimate, to be verified
+
+A Hiwonder USB camera module (640×480, manual-focus M12 lens) is on an L-bracket bolted
+to the side of the gripper's servo housing, after the wrist-roll joint. It moves with the
+whole gripper (photos in the team chat, 2026-10-23).
+
+| Quantity | Estimate | How it was obtained |
+|---|---|---|
+| Parent frame | `follower-arm` (the tool flange) | mounted after wrist roll |
+| Viewing direction | parallel to the gripper approach axis (tool +Z) | photo from in front of the gripper |
+| Sideways offset | ~55 mm from the gripper centreline, along the jaw servo's axis (tool ±Y: **sign unknown**) | scaled from the gripper body width in the photos |
+| Offset along the gripper | ~35 mm forward of the flange (jaw tips are 99.9 mm) | photos |
+| Height offset | ~0 mm (level with the jaw servo axis) | photos |
+| Rotation about the lens axis | **unknown** (image "up" vs tool axes) | needs a live frame |
+
+Verification (with focus set and the camera streaming):
+1. Pose the gripper pointing down at the table ~20 cm up, with an object to the arm's left.
+   Which side of the image the object appears on fixes the ±Y sign and the image rotation.
+2. Add the frame (`parent: follower-arm`, translation `(0, ±55, 35)` mm, orientation
+   `ov_degrees (0, 0, 1, θ)`), then check it in the 3D SCENE tab against the real arm.
+3. Refine with a hand-eye check: touch a marked point with the spoon tip, compare it with
+   where the camera says it is, and adjust; later, a ChArUco hand-eye calibration.
+Also needed: camera intrinsics (checkerboard capture), which the webcam config doesn't have yet.
+
+Focus: twist the M12 lens until text ~20–30 cm away is sharp (the plate/food distance).
