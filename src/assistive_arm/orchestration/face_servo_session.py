@@ -27,6 +27,9 @@ from pathlib import Path
 
 import numpy as np
 
+from ..feeding.face_track import LevelTracker, TrackConfig
+from ..geometry import Pose
+from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
     PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
 )
@@ -67,7 +70,8 @@ class _OneFrame:
 
     def camera_pose(self, name):
         if name not in self._pose:
-            self._pose[name] = self.robot.camera_pose(name)
+            override = getattr(self, "pose_fn", None)
+            self._pose[name] = override(self.frames[name].timestamp) if override else self.robot.camera_pose(name)
         return self._pose[name]
 
 
@@ -112,6 +116,11 @@ class FaceServoSession:
         self.last_move_end = 0.0
         self.fps = 0.0
         self.allow_extend = allow_extend
+        self.track_cfg = TrackConfig()
+        self.track: LevelTracker | None = None
+        self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
+        self._pose_fn = None  # camera pose from commanded joints while tracking
+        self._q_hist: deque = deque(maxlen=400)
         self.plan_log = Path(log_dir) / f"face_servo-{time.strftime('%Y%m%d')}.jsonl" if log_dir else None
         self.plan_failures = 0
         self.last_plan_error = ""
@@ -130,7 +139,9 @@ class FaceServoSession:
                 if frame is None:
                     time.sleep(0.1)
                     continue
-                obs = self.det.observe(_OneFrame(self.robot, frames))
+                one = _OneFrame(self.robot, frames)
+                one.pose_fn = self._pose_fn
+                obs = self.det.observe(one)
                 self.tracker.update(obs)
                 now = self.robot.now()
                 state = self.tracker.state(now)
@@ -443,8 +454,73 @@ class FaceServoSession:
         except OSError:
             pass
 
+    # ---------------------------------------------------------------- continuous tracking
+    def _q_at(self, t: float) -> np.ndarray:
+        """Commanded joints at time t (robot clock), from the setpoint history."""
+        best = self._q_hist[0][1]
+        for ti, qi in self._q_hist:
+            if ti > t:
+                break
+            best = qi
+        return best
+
+    def _camera_offset(self, q) -> np.ndarray:
+        """Camera pose relative to the tool frame (constant: the camera is on the gripper)."""
+        cam = self.robot.camera_pose(self.camera).as_matrix()
+        return np.linalg.inv(so101_fk(q)) @ cam
+
+    def _track_loop(self) -> None:
+        """Smooth continuous centring: stream joint setpoints at ``track_cfg.rate_hz``."""
+        c = self.track_cfg
+        dt = 1.0 / c.rate_hz
+        q_meas = self.robot.joints()
+        self.track = tr = LevelTracker(c)
+        tr.reset(q_meas)
+        offset = self._camera_offset(q_meas)
+        self._q_hist.clear()
+        self._q_hist.append((self.robot.now(), tr.q.copy()))
+
+        def pose_at(t):
+            T = so101_fk(self._q_at(t - self.servo_lag)) @ offset
+            return Pose.from_matrix(T[:3, 3], T[:3, :3])
+
+        self._pose_fn = pose_at
+        next_t = last_check = time.monotonic()
+        tick = 0
+        try:
+            while True:
+                self._check_stop()
+                now = self.robot.now()
+                st = self.tracker.state(now)
+                face = st.position if (st is not None and st.age <= 0.5) else None
+                q = tr.step(face, dt)
+                self.robot.stream_joints(q)
+                self._q_hist.append((self.robot.now(), q.copy()))
+                e = tr.last
+                self.reason = ("tracking: miss {miss_cm} cm, spoon tilt {pitch_deg} deg".format(**e)
+                               if face is not None and e else "tracking: waiting for the face (holding still)")
+                if time.monotonic() - last_check > 0.5:  # is the real arm following?
+                    last_check = time.monotonic()
+                    lag = float(np.max(np.abs(self.robot.joints(timeout=1.0) - self._q_at(self.robot.now() - 0.3))))
+                    if lag > 10.0:
+                        self.stop(f"arm is {lag:.0f} deg behind its commands (blocked?): stopped")
+                        raise Stopped()
+                tick += 1
+                if tick % 4 == 0:
+                    self._log_plan({"kind": "track", "q_cmd": _r(q, 2), "v": _r(tr.v, 2), **e,
+                                    "face_mm": _mm(face) if face is not None else None,
+                                    "face_age_s": None if st is None else round(st.age, 3)})
+                next_t += dt
+                pause = next_t - time.monotonic()
+                if pause > 0:
+                    time.sleep(pause)
+                else:
+                    next_t = time.monotonic()  # fell behind: don't burst to catch up
+        finally:
+            self._pose_fn = None
+
     def _do_center(self) -> None:
-        self._point_loop(approach=False)
+        self._track_loop()
 
     def _do_extend(self) -> None:
         self._point_loop(approach=True)
@@ -460,7 +536,7 @@ class FaceServoSession:
             if "face found" not in self.reason:
                 return
         self.mode = "center"
-        self._point_loop(approach=False)
+        self._track_loop()
 
     def _do_retreat(self) -> None:
         travelled = self.pointer.travelled if self.pointer else 0.0
@@ -518,6 +594,7 @@ class FaceServoSession:
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
+            "track": dict(self.track.last) if (self.track is not None and self.mode == "center") else None,
             "servo": None if self.last_cmd is None else {
                 **getattr(self, "_aim_info", {}),
                 "aim_error_deg": round(self.last_cmd.angle_deg, 1),
