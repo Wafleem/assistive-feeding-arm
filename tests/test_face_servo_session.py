@@ -67,7 +67,7 @@ class FakeSO101:
     def tool_pose(self, timeout=None):
         return self.pos.copy(), direction(self.q), 0.0
 
-    def move_tool(self, position, d, theta=0.0, leeway_mm=8.0, leeway_orient=0.03):
+    def move_tool(self, position, d, theta=0.0, leeway_mm=8.0, leeway_orient=0.03, leeway_roll=180.0):
         p, d = np.asarray(position, float), np.asarray(d, float) / np.linalg.norm(d)
         az = np.arctan2(p[1], p[0])
         out_of_plane = abs(np.dot(d, [-np.sin(az), np.cos(az), 0.0]))
@@ -160,16 +160,15 @@ def test_extend_stops_at_the_stop_distance_and_retreats_when_the_face_goes(tmp_p
         tip = np.linalg.norm(FACE - robot.pos) - s.pcfg.spoon_tip_from_tool
         assert 0.19 <= tip <= 0.215, tip
 
-        s.command("retreat")
-        assert wait(lambda: s.mode == "idle")
-        assert np.allclose(robot.q, LOOK)
+        s.command("retreat")  # backs straight out by what extend travelled, spoon level
+        assert wait(lambda: s.mode == "idle" and "level" in s.reason), s.reason
+        assert abs(robot.r - 0.15) < 0.005 and abs(robot.q[3] - 20.0) < 1e-6
 
-        robot.r = 0.15
         s.command("extend")
         assert wait(lambda: s.pointer is not None and s.pointer.travelled > 0.05)
         s.det.present = False  # the person leaves mid-approach
         assert wait(lambda: s.mode == "idle" and "retreat" in s.reason), s.reason
-        assert np.allclose(robot.q, LOOK)
+        assert abs(robot.r - 0.15) < 0.005 and abs(robot.q[3] - 20.0) < 1e-6
     finally:
         s.close()
 

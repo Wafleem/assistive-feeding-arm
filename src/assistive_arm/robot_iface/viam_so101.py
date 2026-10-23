@@ -65,14 +65,16 @@ class SO101ViamRobot:
         return np.array([p.x, p.y, p.z], float) / 1000.0, z / (np.linalg.norm(z) or 1.0), float(p.theta)
 
     def move_tool(self, position, direction, theta: float = 0.0, position_leeway_mm: float = 8.0,
-                  orientation_leeway: float = 0.03, timeout: float = 30.0) -> None:
+                  orientation_leeway: float = 0.03, theta_leeway_deg: float = 180.0, timeout: float = 30.0) -> None:
         """Planned move (the module's own IK/planner, frame-system obstacles included) of the end
-        frame to ``position`` with +Z along ``direction``; roll about +Z is left free."""
+        frame to ``position`` with +Z along ``direction`` and roll ``theta`` (+- ``theta_leeway_deg``;
+        180 = roll free). Keep the leeways tight near a person: the planner only promises the goal."""
         from viam.proto.common import Pose
 
         p, d = np.asarray(position, float) * 1000.0, np.asarray(direction, float)
         cloud = {"x": position_leeway_mm, "y": position_leeway_mm, "z": position_leeway_mm,
-                 "ox": orientation_leeway, "oy": orientation_leeway, "oz": orientation_leeway, "theta": 180.0}
+                 "ox": orientation_leeway, "oy": orientation_leeway, "oz": orientation_leeway,
+                 "theta": float(theta_leeway_deg)}
         pose = Pose(x=p[0], y=p[1], z=p[2], o_x=d[0], o_y=d[1], o_z=d[2], theta=theta)
         self._io.run(self.arm.move_to_position(pose, extra={"pose_cloud": cloud}), timeout=timeout)
 
