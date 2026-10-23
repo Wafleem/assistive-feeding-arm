@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..geometry import Pose
-from ..vision.types import CameraSpec, RGBDFrame
+from ..vision.types import CameraSpec, RGBDFrame, RGBFrame
 
 
 @dataclass
@@ -88,6 +88,24 @@ class RobotInterface(ABC):
 
     @abstractmethod
     def get_frames(self, names: list[str] | None = None) -> dict[str, RGBDFrame]: ...
+
+    def get_rgb_frames(self, names: list[str] | None = None) -> dict[str, RGBFrame]:
+        """Project existing RGB-D captures without inventing timestamp provenance.
+
+        Backends with colour-only cameras override this method. The legacy
+        timestamp has no declared clock domain, and its default zero cannot be
+        distinguished from an unspecified capture time. Preserve only positive,
+        finite timestamps and leave their clock unknown.
+        """
+        frames = self.get_frames(names)
+        received_at = self.now()
+        return {
+            name: RGBFrame(
+                frame.camera, frame.rgb, received_at,
+                float(frame.timestamp) if np.isfinite(frame.timestamp) and frame.timestamp > 0 else None,
+            )
+            for name, frame in frames.items()
+        }
 
     @abstractmethod
     def camera_pose(self, name: str) -> Pose:
