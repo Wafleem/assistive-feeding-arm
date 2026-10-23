@@ -946,6 +946,8 @@ class FaceServoSession:
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
     SCOOP_ROLL_GAIN = 2.0  # x the recorded wrist roll (measured from where the dip starts): a bigger twist scoops more
     SCOOP_PRE_ROLL = 25.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
+    SCOOP_EXTRA_DEPTH = 0.025  # m: go this much deeper than the recording at the bottom of the dip
+    SCOOP_EXTRA_SWEEP = 8.0  # deg of base pan: keep sweeping this much further along the bottom before lifting
 
     def _do_home_scoop(self) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
@@ -959,6 +961,37 @@ class FaceServoSession:
         self.reason = "scooped: back home (Feed next)"
         self._event("scoop", self.reason)
 
+    def _deepen_scoop(self, q: np.ndarray) -> np.ndarray:
+        """Deeper and a longer sweep than the recording: the tool goes SCOOP_EXTRA_DEPTH lower
+        (same spoon angle, so the tip does too), weighted by how deep each sample already is;
+        along the bottom the base keeps turning SCOOP_EXTRA_SWEEP further in the direction it was
+        sweeping, and lifts from there."""
+        from ..feeding.face_track import solve_level_pose
+        q = q.copy()
+        tips = np.array([(lambda T: T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2])(so101_fk(qi)) for qi in q])
+        z, z_top = tips[:, 2], tips[0, 2]
+        depth_w = np.clip((z_top - z) / max(z_top - z.min(), 1e-3), 0.0, 1.0)
+        depth_w = 0.5 - 0.5 * np.cos(np.pi * depth_w)  # smooth in and out
+        out = q.copy()
+        for i, qi in enumerate(q):
+            if depth_w[i] < 1e-3:
+                continue
+            T = so101_fk(qi)
+            reach, height = float(np.linalg.norm(T[:3, 3][:2])), float(T[2, 3])
+            qn, ok = solve_level_pose(qi, reach, height - self.SCOOP_EXTRA_DEPTH * depth_w[i], _tool_pitch(qi))
+            if ok:
+                out[i, 1:4] = qn[1:4]
+        bottom = np.where(z <= z.min() + 0.015)[0]  # along the bottom
+        if len(bottom) >= 2 and self.SCOOP_EXTRA_SWEEP:
+            a, b = int(bottom[0]), int(bottom[-1])
+            sign = np.sign(q[b, PAN] - q[a, PAN]) or 1.0
+            ramp = np.clip((np.arange(len(q)) - a) / max(b - a, 1), 0.0, 1.0)
+            out[:, PAN] += sign * self.SCOOP_EXTRA_SWEEP * (0.5 - 0.5 * np.cos(np.pi * ramp))
+        low = min((lambda T: T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2])(so101_fk(qi))[2] for qi in out)
+        self._event("scoop", f"replay: tip {z.min() * 1000:.0f} -> {low * 1000:.0f} mm at the bottom, "
+                             f"+{self.SCOOP_EXTRA_SWEEP:g} deg sweep along it")
+        return out
+
     def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
         """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
         up a little so the food stays on -> home."""
@@ -966,6 +999,7 @@ class FaceServoSession:
         k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
+        q = self._deepen_scoop(q)
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
         # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
