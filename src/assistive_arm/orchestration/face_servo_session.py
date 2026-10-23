@@ -35,6 +35,7 @@ from ..mouth_perception.types import MouthState
 
 @dataclass
 class Taught:
+    home: list[float] | None = None  # "start centered"; default: the look posture with the base pan at 0
     look: list[float] | None = None
     near: list[float] | None = None
     jacobian: dict | None = None
@@ -72,7 +73,7 @@ class Stopped(Exception):
 
 
 class FaceServoSession:
-    ACTIONS = ("sweep", "find_face", "calibrate", "center", "extend", "retreat")
+    ACTIONS = ("home", "search", "sweep", "find_face", "calibrate", "center", "extend", "retreat")
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15):
@@ -169,7 +170,7 @@ class FaceServoSession:
         if action == "teleop_stop":
             self.robot.stop_teleop()
             return self._event("teleop", "stopped")
-        if action in ("teach_look", "teach_near"):
+        if action in ("teach_home", "teach_look", "teach_near"):
             q = [round(float(v), 2) for v in self.robot.joints()]
             setattr(self.taught, action[6:], q)
             self.taught.save(self.path)
@@ -255,6 +256,41 @@ class FaceServoSession:
         return np.median(np.asarray(pts), axis=0)
 
     # ---------------------------------------------------------------- actions
+    def home_pose(self) -> np.ndarray:
+        if self.taught.home is not None:
+            return np.array(self.taught.home, float)
+        self._need("look")
+        q = np.array(self.taught.look, float)
+        q[PAN] = 0.0
+        return q
+
+    def _do_home(self) -> None:
+        self.reason = "moving to start (centered)"
+        self._move(self.home_pose())
+        self.reason = "at start (centered)"
+        self._event("home", f"at start {np.round(self.home_pose(), 1).tolist()}")
+
+    def _do_search(self, step_deg: float = 6.0) -> None:
+        """Pan from start toward the look side in small steps, looking for a face after each;
+        then search around the look pose. Stops at the first face."""
+        self._need("look")
+        start, look = self.home_pose(), np.array(self.taught.look, float)
+        n = max(1, int(np.ceil(abs(look[PAN] - start[PAN]) / step_deg)))
+        path = [start + (look - start) * k / n for k in range(n + 1)]
+        for d in (8, -8, 16, -16, 24, -24):
+            q = look.copy()
+            q[PAN] += d
+            path.append(q)
+        for q in path:
+            self.reason = f"searching at pan {q[PAN]:.0f} deg"
+            self._move(q)
+            if self._face_px(2) is not None:
+                self.reason = f"face found at pan {q[PAN]:.0f} deg: Calibrate or Center next"
+                self._event("search", self.reason)
+                return
+        self.reason = "no face found: check the person is in view of the look pose"
+        self._event("search", self.reason)
+
     def _do_sweep(self) -> None:
         self._need("look")
         self.reason = "moving to the look pose"
@@ -370,7 +406,7 @@ class FaceServoSession:
             joints = f"error: {e}"
         return {
             "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
-            "taught": {"look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
+            "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None},
             "servo": None if self.ctrl is None else {"s": round(self.ctrl.s, 2),
                                                      "offset_deg": [round(float(v), 1) for v in self.ctrl.offset]},
             "params": {"stop_tip_distance_cm": round(self.cfg.stop_tip_distance * 100, 1),

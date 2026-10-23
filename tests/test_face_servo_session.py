@@ -97,8 +97,14 @@ def test_teach_sweep_calibrate_center_extend(tmp_path):
         robot.q = NEAR.copy(); s.command("teach_near")
         robot.q = np.array([0.0, -100.0, 90.0, 30.0, 0.0])
 
+        s.command("home"); assert wait_idle(s) == "idle"
+        assert robot.q[0] == 0.0 and np.allclose(robot.q[1:], LOOK[1:]) and robot.teleop is False
+
+        s.command("search"); assert wait_idle(s) == "idle"
+        assert "face found" in s.reason and abs(robot.q[0] - LOOK[0]) <= 40  # stopped on the way, face in view
+
         s.command("sweep"); assert wait_idle(s) == "idle"
-        assert np.allclose(robot.q, LOOK) and robot.teleop is False
+        assert np.allclose(robot.q, LOOK)
 
         s.command("calibrate"); assert wait_idle(s) == "idle", s.reason
         J = np.asarray(s.taught.jacobian["J_px_per_deg"])
