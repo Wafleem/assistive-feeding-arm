@@ -48,3 +48,23 @@ def bbox_mask(shape, bbox, scale: float = 1.0) -> np.ndarray:
 def robust_center(points: np.ndarray) -> np.ndarray:
     """Median point, robust to a few background pixels leaking into the mask."""
     return np.median(points, axis=0)
+
+
+def pixel_ray(u: float, v: float, k: CameraIntrinsics) -> np.ndarray:
+    """Unit direction (camera frame) of the ray through pixel (u, v)."""
+    d = np.array([(u - k.cx) / k.fx, (v - k.cy) / k.fy, 1.0])
+    return d / np.linalg.norm(d)
+
+
+def ray_plane_intersection(origin, direction, plane_point, plane_normal) -> np.ndarray | None:
+    """Where a ray meets a plane; None if parallel or behind the origin.
+
+    Monocular 3D for things resting on a known surface (bowls on the table):
+    the pixel's ray from the camera, intersected with the table plane."""
+    o, d = np.asarray(origin, float), np.asarray(direction, float)
+    n, p0 = np.asarray(plane_normal, float), np.asarray(plane_point, float)
+    denom = float(np.dot(n, d))
+    if abs(denom) < 1e-9:
+        return None
+    s = float(np.dot(n, p0 - o)) / denom
+    return o + s * d if s > 0 else None
