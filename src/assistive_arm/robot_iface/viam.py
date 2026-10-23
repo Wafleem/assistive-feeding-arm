@@ -181,11 +181,8 @@ class ViamRobot(RobotInterface):
         for k in names or list(self._cams):
             cam = self._cams[k][0]
             images, _meta = self._io.run(cam.get_images())
-            color = next(i for i in images if i.mime_type.startswith("image/jpeg") or i.mime_type.startswith("image/png"))
-            depth = next(i for i in images if "dep" in i.mime_type)
-            rgb = np.asarray(color.image.convert("RGB"))
-            d = np.asarray(depth.image if hasattr(depth, "image") else depth.data, dtype=np.float32) / 1000.0
-            out[k] = RGBDFrame(k, rgb, d, self.cameras()[k].intrinsics)
+            rgb, d = _rgb_and_depth(images)
+            out[k] = RGBDFrame(k, rgb, d, self.cameras()[k].intrinsics, timestamp=self.now())
         return out
 
     def camera_pose(self, name: str) -> Pose:
@@ -199,3 +196,111 @@ class ViamRobot(RobotInterface):
 
     def stop(self) -> None:
         self._io.run(self.arm.stop())
+
+
+# --- Cameras only (no arm required): perception on the SO-101 bench rig -----------------
+
+# Logitech C270 at 640x480 (~60 deg diagonal FOV) until a checkerboard calibration exists.
+C270_640x480 = CameraIntrinsics(780.0, 780.0, 320.0, 240.0, 640, 480)
+
+
+def _rgb_and_depth(images):
+    """NamedImages from ``Camera.get_images`` -> (RGB uint8 array, depth metres or zeros)."""
+    from viam.media.utils.pil import viam_to_pil_image
+
+    color = next((i for i in images if i.mime_type.startswith(("image/jpeg", "image/png"))), None)
+    if color is None:
+        raise RuntimeError(f"no colour image in {[i.mime_type for i in images]}")
+    rgb = np.asarray(viam_to_pil_image(color).convert("RGB"))
+    depth = next((i for i in images if "dep" in i.mime_type), None)
+    if depth is None:  # plain webcam: no depth; detectors fall back to monocular priors
+        return rgb, np.zeros(rgb.shape[:2], np.float32)
+    return rgb, depth.bytes_to_depth_array().astype(np.float32) / 1000.0
+
+
+class ViamCameraRig:
+    """Read-only camera access for perception: the subset of ``RobotInterface`` that
+    detectors use (``now``, ``get_frames``, ``camera_pose``, ``cameras``). Use it where
+    there is no xArm, e.g. the SO-101 rig on ``orin-dev-kit``.
+
+    Camera pose comes from the Viam frame system (the camera's ``frame`` in the
+    machine config, e.g. ``webcam-2`` on ``follower-arm``), so it follows the arm.
+    Credentials: ``VIAM_ADDRESS``, ``VIAM_API_KEY``, ``VIAM_API_KEY_ID`` (env or .env).
+    """
+
+    def __init__(self, cameras=("webcam-2",), address: str | None = None,
+                 intrinsics: dict[str, CameraIntrinsics] | None = None):
+        from viam.components.camera import Camera
+        from viam.robot.client import RobotClient
+
+        self._io = _Loop()
+        opts = RobotClient.Options.with_api_key(
+            api_key=os.environ["VIAM_API_KEY"], api_key_id=os.environ["VIAM_API_KEY_ID"])
+        self.client = self._io.run(RobotClient.at_address(address or os.environ["VIAM_ADDRESS"], opts))
+        self._cams = {c: Camera.from_robot(self.client, c) for c in cameras}
+        self._k = dict(intrinsics or {})
+        self.pose_error: str | None = None
+
+    def now(self) -> float:
+        import time
+
+        return time.monotonic()
+
+    def intrinsics(self, name: str) -> CameraIntrinsics:
+        if name not in self._k:
+            ip = self._io.run(self._cams[name].get_properties()).intrinsic_parameters
+            self._k[name] = (CameraIntrinsics(ip.focal_x_px, ip.focal_y_px, ip.center_x_px, ip.center_y_px,
+                                              ip.width_px, ip.height_px) if ip.focal_x_px else C270_640x480)
+        return self._k[name]
+
+    def cameras(self) -> dict[str, CameraSpec]:
+        return {c: CameraSpec(c, "wrist", self.intrinsics(c)) for c in self._cams}
+
+    def get_frames(self, names=None) -> dict[str, RGBDFrame]:
+        out = {}
+        for name in names or list(self._cams):
+            t = self.now()
+            images, _ = self._io.run(self._cams[name].get_images(), timeout=10)
+            rgb, depth = _rgb_and_depth(images)
+            out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
+        return out
+
+    def camera_pose(self, name: str) -> Pose:
+        """Camera pose in the base (world) frame; identity if the frame system can't say."""
+        from viam.proto.common import Pose as VPose, PoseInFrame
+
+        try:
+            origin = PoseInFrame(reference_frame=name, pose=VPose(o_z=1))
+            p = self._io.run(self.client.transform_pose(origin, "world"), timeout=5).pose
+            self.pose_error = None
+            return viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
+        except Exception as e:  # no frame configured: positions stay in the camera frame
+            self.pose_error = str(e)
+            return Pose()
+
+    def close(self) -> None:
+        self._io.run(self.client.close())
+
+
+class ViamVisionDetector:
+    """A Viam vision service (e.g. YOLOv8 ``spoon-detector`` running on the Orin) behind the
+    ``Detector`` protocol. Detections are fetched once per frame and filtered by label.
+    The service runs on its own latest image of ``camera``, so boxes can lag the frame by
+    one capture (~30 ms); fine for bowls, not for the face (MediaPipe runs locally)."""
+
+    def __init__(self, rig: ViamCameraRig, service: str = "spoon-detector", camera: str = "webcam-2"):
+        from viam.services.vision import VisionClient
+
+        self.rig, self.camera = rig, camera
+        self.vision = VisionClient.from_robot(rig.client, service)
+        self._cache: tuple[float, list] | None = None
+
+    def detect(self, frame: RGBDFrame, query: str):
+        from ..vision.types import Detection
+
+        if self._cache is None or self._cache[0] != frame.timestamp:
+            dets = self.rig._io.run(self.vision.get_detections_from_camera(self.camera), timeout=10)
+            self._cache = (frame.timestamp, dets)
+        q = query.lower().strip()
+        return [Detection(query, float(d.confidence), (float(d.x_min), float(d.y_min), float(d.x_max), float(d.y_max)))
+                for d in self._cache[1] if d.class_name.lower() == q]
