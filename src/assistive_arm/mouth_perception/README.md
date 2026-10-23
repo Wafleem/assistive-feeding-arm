@@ -12,8 +12,49 @@
 - A contrasting lip-colour ring around the opening.
 
 So for the demo: `open_ratio` is always 1.0, and "ready" means **still and tracked**.
-The prop may be slid or turned by hand to test retreat. Real faces (MediaPipe)
-come later, behind the same interface.
+The prop may be slid or turned by hand to test retreat. Calibrated real-face 3D
+tracking remains a later step; the RGB preview described below is implemented
+independently of that interface.
+
+## Current vision-only scope: a real person's lips
+
+`landmarks_2d.py` implements `MediaPipeMouthLandmarker` for the wrist-camera
+preview. It accepts uint8 HWC **RGB** arrays from the camera reader and a supplied
+capture timestamp. It does not connect to or command the arm.
+
+```python
+from assistive_arm.mouth_perception.landmarks_2d import (
+    MediaPipeMouthLandmarker, MouthLandmarkerConfig,
+)
+
+with MediaPipeMouthLandmarker(MouthLandmarkerConfig(
+    model_path="data/models/face_landmarker.task",
+)) as detector:
+    mouths = detector.detect_rgb(rgb, timestamp_s=capture_timestamp_s)
+```
+
+The local `.task` model is required; constructing the wrapper never downloads it.
+MediaPipe is imported only when constructing the wrapper. It uses the CPU
+delegate and IMAGE mode, so each image is independent and no monotonic processing
+timestamp is substituted for a capture timestamp. Jetson inference and dependency
+compatibility must be validated on the actual installation.
+
+Each `MouthLandmarks2D` contains ordered outer/inner lip pixel contours, an xyxy
+pixel bounding box, the midpoint between inner upper/lower lips, and a raw
+aperture ratio. The ratio is pixel separation of landmarks 13/14 divided by the
+distance between corners 61/291. It is **not** calibrated openness or a probability.
+No face returns an empty tuple; incomplete, nonfinite or subpixel-width lip
+geometry is omitted. A face's index is its order within a frame, not a stable ID.
+
+These outputs have no measured depth, metric pose, face normal, tracking,
+readiness or feeding decision. They do not populate the existing `MouthObservation`
+3D contract. The remaining tracker/gate and calibrated 3D detector TODOs below
+are unchanged.
+
+Validated offline with a fake MediaPipe boundary: pixel geometry on non-square
+images, RGB channel preservation, multiple/no faces, invalid outputs, and task
+cleanup. See [MediaPipe's Tasks guide](https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker/python)
+and [lip topology](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/python/solutions/face_mesh_connections.py).
 
 ## Interfaces (`types.py`, frozen once agreed)
 - in: RGB-D frames from `RobotInterface.get_frames()` (fixed and/or wrist camera)
@@ -41,6 +82,7 @@ come later, behind the same interface.
 7. Wrap the detector and tracker as a Viam vision service.
 
 ## TODO checklist
+- [x] RGB-only MediaPipe lip geometry for a real-person camera preview, with offline tests
 - [ ] KF + tracker + gates (make `tests/test_mouth_perception.py` pass; remove the `@todo` marks)
 - [ ] Fiducial detector on the printed mouth; tag→opening offset stored in `props/fake_mouth/`
 - [ ] Sim oracle and camera detectors (after the printed-mouth sim scene exists)
