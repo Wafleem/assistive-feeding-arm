@@ -79,8 +79,19 @@ and the round trip (`timing`).
 Set up (NVIDIA Brev, PyTorch template, one L4/A10/L40S; stop it when idle, it bills by the hour):
 1. On the instance: copy `cloud/` there and run `bash cloud/setup_instance.sh` (installs Depth Pro,
    fetches the weights, starts the server on the instance's 127.0.0.1:8800).
-2. On the Orin, keep a tunnel up: `ssh -N -L 8800:127.0.0.1:8800 ubuntu@<instance>` (the server is
-   never exposed publicly; Brev's public tunnel URLs need a browser login, so they can't be used).
+2. On the Orin, keep the tunnel up with `cloud/depth-cloud-tunnel.service` (systemd, as `ultraviolet`;
+   starts at boot, restarts itself). It uses a dedicated key, `~/.ssh/brev_depth` on the Orin, whose
+   public half is in the instance's `authorized_keys` as
+   `restrict,port-forwarding,permitopen="127.0.0.1:8800" ssh-ed25519 ...`, through Brev's SSH gateway
+   (`global.prd.ga.run.brev.nvidia.com`, the instance's port from `~/.brev/ssh_config` after
+   `brev refresh`; it can change when the instance is recreated). The conference network blocks the
+   instance's direct SSH port, and the server is never exposed publicly (Brev's public URLs need a
+   browser login, which a program can't do). Check: `curl http://127.0.0.1:8800/health` on the Orin.
+3. Switch the camera over: `compute: cloud` (and `produce_hz: 3`); back with `compute: local`.
+
+Measured 2026-10-24, Orin at the venue → Brev H200 (Nebius, Iowa), 640x480 frames: **3.2 fps**,
+latency median 288 ms (p90 367) = 103 ms GPU + ~183 ms network; same depth as on the Orin. On the
+Orin's own GPU: ~0.8 fps, ~1.1-1.6 s.
 
 ## Preview page
 
