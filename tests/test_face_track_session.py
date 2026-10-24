@@ -76,7 +76,7 @@ class KinArm:
 
     def get_frames(self, names=None):
         time.sleep(0.02)
-        return {"webcam-2": RGBDFrame("webcam-2", np.zeros((480, 640, 3), np.uint8), np.zeros((480, 640), np.float32),
+        return {"webcam-2": RGBDFrame("webcam-2", np.full((480, 640, 3), 90, np.uint8), np.zeros((480, 640), np.float32),
                                       K, timestamp=self.now())}
 
 

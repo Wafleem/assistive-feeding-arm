@@ -31,7 +31,7 @@ from ..feeding.face_track import (ExtendConfig, LevelTracker, TrackConfig, appro
                                   max_level_reach)
 from ..geometry import Pose
 from ..grasping.scoop import BowlTarget, ScoopConfig, ScoopPlan, pan_axis_xy, plan_scoop
-from ..robot_iface.so101_kinematics import fk as so101_fk
+from ..robot_iface.so101_kinematics import fk as so101_fk, joint_limits
 from ..feeding.face_servo import (
     FLEX, PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
 )
@@ -105,7 +105,8 @@ class Stopped(Exception):
 
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
-               "scoop", "home_scoop", "feed")
+               "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "find_food", "scoop_food", "teach_bowls",
+               "feed", "dump")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -127,6 +128,8 @@ class FaceServoSession:
         self.tracker = MouthTracker(TrackerParams(kalman=KalmanParams(sigma_meas=0.012, sigma_accel=0.3)))
         self.mode, self.reason = "idle", "ready"
         self.log: deque = deque(maxlen=300)
+        self.speech: deque = deque(maxlen=50)  # short sentences the dashboard reads aloud
+        self._speech_id = 0
         self._snap: dict = {}
         self._jpeg: bytes | None = None
         self._lock = threading.Lock()
@@ -195,7 +198,7 @@ class FaceServoSession:
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
-    DEPTH_FRESH_S = 0.8  # Extend uses the depth-measured lips while they are at most this old
+    DEPTH_FRESH_S = 2.5  # Extend uses the depth-measured lips while they are at most this old (local Depth Pro at 0.8 Hz)
 
     def _depth_range_face(self, lm, frame, params) -> None:
         """Lips position (arm base frame) ranged by the depth camera itself, for Extend's stop."""
@@ -280,6 +283,7 @@ class FaceServoSession:
     # ---------------------------------------------------------------- commands
     def command(self, action: str, **kw) -> dict:
         if action == "stop":
+            self._say("Stopping.")
             return self.stop("stop pressed")
         if action == "teleop_start":
             self._require_idle()
@@ -414,6 +418,14 @@ class FaceServoSession:
         if self._stop.is_set():
             raise Stopped()
 
+    FOOD_SPOKEN = {"cereal": "cereal", "mms": "M and Ms", "empty": "nothing"}
+
+    def _say(self, text: str) -> None:
+        """Narration: the dashboard speaks these aloud (and they appear in the log)."""
+        self._speech_id += 1
+        self.speech.append({"id": self._speech_id, "t": time.strftime("%H:%M:%S"), "text": text})
+        self._event("say", text)
+
     def _event(self, kind: str, msg: str) -> dict:
         e = {"t": time.strftime("%H:%M:%S"), "kind": kind, "msg": msg}
         self.log.appendleft(e)
@@ -431,6 +443,7 @@ class FaceServoSession:
         except Exception as e:
             self.mode, self.reason = "idle", f"{action} failed: {e}"
             self._event(action, f"FAILED: {e}")
+            self._say(f"Sorry, that didn't work. {str(e).split(':')[0]}.")
 
     def _move(self, q) -> None:
         self._check_stop()
@@ -772,6 +785,8 @@ class FaceServoSession:
                         ext_reason = "not getting closer: holding here"
                     if not backing_out:
                         if ext_reason.startswith(("at the stop", "arm at its reach", "at the arm's reach", "not getting closer")):
+                            if held_since is None:
+                                self._say("Take a bite.")
                             held_since = held_since or time.monotonic()
                         if held_since and direction > 0:
                             direction = 0  # eating: the spoon stays put (aim still tracks the lips)
@@ -979,17 +994,321 @@ class FaceServoSession:
     LOADED_DEGS = 30.0  # deg/s peak for moves with food on the spoon (smooth: no shaking it off)
     SCOOP_PAUSE_KEEP = 0.1  # fraction of the recording's still pauses kept in the replay
 
-    def _do_home_scoop(self) -> None:
+    def _do_home_scoop(self, bowl: dict | None = None) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
-        scoop when there is one (poses/so101_scoop_demo.json), else the planned scoop."""
+        scoop when there is one (poses/so101_scoop_demo.json), else the planned scoop.
+        ``bowl``: the bowl dict to fit the scoop to (default Bowl 1's calibration)."""
         self._event("scoop", "going home")
         self._glide(self.home_pose(), what="scoop: going home")
         if self.SCOOP_DEMO.exists():
-            self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()))
+            self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()), bowl=bowl)
         else:
             self._do_scoop()
         self.reason = "scooped: back home (Feed next)"
         self._event("scoop", self.reason)
+
+    # ---------------------------------------------------------------- which bowl holds what
+    BOWLS_SEEN = Path("poses/so101_bowls_seen.json")  # last identification (labels per bowl)
+    BOWL_LOOK = Path("poses/so101_bowl_look.json")  # cached look poses per bowl
+
+    def fixed_bowls(self):
+        """The two fixed bowls, from the Viam scene positions (poses/so101_bowl*.json)."""
+        from ..food_perception.bowl_id import FixedBowl
+
+        out = []
+        for path, bid, food in ((self.BOWL_CAL, "bowl1", "cereal"), (Path("poses/so101_bowl2.json"), "bowl2", "mms")):
+            if path.exists():
+                d = json.loads(path.read_text())
+                c = d.get("scene_centre_mm") or d.get("centre_mm")
+                out.append(FixedBowl(bid, d.get("name", bid), np.asarray(c, float) / 1000, default_food=food))
+        return out
+
+    def bowl_labels(self):
+        from ..food_perception.bowl_id import BowlLabel
+
+        if not self.BOWLS_SEEN.exists():
+            return []
+        d = json.loads(self.BOWLS_SEEN.read_text())
+        return [BowlLabel(r["bowl_id"], r.get("label"), r.get("scores", {}), r.get("margin", 0.0), r.get("box"))
+                for r in d.get("bowls", [])]
+
+    def _look_pose(self, b) -> np.ndarray:
+        from ..food_perception.bowl_id import look_pose
+
+        cache = json.loads(self.BOWL_LOOK.read_text()) if self.BOWL_LOOK.exists() else {}
+        key = f"{b.bowl_id}@{b.centre[0]:.4f},{b.centre[1]:.4f}"
+        if key not in cache:
+            q, info = look_pose(b, self.home_pose())
+            cache[key] = {"joints": q.tolist(), **info}
+            self.BOWL_LOOK.write_text(json.dumps(cache, indent=1))
+        return np.asarray(cache[key]["joints"], float)
+
+    SWEEP_SETTLE_S = 0.6  # pause at each bowl for a sharp frame
+
+    def _do_identify_bowls(self) -> None:
+        self._do_sweep_bowls()
+
+    def _look_into(self, b, q, speed_degs: float):
+        """Glide to a bowl's look pose, grab a frame, and let CLIP on the Orin label its inside."""
+        from ..food_perception.bowl_id import BowlLabel, combine, jpeg_b64, opening_outline, vote_crops
+
+        self._glide(q, speed_degs=speed_degs, what=f"bowls: looking into {b.name}")
+        time.sleep(self.SWEEP_SETTLE_S)
+        frame = None
+        for _ in range(4):  # the C270 sometimes hands back an all-black frame right after waking
+            frame = self.robot.get_frames([self.camera]).get(self.camera)
+            if frame is not None and float(frame.rgb.mean()) > 12:
+                break
+            time.sleep(0.3)
+        if frame is None or float(frame.rgb.mean()) <= 12:
+            raise RuntimeError("camera frame is black or missing")
+        box = None
+        try:
+            _, bx, _ = opening_outline(b, self.robot.camera_pose(self.camera).as_matrix())
+            box = None if bx is None else tuple(round(v) for v in bx)
+        except Exception:
+            pass
+        crops_rgb = vote_crops(frame.rgb)
+        self._save_frames(b, frame.rgb, crops_rgb)
+        crops = [jpeg_b64(c) for c in crops_rgb]
+        self._last_crops = crops
+        res = self.robot.vision_command("bowl-contents", {"command": "classify", "images_b64": crops})
+        c = combine(res["results"])
+        lab = BowlLabel(b.bowl_id, c["label"], c["scores"], c["margin"], box)
+        self._save_label(lab, res)
+        return lab
+
+    FRAMES_DIR = Path("data/bowl_frames")
+
+    def _save_frames(self, b, rgb, crops) -> None:
+        """Every look into a bowl is kept (frame + crops) to check what the camera really saw."""
+        try:
+            import cv2
+            self.FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%H%M%S")
+            cv2.imwrite(str(self.FRAMES_DIR / f"{stamp}_{b.bowl_id}.jpg"), rgb[:, :, ::-1])
+            for i, c in enumerate(crops):
+                cv2.imwrite(str(self.FRAMES_DIR / f"{stamp}_{b.bowl_id}_crop{i}.jpg"), c[:, :, ::-1])
+        except Exception:
+            pass
+
+    def _save_label(self, lab, res: dict) -> None:
+        d = json.loads(self.BOWLS_SEEN.read_text()) if self.BOWLS_SEEN.exists() else {"bowls": []}
+        d["bowls"] = [x for x in d.get("bowls", []) if x["bowl_id"] != lab.bowl_id] + [vars(lab)]
+        d["bowls"].sort(key=lambda x: x["bowl_id"])
+        d.update({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "ms": res.get("ms"), "device": res.get("device")})
+        self.BOWLS_SEEN.write_text(json.dumps(d, indent=1))
+
+    def _bowl_words(self, b) -> str:
+        return "Bowl 1" if b.bowl_id == "bowl1" else "Bowl 2" if b.bowl_id == "bowl2" else b.name
+
+    def _do_sweep_bowls(self) -> None:
+        """Sweeping mode: one look-down posture, the base turns from bowl to bowl (the spoon's tilt
+        can't change); at each, crops of the inside go to CLIP on the Orin. Then home."""
+        from ..food_perception.bowl_id import sweep_poses
+
+        bowls = self.fixed_bowls()
+        self.robot.stop_teleop()
+        self._say("Checking the bowls.")
+        plan = sweep_poses(bowls, self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        seen = []
+        for i, (b, q) in enumerate(plan):
+            lab = self._look_into(b, q, 45.0 if i == 0 else 30.0)  # into the posture, then pan-only
+            seen.append((b, lab))
+            self._say(f"{self._bowl_words(b)} has {self.FOOD_SPOKEN.get(lab.label, lab.label)}.")
+        self._glide(self.home_pose(), speed_degs=45.0, what="sweep: back home")
+        self.reason = "bowls: " + ", ".join(f"{b.name} = {lab.label} ({max(lab.scores.values()):.2f})" for b, lab in seen)
+        self._event("bowls", self.reason)
+
+    def _find_food(self, food: str):
+        """Look into EVERY bowl (Bowl 1, then Bowl 2), then choose the one that scores highest for
+        ``food`` relative to the others (swap-proof: it looks each time)."""
+        from ..food_perception.bowl_id import pick_bowl, sweep_poses
+
+        spoken = self.FOOD_SPOKEN.get(food, food)
+        self.robot.stop_teleop()
+        self._say(f"Looking for {spoken}.")
+        plan = sweep_poses(self.fixed_bowls(), self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        labels = []
+        for i, (b, q) in enumerate(plan):
+            self.reason = f"looking for {food}: checking {b.name}"
+            self._say(f"Checking {self._bowl_words(b)}.")
+            lab = self._look_into(b, q, 45.0 if i == 0 else 30.0)
+            labels.append(lab)
+            self._event("bowls", f"{b.name}: " + ", ".join(f"{k} {v:.2f}" for k, v in sorted(lab.scores.items())))
+        pick = pick_bowl(food, labels)
+        if pick is None:
+            self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+            self._say(f"I couldn't tell which bowl has {spoken}.")
+            raise RuntimeError(f"no bowl clearly holds {food}: " +
+                               ", ".join(f"{x.bowl_id} {x.scores.get(food, 0):.2f}" for x in labels))
+        b = next(x for x, _ in plan if x.bowl_id == pick)
+        self._say(f"{spoken.capitalize()} is in {self._bowl_words(b)}.")
+        self._event("bowls", f"{food} is in {b.name}")
+        return b
+
+    def _do_teach_bowls(self) -> None:
+        """Debug: teach CLIP on the Orin what the real foods look like, from the current setup
+        (kw bowl1, bowl2: what each bowl holds; default Bowl 1 = cereal, Bowl 2 = M&Ms)."""
+        from ..food_perception.bowl_id import sweep_poses
+
+        kw = getattr(self, "_kw", {}) or {}
+        truth = {"bowl1": str(kw.get("bowl1", "cereal")), "bowl2": str(kw.get("bowl2", "mms"))}
+        self.robot.stop_teleop()
+        self._say("Learning what is in each bowl.")
+        plan = sweep_poses(self.fixed_bowls(), self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        for i, (b, q) in enumerate(plan):
+            self._look_into(b, q, 45.0 if i == 0 else 30.0)  # also saves the frame + crops
+            n = self.robot.vision_command("bowl-contents", {"command": "enroll", "label": truth[b.bowl_id],
+                                                            "images_b64": self._last_crops}).get("examples")
+            self._say(f"{self._bowl_words(b)} is {self.FOOD_SPOKEN.get(truth[b.bowl_id], truth[b.bowl_id])}. Learned.")
+            self._event("bowls", f"taught {truth[b.bowl_id]} from {b.name} ({n} examples)")
+        self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+        self.reason = f"taught: Bowl 1 = {truth['bowl1']}, Bowl 2 = {truth['bowl2']} (CLIP examples on the Orin)"
+
+    def _do_find_food(self) -> None:
+        """Debug: just the sweep for one food (kw food), then home."""
+        food = str((getattr(self, "_kw", {}) or {}).get("food", "cereal")).lower()
+        b = self._find_food(food)
+        self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+        self.reason = f"{food} is in {b.name} (back home)"
+
+    def _scoop_bowl_dict(self, bowl_id: str) -> dict:
+        """The scoop's bowl dict: Bowl 1's spoon calibration; Bowl 2 shares its size and heights and
+        is placed by the Viam scene (shifted by the same scene-to-spoon offset as Bowl 1)."""
+        cal = json.loads(self.BOWL_CAL.read_text())
+        if bowl_id == "bowl1":
+            return cal
+        d2 = json.loads(Path("poses/so101_bowl2.json").read_text())
+        off = np.asarray(cal["centre_mm"], float) - np.asarray(cal.get("scene_centre_mm", cal["centre_mm"]), float)
+        c = np.asarray(d2["scene_centre_mm"], float) + off
+        return {**cal, "id": "bowl2", "name": d2.get("name", "Bowl 2"), "centre_mm": [round(float(v), 1) for v in c]}
+
+    def _do_scoop_food(self) -> None:
+        """Scoop the requested food (kw food: cereal / mms): look first (sweep until a bowl holds
+        it), then scoop from that bowl. Swapping the bowls is fine: nothing is assumed."""
+        food = str((getattr(self, "_kw", {}) or {}).get("food", "cereal")).lower()
+        b = self._find_food(food)
+        self._say(f"Scooping {self.FOOD_SPOKEN.get(food, food)} from {self._bowl_words(b)}.")
+        self._do_home_scoop(bowl=self._scoop_bowl_dict(b.bowl_id))
+        self.reason = f"scooped {food} from {b.name}: back home (Feed next)"
+        self._event("scoop", self.reason)
+        self._say("Got it. Ready to feed.")
+
+    DUMP_HOVER_MM, DUMP_LOW_MM = 60.0, 30.0  # spoon tip above the rim: on the way in, while tipping
+    DUMP_ROLL_DEG, DUMP_ROLL_DEGS = 110.0, 35.0  # how far / how fast the spoon rolls over (slow = no flinging)
+    DUMP_TILT_OK_DEG = 15.0  # bowl centres are at the edge of the level-spoon workspace: allow some tilt
+    DUMP_IN_MM = 20.0  # pour this far from the bowl centre toward the arm (easier reach, still inside)
+
+    def _bowl_for_food(self, food: str) -> str:
+        """Which bowl holds ``food``: the last look into the bowls if it was clear, else the setup
+        default (Bowl 1 cereal, Bowl 2 M&Ms). No new sweep: the spoon may be full."""
+        from ..food_perception.bowl_id import pick_bowl
+
+        labels = self.bowl_labels()
+        bid = pick_bowl(food, labels) if labels else None
+        if bid is None:
+            bid = next((b.bowl_id for b in self.fixed_bowls() if b.default_food == food), None)
+        if bid is None:
+            raise RuntimeError(f"no bowl for {food}")
+        return bid
+
+    def _spoon_over(self, q0, tip_xyz, iters: int = 200) -> np.ndarray:
+        """Pan / lift / elbow / flex that put the spoon tip at ``tip_xyz`` (m) with the spoon as
+        level as the arm allows (within DUMP_TILT_OK_DEG; wrist roll at its level value), from a few
+        starting postures; the nearest to ``q0`` that gets within 5 mm wins. Raises if none does."""
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        roll = float((self.taught.spoon_level or {}).get("wrist_roll_deg", np.asarray(q0, float)[ROLL]))
+        lim = joint_limits()
+        target = np.asarray(tip_xyz, float)
+
+        def err(qq):
+            return np.r_[(target - self._tip(qq)) * 100.0, 0.08 * (level - _tool_pitch(qq))]
+
+        def solve(q):
+            q = np.asarray(q, float).copy()
+            q[ROLL] = roll
+            for _ in range(iters):
+                e = err(q)
+                if np.abs(e).max() < 0.1:
+                    break
+                J = np.zeros((4, 4))
+                for j in range(4):
+                    q1 = q.copy(); q1[j] += 0.3
+                    J[:, j] = (e - err(q1)) / 0.3
+                dq = np.linalg.solve(J.T @ J + 0.02 * np.eye(4), J.T @ e)
+                q[:4] = np.clip(q[:4] + np.clip(dq, -5, 5), lim[:4, 0] + 2, lim[:4, 1] - 2)
+            return q, err(q)
+
+        pan = -np.degrees(np.arctan2(target[1], target[0] - 0.0388))
+        seeds = [q0] + [[pan, a, b, c, roll] for a, b, c in ((-40, 60, 20), (-20, 40, -20), (-60, 80, 0), (0, 60, -60))]
+        best, best_e = None, None
+        for sd in seeds:
+            q, e = solve(sd)
+            if np.abs(e[:3]).max() <= 0.5 and abs(e[3]) <= 0.08 * self.DUMP_TILT_OK_DEG:
+                if best is None or np.abs(q - q0).sum() < np.abs(best - q0).sum():
+                    best = q
+            elif best_e is None or np.abs(e[:3]).max() < best_e:
+                best_e = float(np.abs(e[:3]).max())
+        if best is None:
+            raise RuntimeError(f"can't hold the spoon level over that point (off by {best_e:.1f} cm)")
+        return np.round(best, 2)
+
+    def _do_dump(self) -> None:
+        """Debug: carefully pour the spoon back into the bowl that holds kw food (cereal / mms):
+        level spoon over the bowl centre, down to just above the rim, a slow roll about the spoon's
+        own length (the tip stays put), a pause, roll back, up, home."""
+        food = str((getattr(self, "_kw", {}) or {}).get("food", "cereal")).lower()
+        bid = self._bowl_for_food(food)
+        bowl = self._scoop_bowl_dict(bid)
+        from ..grasping.scoop import pan_axis_xy
+        c = np.asarray(bowl["centre_mm"], float) / 1000
+        toward = np.asarray(pan_axis_xy(), float) - c
+        c = c + toward / np.linalg.norm(toward) * self.DUMP_IN_MM / 1000
+        rim = float(bowl["rim_z_mm"]) / 1000
+        self.robot.stop_teleop()
+        self._say(f"Putting it back in the {self.FOOD_SPOKEN.get(food, food)} bowl.")
+        q_now = self.robot.joints()
+        hover = self._spoon_over(q_now, [c[0], c[1], rim + self.DUMP_HOVER_MM / 1000])
+        low = self._spoon_over(hover, [c[0], c[1], rim + self.DUMP_LOW_MM / 1000])
+        self._glide(hover, speed_degs=self.LOADED_DEGS, what=f"dump: over {bowl.get('name', bid)} (spoon level)")
+        self._glide(low, speed_degs=self.LOADED_DEGS / 2, what="dump: down to just above the rim")
+        lim = joint_limits()[ROLL]
+        tipped = low.copy()
+        tipped[ROLL] = low[ROLL] + self.DUMP_ROLL_DEG if low[ROLL] + self.DUMP_ROLL_DEG < lim[1] - 2 else low[ROLL] - self.DUMP_ROLL_DEG
+        self._glide(tipped, speed_degs=self.DUMP_ROLL_DEGS, what="dump: rolling the spoon over")
+        if self._stop.wait(1.5):  # let it fall; STOP still wins
+            raise Stopped()
+        self._glide(low, speed_degs=60.0, what="dump: spoon back upright")
+        self._glide(hover, speed_degs=45.0, what="dump: up")
+        self._glide(self.home_pose(), speed_degs=45.0, what="dump: home")
+        self.reason = f"poured back into {bowl.get('name', bid)} ({food}); home"
+        self._event("dump", self.reason)
+
+    def bowl_overlays(self) -> list[dict]:
+        """Each bowl's opening in the current camera view (for the video feed), with its label."""
+        from ..food_perception.bowl_id import opening_outline
+
+        q = getattr(self, "_last_joints", None)
+        if not isinstance(q, list) or len(q) != 5:
+            return []
+        if getattr(self, "_cam_offset_cache", None) is None:
+            try:
+                self._cam_offset_cache = np.linalg.inv(so101_fk(np.array(q))) @ self.robot.camera_pose(self.camera).as_matrix()
+            except Exception:
+                return []
+        T = so101_fk(np.array(q)) @ self._cam_offset_cache
+        labels = {x.bowl_id: x for x in self.bowl_labels()}
+        out = []
+        for b in self.fixed_bowls():
+            uv, box, frac = opening_outline(b, T)
+            if box is None:
+                continue
+            lab = labels.get(b.bowl_id)
+            text = b.name + (f": {lab.label} {max(lab.scores.values()):.2f}" if lab and lab.label else "")
+            out.append({"bowl_id": b.bowl_id, "outline": uv, "box": box, "text": text,
+                        "food": lab.label if lab else None})
+        return out
 
     def _deepen_scoop(self, q: np.ndarray) -> np.ndarray:
         """Deeper and a longer sweep than the recording: the tool goes SCOOP_EXTRA_DEPTH lower
@@ -1071,7 +1390,7 @@ class FaceServoSession:
                              f"scoop {off * 1000:.0f} mm from the bowl centre, {raised} setpoints raised")
         return out
 
-    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
+    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0, bowl: dict | None = None) -> None:
         """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
         up a little so the food stays on -> home."""
         q = np.asarray(demo["q"], float)
@@ -1079,8 +1398,8 @@ class FaceServoSession:
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
         q = self._deepen_scoop(q)
-        if self.BOWL_CAL.exists():
-            q = self._fit_scoop_to_bowl(q, json.loads(self.BOWL_CAL.read_text()))
+        if bowl is not None or self.BOWL_CAL.exists():
+            q = self._fit_scoop_to_bowl(q, bowl if bowl is not None else json.loads(self.BOWL_CAL.read_text()))
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
         # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
@@ -1236,7 +1555,7 @@ class FaceServoSession:
 
     def _feed_once(self) -> None:
         """One bite: home -> sweep to where the person usually sits -> find the face -> centre
-        and extend (stop 3 cm from the lips, hold 10 s) -> back out -> home. STOP at any time
+        and extend (stop 3 cm from the lips, hold 5 s) -> back out -> home. STOP at any time
         leaves the arm where it is."""
         home = self.home_pose()
         self._event("feed", "going home")
@@ -1254,6 +1573,7 @@ class FaceServoSession:
             self._glide(pre, speed_degs=self.LOADED_DEGS, what="feed: to the search height")
         sweep[PAN] = self._person_pan()  # pan only: the spoon's tilt can't change on the way
         self._event("feed", f"sweeping to the person (pan {sweep[PAN]:.0f} deg)")
+        self._say("Turning to you.")
         self._glide(sweep, speed_degs=self.LOADED_DEGS, what="feed: sweeping to the person")
         face, _ = self._face_target(need=1, timeout=1.5)
         for d in (12.0, -12.0, 24.0, -24.0):  # not in view: look around the usual spot (pan only)
@@ -1264,15 +1584,18 @@ class FaceServoSession:
             self._glide(q, speed_degs=self.LOADED_DEGS, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
             face, _ = self._face_target(need=1, timeout=1.0)
         if face is None:
+            self._say("I can't see your face. Going home.")
             self._event("feed", "no face found: going home")
             self._glide(home, what="feed: no face, going home")
             self.reason = "feed: no face found near the person's usual spot (back home)"
             return
         self._require_level()
         self._check_extend_reach()
+        self._say("Bringing the spoon to you.")
         self.mode = "extend"
         self._track_loop(extend=True, once=True)
         self.mode = "feed"
+        self._say("Going back.")
         self._event("feed", "bite done: going home")
         self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         self.reason = "feed done: back home"
@@ -1367,7 +1690,7 @@ class FaceServoSession:
             "params": {"stop_tip_distance_cm": round(self.ext_cfg.stop_tip_distance * 100, 1),
                        "floor_cm": round(self.cfg.min_tip_distance_floor * 100, 1),
                        "joint_speed_degs": self.cfg.joint_speed_degs},
-            "face": face, "log": list(self.log)[:60], "allow_extend": self.allow_extend, "tuning": self.tuning(),
+            "face": face, "log": list(self.log)[:60], "speech": list(self.speech)[-20:], "allow_extend": self.allow_extend, "tuning": self.tuning(),
             "depth": {"status": self.depth_status, **self.depth.last,
                       "eye_span_mm": round(self.depth.eye_span_m * 1000, 1), "samples": len(self.depth.samples)},
             "level": {"saved_tool_pitch_deg": (self.taught.spoon_level or {}).get("tool_pitch_deg"),
@@ -1375,6 +1698,7 @@ class FaceServoSession:
                           _tool_pitch(np.array(self._last_joints)) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)), 1),
                       "hand_guide": self.hand_guide},
             "bowl": self.taught.bowl, "scoop": self.last_scoop,
+            "bowls_seen": json.loads(self.BOWLS_SEEN.read_text()) if self.BOWLS_SEEN.exists() else None,
             "planner": {"failures_in_a_row": self.plan_failures, "last_error": self.last_plan_error[:300],
                         "log_file": str(self.plan_log) if self.plan_log else None},
         }

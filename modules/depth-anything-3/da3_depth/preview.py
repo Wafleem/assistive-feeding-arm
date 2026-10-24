@@ -308,7 +308,7 @@ canvas{width:100%;height:auto;border:1px solid #475569;display:block;cursor:cros
 .stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:#94a3b8;font-size:12px}
 ul{padding-left:18px;margin:6px 0}select{background:#1f2937;color:#e5e7eb;border:1px solid #475569}
 </style>
-<h1>Depth preview: webcam-2 &rarr; Depth Anything 3</h1>
+<h1>Depth preview</h1>
 <div class="dim">Observation only. Single-camera depth is an estimate: use it to judge, not to stop the arm.</div>
 <p><span id="state">Connecting...</span> <span class="dim" id="meta"></span>
  <label class="dim">&nbsp; image size <select id="scale"><option value="1">full</option><option value="2" selected>half</option><option value="4">quarter</option></select></label></p>
@@ -358,14 +358,14 @@ function hover(ev,c){if(!live||!grid)return;const k=S.intrinsics,rect=c.getBound
  const x=(u-k.cx)/k.fx,y=(v-k.cy)/k.fy;$('hover').textContent=(z/1000*Math.sqrt(1+x*x+y*y)).toFixed(2)+' m';}
 for(const c of Object.values(C)){c.addEventListener('mousemove',e=>hover(e,c));c.addEventListener('mouseleave',()=>$('hover').textContent='–');}
 function decode(b64){return new Promise((ok,bad)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=bad;i.src='data:image/jpeg;base64,'+b64;});}
-function meta(st){const mod=st.module||{};return (mod.status||'')+(mod.last_error?' | '+mod.last_error:'');}
+function meta(st){const mod=st.module||{};return (mod.status||'')+(mod.device?' on '+mod.device:'')+(mod.timing&&mod.timing.total_ms?' ('+mod.timing.total_ms+' ms)':'')+(mod.last_error?' | '+mod.last_error:'');}
 function connect(){if(es)es.close();es=new EventSource('/events?scale='+$('scale').value);$('state').textContent='Connecting...';
  es.addEventListener('frame',async e=>{const st=JSON.parse(e.data);
   const[ci,di]=await Promise.all([decode(st.color),decode(st.depth)]);
   const b=atob(st.grid),u8=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u8[i]=b.charCodeAt(i);
   imgs={color:ci,depth:di};grid=new Uint16Array(u8.buffer);S=st;live=true;
   const now=performance.now();lastFrame=now;arrivals=arrivals.filter(t=>now-t<5000);arrivals.push(now);
-  $('state').textContent='live';$('meta').textContent='frame '+st.seq+' | age when sent '+Math.round(st.age_s*1000)+' ms | inference '+st.infer_ms+' ms | '+meta(st);
+  $('state').textContent='live';$('meta').textContent=(st.module.model||'')+' | frame '+st.seq+' | age when sent '+Math.round(st.age_s*1000)+' ms | inference '+st.infer_ms+' ms | '+meta(st);
   $('dist').textContent=m(st.readings.distance_m);$('near').textContent=m(st.readings.nearest_m);
   $('tpanel').hidden=!st.vision&&!st.targets.length;
   $('targets').innerHTML=st.targets.length?st.targets.map(t=>'<li>'+t.kind+': <b>'+m(t.range_m)+'</b></li>').join(''):'<li class="dim">none</li>';

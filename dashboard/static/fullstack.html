@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ultraviolet · Full-stack test</title><link rel="stylesheet" href="language.css">
+<style>
+  /* Full-stack test: Ultraviolet look (language.css) + a few page parts */
+  main { max-width:1500px; padding-top:14px; }
+  .stack { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+  .stack.top { grid-template-columns:minmax(260px,3fr) minmax(0,4fr) minmax(0,4fr); align-items:start; }  /* command | camera | depth */
+  .stack.top img.cam { max-height:calc(100vh - 190px); aspect-ratio:4/3; }
+  .cmd { display:grid; gap:10px; } .cmd .say-input input { flex-basis:120px; }
+  .say-result:empty { display:none; }
+  .legend { margin:6px 0 0; font-size:12px; } #depth-live:empty { display:none; } #depth-live { font-weight:600; }
+  button.arm { min-height:52px; font-size:15px; font-weight:700; border:2px solid var(--warn); background:transparent; color:var(--ink); }
+  button.arm.on { background:var(--ok); border-color:var(--ok); color:#06170f; }
+  .stack.secondary { margin-top:14px; opacity:.92; }
+  .stack.secondary section { padding:10px 14px; }
+  .stack.secondary ol.progress li { padding:6px 10px; }
+  @media (max-width:1000px) { .stack.top { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .stack.top .cmd { grid-column:1/-1; } }
+  @media (max-width:640px) { .stack, .stack.top { grid-template-columns:minmax(0,1fr); } }
+  button.mic.pill.big { width:100%; padding:20px; font-size:20px; }
+  ol.progress { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+  ol.progress li { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--muted); }
+  ol.progress li .dot { width:12px; height:12px; border-radius:50%; border:2px solid var(--line); flex:none; }
+  ol.progress li small { margin-left:auto; text-align:right; }
+  ol.progress li.now { color:var(--ink); border-color:var(--uv); box-shadow:0 0 0 3px var(--glow); }
+  ol.progress li.now .dot { background:var(--uv); border-color:var(--uv); animation:listen 1s ease-in-out infinite; }
+  ol.progress li.done { color:var(--ink); } ol.progress li.done .dot { background:var(--ok); border-color:var(--ok); }
+  ol.progress li.fail { color:var(--bad); border-color:var(--bad); } ol.progress li.fail .dot { background:var(--bad); border-color:var(--bad); }
+  #say-log { padding-left:18px; max-height:200px; overflow:auto; margin:0; } #say-log li { margin:3px 0; color:var(--muted); }
+  #say-log li:last-child { color:var(--ink); }
+  details > summary { cursor:pointer; color:var(--uv2); font-weight:700; letter-spacing:.12em; text-transform:uppercase; font-size:12px; }
+</style></head><body>
+<header><div class="brand"><b>ULTRAVIOLET</b><span>NYU · full-stack test: voice → sweep → scoop → feed</span></div>
+  <span class="chip" id="chip">Connecting…</span>
+  <button class="ghost" style="color:white" onclick="toggleTheme()" aria-label="Toggle light or dark theme">◐</button>
+  <button class="stop" onclick="stopAll()" title="Stop the arm now (Esc)">STOP</button></header>
+<main>
+<div class="stack top">
+  <section class="cmd">
+    <button class="arm" id="arm" onclick="toggleHandsFree()" aria-pressed="false">🛡 Operator: area is safe — start hands-free voice</button>
+    <button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button>
+    <div class="say-input"><input type="text" id="text" aria-label="Command for the robot"
+        onkeydown="if (event.key === 'Enter') go(this.value)"><button class="primary" onclick="go(document.getElementById('text').value)">Go</button></div>
+    <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite"></div>
+  </section>
+  <section class="view">
+    <h2>Camera</h2>
+    <img class="cam" id="cam" alt="Live gripper camera with bowl outlines">
+    <p class="muted legend">Cyan cross = where the spoon points (tolerance circle) · red dot = lips · arrow = centring error (green when centred) · bowl outlines with their labels.</p>
+  </section>
+  <section class="view">
+    <h2>Depth</h2>
+    <img class="cam" id="depth" alt="Live depth view">
+    <p class="muted" id="depth-note" hidden></p>
+    <p class="legend" id="depth-live"></p>
+    <p class="muted legend">Depth over the camera's own picture: red = 10 cm → blue = 1.5 m · yellow = lips (distance measured on the lips) · green = lip opening · cross = straight ahead. One capture, so depth and face line up; about 1 frame/s.</p>
+  </section>
+</div>
+<div class="stack secondary">
+  <section>
+    <h2>Progress</h2>
+    <div class="say-result" id="status" data-kind="idle" style="margin:0 0 10px">Idle.</div>
+    <ol class="progress" id="steps">
+      <li data-k="heard"><span class="dot"></span>Understood the request<small class="muted"></small></li>
+      <li data-k="find"><span class="dot"></span>Sweep: look into both bowls<small class="muted"></small></li>
+      <li data-k="scoop"><span class="dot"></span>Scoop from that bowl<small class="muted"></small></li>
+      <li data-k="feed"><span class="dot"></span>Find the face and feed<small class="muted"></small></li>
+      <li data-k="home"><span class="dot"></span>Back home<small class="muted"></small></li>
+    </ol>
+    <p class="muted" id="bowls">No bowl sweep yet.</p>
+  </section>
+  <section>
+    <h2>Robot says</h2>
+    <ol id="say-log"></ol>
+    <div class="row" style="margin-top:10px"><label class="voice-toggle"><input type="checkbox" id="speak" checked> Spoken replies</label>
+      <label class="voice-toggle"><input type="checkbox" id="askready"> Wait for “ready” before feeding</label></div>
+  </section>
+  <section class="wide" style="grid-column:1/-1">
+    <details><summary>Debug</summary>
+      <div class="row" style="margin-top:12px">
+        <button class="dbg" onclick="debug('sweep_bowls')">🔍 Sweep bowls</button>
+        <button class="dbg" onclick="debug('find_food',{food:'cereal'})">Find cereal</button>
+        <button class="dbg" onclick="debug('find_food',{food:'mms'})">Find M&amp;Ms</button>
+        <button class="dbg move" onclick="debug('scoop_food',{food:'cereal'})">Scoop cereal only</button>
+        <button class="dbg move" onclick="debug('scoop_food',{food:'mms'})">Scoop M&amp;Ms only</button>
+        <button class="dbg move" onclick="debug('feed')">Feed only</button>
+        <button class="dbg" onclick="debug('home')">Home</button></div>
+      <div class="row">
+        <button class="dbg move" onclick="debug('dump',{food:'cereal'})">Dump spoon back into the cereal bowl</button>
+        <button class="dbg move" onclick="debug('dump',{food:'mms'})">Dump spoon back into the M&amp;M bowl</button></div>
+      <p class="muted">Dump: the spoon goes over that bowl (bowl from the last sweep; otherwise Bowl 1 cereal, Bowl 2 M&amp;Ms),
+        down to 3 cm above the rim, rolls over slowly, then goes home.
+        Everything else: <a id="full" href="#" style="color:var(--uv2)">main dashboard</a> · <a id="lang" href="#" style="color:var(--uv2)">language page</a>.</p>
+    </details>
+  </section>
+</div>
+</main>
+<script type="module">
+import { parseInstruction } from './language-parser.mjs';
+const $ = id => document.getElementById(id);
+const token = new URLSearchParams(location.search).get('token') || '';
+let busy = false, runId = 0, lastSpoken = null, readyResolve = null;
+const FOOD = { cereal: { food: 'cereal', name: 'cereal' }, 'm&ms': { food: 'mms', name: 'M&Ms' } };
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Token': token }, body: JSON.stringify(body) }
+                                   : { headers: { 'X-Token': token } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+const show = (id, kind, text) => { $(id).dataset.kind = kind; $(id).textContent = text; };
+const status = (text, kind = 'idle') => show('status', kind, text);
+function step(k, state, note) {
+  for (const li of $('steps').children) if (li.dataset.k === k) { li.className = state; if (note !== undefined) li.querySelector('small').textContent = note; }
+}
+function resetSteps() { for (const li of $('steps').children) { li.className = ''; li.querySelector('small').textContent = ''; } }
+function setBusy(b) { busy = b; document.querySelectorAll('.dbg').forEach(x => x.disabled = b); }
+function toggleTheme() { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'light' ? 'dark' : 'light'; }
+
+// Sunny's parser handles the wording ("grab me some cereal", "could you bring me some M&Ms?", stop words first)
+function understand(text) {
+  const r = parseInstruction(text);
+  if (r.ok && r.request && FOOD[r.request.food]) return { kind: 'food', ...FOOD[r.request.food], explanation: r.explanation };
+  if (r.ok && r.command && r.command.action) return { kind: 'action', action: r.command.action, explanation: r.explanation };
+  if (r.ok && /confirm/i.test(r.explanation || '')) return { kind: 'ready' };
+  const t = ' ' + text.toLowerCase() + ' ';  // a few extra spoken forms
+  if (/\b(candy|candies|chocolates?|eminem|m ?n ?ms?)\b/.test(t)) return { kind: 'food', food: 'mms', name: 'M&Ms' };
+  if (/\b(serial|loops|cheerios)\b/.test(t)) return { kind: 'food', food: 'cereal', name: 'cereal' };
+  return null;
+}
+
+async function go(text) {
+  text = (text || '').trim(); if (!text) return;
+  $('text').value = text;
+  const it = understand(text);
+  if (!it) { show('result', 'bad', `Heard “${text}”. Say cereal or M&Ms.`); talk('Sorry, would you like cereal or M and Ms?'); return; }
+  if (it.kind === 'action' && it.action === 'stop') return stopAll();
+  if (it.kind === 'ready') { if (readyResolve) { readyResolve(); readyResolve = null; } else show('result', 'ok', 'Nothing is waiting for “ready”.'); return; }
+  if (busy) { show('result', 'bad', 'Busy. Say “stop” first to change the request.'); return; }
+  if (it.kind === 'action') { show('result', 'ok', `Heard “${text}”: ${it.explanation}`); return debug(it.action); }
+  show('result', 'ok', `Heard “${text}”: ${it.name}. Starting the full run.`);
+  talk(`Getting you some ${it.food === 'mms' ? 'M and Ms' : 'cereal'}.`);
+  await fullRun(it);
+}
+
+async function fullRun(it) {
+  const my = ++runId; setBusy(true); resetSteps(); step('heard', 'done', it.name);
+  try {
+    step('find', 'now'); status(`Looking into the bowls for ${it.name}…`);
+    await api('/api/cmd', { action: 'scoop_food', food: it.food });
+    let s = await waitIdle(my, st => {
+      if (/scoop/i.test(st.reason) && !/looking for|checking|looking into/i.test(st.reason)) { step('find', 'done'); step('scoop', 'now'); }
+    });
+    if (/failed/.test(s.reason)) return failNow(s.reason);
+    step('find', 'done', bowlNote(s, it.food)); step('scoop', 'done');
+    if ($('askready').checked) {
+      status('Spoon loaded. Say “ready” to feed.', 'ok');
+      await new Promise(res => { readyResolve = res; });
+      if (my !== runId) return;
+    }
+    step('feed', 'now'); status('Bringing the spoon to the face…', 'move');
+    await api('/api/cmd', { action: 'feed' });
+    let atFace = false;
+    s = await waitIdle(my, st => {
+      if (/face|extend|bite|track|lips|mouth/i.test(st.reason)) atFace = true;
+      if (atFace && /home/i.test(st.reason)) { step('feed', 'done'); step('home', 'now'); }
+    });
+    if (/failed/.test(s.reason)) return failNow(s.reason);
+    step('feed', 'done'); step('home', 'done'); status(`Done: ${it.name} delivered. ${s.reason}`, 'ok');
+  } catch (e) { if (my === runId) failNow(e.message); }
+  finally { if (my === runId) setBusy(false); }
+}
+function bowlNote(s, food) {
+  const b = ((s.bowls_seen && s.bowls_seen.bowls) || []).slice().sort((a, c) => (c.scores[food] || 0) - (a.scores[food] || 0))[0];
+  return b ? `${b.bowl_id === 'bowl1' ? 'Bowl 1' : 'Bowl 2'} · ${(b.scores[food] || 0).toFixed(2)}` : '';
+}
+function failNow(why) {
+  for (const li of $('steps').children) if (li.className === 'now') li.className = 'fail';
+  status(why, 'bad'); setBusy(false);
+}
+async function waitIdle(my, onTick) {
+  await new Promise(r => setTimeout(r, 400));
+  for (;;) {
+    if (my !== runId) throw new Error('stopped');
+    const s = await api('/api/state');
+    if (s.mode === 'idle') return s;
+    status(`${s.mode}: ${s.reason}`, 'move'); onTick && onTick(s);
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+async function debug(action, extra = {}) {
+  if (busy) return;
+  const my = ++runId; setBusy(true); resetSteps();
+  try { await api('/api/cmd', { action, ...extra }); const s = await waitIdle(my); status(s.reason, /failed/.test(s.reason) ? 'bad' : 'ok'); }
+  catch (e) { if (my === runId) status(e.message, 'bad'); }
+  finally { if (my === runId) setBusy(false); }
+}
+async function stopAll() {
+  runId++; readyResolve = null;
+  if (handsFree) disarm();  // the operator re-arms after any stop
+  try { await api('/api/cmd', { action: 'stop' }); status('STOPPED.', 'bad'); show('result', 'bad', 'STOP sent.'); }
+  catch (e) { status('STOP failed: ' + e.message, 'bad'); }
+  for (const li of $('steps').children) if (li.className === 'now') li.className = 'fail';
+  setBusy(false);
+}
+
+// voice in: browser speech recognition (several guesses; the first one understood wins)
+const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;          // tap-and-talk session (one request)
+let handsFree = false;   // the operator armed always-on listening
+let hfRec = null, ttsUntil = 0;
+const STOP_WORDS = /\b(stop|wait|no|halt|freeze|done|enough)\b/i;
+
+function micLabel() {
+  const m = $('mic');
+  if (handsFree) { m.classList.add('on'); m.textContent = '🎙 Hands-free: listening'; m.setAttribute('aria-pressed', 'true'); }
+  else if (!rec) { m.classList.remove('on'); m.textContent = '🎤 Tap and talk'; m.setAttribute('aria-pressed', 'false'); }
+}
+function toggleMic() {
+  if (handsFree) return;  // already listening all the time
+  if (rec) { rec.stop(); return; }
+  if (!Rec) { show('result', 'bad', 'No speech recognition in this browser: use Chrome or Safari, or type.'); return; }
+  try { speechSynthesis.cancel(); } catch (e) {}
+  const session = rec = new Rec();
+  session.lang = 'en-US'; session.interimResults = true; session.maxAlternatives = 5; session.continuous = false;
+  let finals = [];
+  session.onresult = ev => {
+    const r = ev.results[ev.results.length - 1]; $('text').value = r[0].transcript;
+    if (r.isFinal) finals = [...r].map(a => a.transcript.trim());
+  };
+  session.onerror = ev => show('result', 'bad', 'Mic: ' + ev.error + (ev.error === 'not-allowed' ? ' (allow the microphone for this page)' : ''));
+  session.onend = () => {
+    rec = null; micLabel();
+    const pick = finals.find(f => understand(f)) || finals[0];
+    if (pick) go(pick);
+  };
+  $('mic').classList.add('on'); $('mic').textContent = '🎙 Listening… tap to finish'; $('mic').setAttribute('aria-pressed', 'true');
+  show('result', 'listen', 'Listening…');
+  try { session.start(); } catch (e) { rec = null; show('result', 'bad', 'Mic: ' + e.message); }
+}
+
+// Hands-free: the operator checks the area and presses the safety button once; from then on
+// every spoken request is acted on with no tapping. Any STOP (button, Esc, or the word) turns
+// it off again: the operator must re-arm. While the robot itself is talking, only stop words
+// count (so it never obeys its own narration).
+function toggleHandsFree() { handsFree ? disarm('Hands-free voice off.') : arm(); }
+function arm() {
+  if (!Rec) { show('result', 'bad', 'No speech recognition in this browser: use Chrome or Safari.'); return; }
+  if (rec) { try { rec.abort(); } catch (e) {} rec = null; }
+  handsFree = true;
+  $('arm').classList.add('on'); $('arm').setAttribute('aria-pressed', 'true');
+  $('arm').textContent = '🛡 Hands-free ON · press to turn off';
+  micLabel(); show('result', 'listen', 'Hands-free: say what you would like.');
+  talk('Hands free voice is on. What would you like?');
+  listen();
+}
+function disarm(why) {
+  handsFree = false;
+  const r = hfRec; hfRec = null;
+  if (r) { try { r.abort(); } catch (e) {} }
+  $('arm').classList.remove('on'); $('arm').setAttribute('aria-pressed', 'false');
+  $('arm').textContent = '🛡 Operator: area is safe — start hands-free voice';
+  micLabel(); if (why) show('result', 'idle', why);
+}
+function listen() {
+  if (!handsFree) return;
+  const session = hfRec = new Rec();
+  session.lang = 'en-US'; session.interimResults = true; session.maxAlternatives = 5; session.continuous = true;
+  session.onresult = ev => {
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (!r.isFinal) { $('text').value = r[0].transcript; continue; }
+      const guesses = [...r].map(a => a.transcript.trim()).filter(Boolean);
+      const robotTalking = (window.speechSynthesis && speechSynthesis.speaking) || Date.now() < ttsUntil;
+      const stop = guesses.find(g => STOP_WORDS.test(g));
+      if (stop) { $('text').value = stop; go(stop); continue; }
+      if (robotTalking) continue;  // its own voice, not a request
+      const pick = guesses.find(g => understand(g));
+      if (pick) go(pick);
+      else if (guesses[0] && guesses[0].split(' ').length > 1 && !busy) show('result', 'idle', `Heard “${guesses[0]}” (not a request).`);
+    }
+  };
+  session.onerror = ev => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') disarm('Mic blocked: allow the microphone for this page, then arm again.');
+  };
+  session.onend = () => { if (handsFree && hfRec === session) setTimeout(listen, 250); };  // Chrome ends sessions on silence
+  try { session.start(); } catch (e) { setTimeout(listen, 1000); }
+}
+// voice out
+function talk(text) {
+  if (!$('speak').checked || !window.speechSynthesis) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text); u.rate = 1.05;
+    const v = speechSynthesis.getVoices().find(v => /^en/i.test(v.lang) && /natural|enhanced|premium|samantha|google us/i.test(v.name));
+    if (v) u.voice = v;
+    ttsUntil = Date.now() + 1500 + 90 * text.length;
+    u.onend = () => { ttsUntil = Date.now() + 800; };
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); stopAll(); }
+  else if (e.code === 'Space' && !['INPUT', 'BUTTON', 'SUMMARY'].includes(document.activeElement.tagName)) { e.preventDefault(); toggleMic(); }
+});
+
+// live state: connection, narration ("Checking Bowl 1", "Take a bite"), bowl labels
+function showBowls(seen) {
+  if (!seen || !seen.bowls) return;
+  const nm = { cereal: 'cereal', mms: 'M&Ms', empty: 'empty', other: '?' };
+  $('bowls').textContent = `Last look ${seen.t.slice(11, 16)}: ` + seen.bowls.map(b =>
+    `${b.bowl_id === 'bowl1' ? 'Bowl 1' : 'Bowl 2'} = ${nm[b.label] || b.label} (${Math.max(...Object.values(b.scores)).toFixed(2)})`).join(' · ');
+}
+async function poll() {
+  try {
+    const s = await api('/api/state');
+    $('chip').textContent = busy ? 'Live · running' : 'Live'; $('chip').className = busy ? 'chip busy' : 'chip';
+    showBowls(s.bowls_seen);
+    const d = s.depth || {};
+    $('depth-live').textContent = d.depth_cm != null
+      ? `Lips by depth: ${d.depth_cm} cm (eye-span guess ${d.eye_span_estimate_cm} cm) · the extend stops on the depth value`
+      : (/error/.test(d.status || '') ? 'Depth: ' + d.status.slice(0, 90) : d.status ? 'Depth: ' + d.status + ' · the extend uses the eye-span estimate' : '');
+    const list = s.speech || [];
+    const newest = list.length ? list[list.length - 1].id : -1;
+    if (lastSpoken !== null) for (const m of list) if (m.id > lastSpoken) {
+      talk(m.text); const li = document.createElement('li'); li.textContent = m.text; $('say-log').appendChild(li); $('say-log').scrollTop = 1e9;
+    }
+    lastSpoken = Math.max(lastSpoken ?? newest, newest);
+  } catch (e) {
+    $('chip').textContent = token ? 'Robot offline' : 'Preview · no robot'; $('chip').className = 'chip bad';
+  }
+  setTimeout(poll, 700);
+}
+Object.assign(window, { go, toggleMic, toggleHandsFree, stopAll, debug, toggleTheme });
+if (token) {
+  $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token);
+  $('depth').src = '/depth.mjpg?token=' + encodeURIComponent(token);
+  setTimeout(() => { if (!$('depth').naturalWidth) { $('depth').hidden = true; $('depth-note').hidden = false;
+    $('depth-note').textContent = 'No depth frames (cloud depth GPU not reachable, or the dashboard started without depth).'; } }, 6000);
+} else {
+  for (const id of ['cam', 'depth']) $(id).hidden = true;
+  $('depth-note').hidden = false; $('depth-note').textContent = 'Live views appear when opened from the robot dashboard (/test?token=...).';
+}
+$('full').href = '/?token=' + encodeURIComponent(token);
+$('lang').href = '/language.html?token=' + encodeURIComponent(token);
+poll();
+</script></body></html>

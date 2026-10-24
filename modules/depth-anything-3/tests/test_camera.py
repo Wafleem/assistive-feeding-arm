@@ -38,15 +38,22 @@ class FakeSource(Camera):
 
 class FakeEstimator:
     depth_m = 1.5
+    estimates_focal = False
 
-    def __init__(self, weights, device, process_res):
+    def __init__(self, cfg):
         self.device = "unloaded"
+        self.focal_px = None
 
     def load(self):
         self.device = "cpu"
 
     def predict(self, rgb, k):
-        assert rgb.shape == (H, W, 3) and (k.width, k.height) == (W, H)
+        assert rgb.shape == (H, W, 3)
+        if k is None:
+            assert self.estimates_focal
+            self.focal_px = 50.0
+        else:
+            assert (k.width, k.height) == (W, H)
         return np.full((H, W), self.depth_m, np.float32)
 
 
@@ -83,7 +90,14 @@ def test_config_rejects_typos_and_bad_values():
     with pytest.raises(ValueError, match="fx and fy"):
         CameraConfig.from_attributes({"source": "a", "fx": 500})
     cfg = CameraConfig.from_attributes({"source": "a", "max_range_m": 3, "scan_beams": 32})
-    assert cfg.ranges.max_range == 3.0 and cfg.ranges.scan_beams == 32 and cfg.weights.endswith("DA3METRIC-LARGE")
+    assert cfg.ranges.max_range == 3.0 and cfg.ranges.scan_beams == 32
+    assert cfg.model == "depth-pro" and cfg.weights is None  # Depth Pro by default, its default weights
+    assert cfg.compute == "cloud" and cfg.cloud_fallback  # on the cloud GPU, the local model as fallback
+    with pytest.raises(ValueError, match="depth-pro only"):
+        CameraConfig.from_attributes({"source": "a", "model": "da3-metric"})
+    assert CameraConfig.from_attributes({"source": "a", "model": "da3-metric", "compute": "local"}).compute == "local"
+    with pytest.raises(ValueError, match="model must be"):
+        CameraConfig.from_attributes({"source": "a", "model": "midas"})
 
 
 def test_validate_config_declares_the_source_dependency():
@@ -110,7 +124,7 @@ async def test_serves_images_point_cloud_and_ranges(make_camera):
     r = await cam.do_command({"command": "ranges"})
     assert r["distance_m"] == pytest.approx(1.5, abs=0.01) and r["age_s"] < 1.0
     status = await cam.do_command({})
-    assert status["status"] == "running on cpu" and status["frames"] >= 1
+    assert status["status"] == "running" and status["device"] == "cpu" and status["frames"] >= 1
 
 
 @pytest.mark.asyncio
@@ -139,3 +153,43 @@ async def test_missing_intrinsics_is_an_error_not_a_guess(make_camera):
     assert "hfov_deg or fx/fy" in (cam._last_error or "")
     with pytest.raises(RuntimeError, match="no depth yet"):
         await cam.get_images()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_model_load_is_retried(make_camera, monkeypatch):
+    import da3_depth.camera as camera_mod
+
+    class FlakyEstimator(FakeEstimator):
+        loads = 0
+
+        def load(self):
+            FlakyEstimator.loads += 1
+            if FlakyEstimator.loads == 1:
+                raise RuntimeError("No CUDA GPUs are available")
+            super().load()
+
+    monkeypatch.setattr(camera_mod, "LOAD_RETRY_S", 0.05)
+    monkeypatch.setattr(DepthAnything3Camera, "estimator_factory", FlakyEstimator)
+    cam = DepthAnything3Camera.new(config("depth", DepthAnything3Camera.MODEL, source="src", hfov_deg=90.0, produce_hz=50.0),
+                                   {Camera.get_resource_name("src"): FakeSource()})
+    try:
+        for _ in range(200):
+            if cam._frame is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert FlakyEstimator.loads == 2 and cam._frame is not None and cam._status == "running"
+    finally:
+        cam._stop()
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_estimates_focal_needs_no_intrinsics(make_camera, monkeypatch):
+    class SelfCalibrating(FakeEstimator):
+        estimates_focal = True
+
+    monkeypatch.setattr(DepthAnything3Camera, "estimator_factory", SelfCalibrating)
+    cam = await make_camera(hfov_deg=None)
+    assert cam._last_error is None and cam._frame is not None
+    assert cam._frame.intrinsics.fx == 50.0  # the model's own estimate, used for the point cloud too
+    pcd, _ = await cam.get_point_cloud()
+    assert len(pcd) > 0

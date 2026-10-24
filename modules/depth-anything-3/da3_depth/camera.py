@@ -35,13 +35,14 @@ from viam.resource.types import Model, ModelFamily
 from viam.utils import struct_to_dict
 
 from .config import CameraConfig
-from .estimator import DA3Estimator, DepthEstimator
+from .estimator import DepthEstimator, make_estimator
 from .geometry import Intrinsics, RangeReadings, colorize, depth_to_points, encode_viam_depth, points_to_pcd, range_readings
 from .preview import DepthPreview
 
 LOGGER = logging.getLogger(__name__)
 FAMILY = ModelFamily("assistive-arm", "depth-anything-3")
 JPEG_QUALITY = 85
+LOAD_RETRY_S = 30.0  # a failed model load (GPU not up, download interrupted) is retried this often
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,7 @@ def _jpeg(rgb: np.ndarray) -> bytes:
 
 class DepthAnything3Camera(Camera, EasyResource):
     MODEL: ClassVar[Model] = Model(FAMILY, "camera")
-    estimator_factory: ClassVar = DA3Estimator  # tests substitute a fake
+    estimator_factory: ClassVar = staticmethod(make_estimator)  # called with the CameraConfig; tests substitute a fake
 
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
@@ -107,8 +108,9 @@ class DepthAnything3Camera(Camera, EasyResource):
             raise ValueError(f"source camera {cfg.source!r} not found")
         self._stop()
         old = self._cfg
-        if old is None or (old.weights, old.device, old.process_res) != (cfg.weights, cfg.device, cfg.process_res):
-            self._estimator = self.estimator_factory(cfg.weights, cfg.device, cfg.process_res)
+        model_key = lambda c: (c.model, c.weights, c.device, c.process_res)  # noqa: E731
+        if old is None or model_key(old) != model_key(cfg):
+            self._estimator = self.estimator_factory(cfg)
             self._loaded = False
         self._cfg, self._source = cfg, source  # type: ignore[assignment]
         self._source_k, self._source_k_checked = None, False
@@ -140,16 +142,16 @@ class DepthAnything3Camera(Camera, EasyResource):
     async def _run(self) -> None:
         cfg = self._cfg
         assert cfg is not None and self._estimator is not None
-        if not self._loaded:
-            self._status = f"loading {cfg.weights} (the first run downloads ~1.3 GB)"
+        while not self._loaded:
+            self._status = f"loading {cfg.model} (the first run downloads its weights, 1.3-1.9 GB)"
             try:
                 await asyncio.to_thread(self._estimator.load)
-            except Exception as e:  # noqa: BLE001
-                self._status = f"model failed to load: {e!r}"
+                self._loaded = True
+            except Exception as e:  # noqa: BLE001 - e.g. the GPU isn't up yet; downloads resume
+                self._status = f"model failed to load, retrying in {LOAD_RETRY_S:.0f} s: {e!r}"
                 LOGGER.error("%s: %s", self.name, self._status)
-                return  # no retry loop around a multi-GB download; reconfigure to try again
-            self._loaded = True
-        self._status = f"running on {self._estimator.device}"
+                await asyncio.sleep(LOAD_RETRY_S)
+        self._status = "running"
         period = 1.0 / cfg.produce_hz
         while True:
             t0 = time.monotonic()
@@ -171,14 +173,17 @@ class DepthAnything3Camera(Camera, EasyResource):
             raise RuntimeError(f"{cfg.source} returned no JPEG/PNG image")
         captured_at = time.monotonic()
         rgb, jpeg = _decode(color[0])
-        k = await self._intrinsics(cfg, rgb.shape[1], rgb.shape[0])
+        k = await self._intrinsics(cfg, rgb.shape[1], rgb.shape[0])  # None: the model estimates the focal
         depth = await asyncio.to_thread(self._estimator.predict, rgb, k)
+        if k is None:
+            f = self._estimator.focal_px
+            k = Intrinsics(f, f, rgb.shape[1] / 2.0, rgb.shape[0] / 2.0, rgb.shape[1], rgb.shape[0])
         infer_ms = (time.monotonic() - captured_at) * 1000.0
         self._frames += 1
         self._frame = DepthFrame(jpeg, depth, k, range_readings(depth, k, cfg.ranges), captured_at, infer_ms, self._frames)
         self._last_error = None
 
-    async def _intrinsics(self, cfg: CameraConfig, w: int, h: int) -> Intrinsics:
+    async def _intrinsics(self, cfg: CameraConfig, w: int, h: int) -> Optional[Intrinsics]:
         if cfg.fx is not None and cfg.fy is not None:
             cx = cfg.cx if cfg.cx is not None else w / 2.0
             cy = cfg.cy if cfg.cy is not None else h / 2.0
@@ -195,6 +200,8 @@ class DepthAnything3Camera(Camera, EasyResource):
             return self._source_k.scaled(w, h)
         if cfg.hfov_deg is not None:
             return Intrinsics.from_hfov(cfg.hfov_deg, w, h)
+        if self._estimator is not None and self._estimator.estimates_focal:
+            return None
         raise ValueError(f"{cfg.source} reports no intrinsics: set hfov_deg or fx/fy (metric depth needs the focal length)")
 
     def _fresh(self) -> DepthFrame:
@@ -267,6 +274,10 @@ class DepthAnything3Camera(Camera, EasyResource):
         return {
             "status": self._status,
             "source": self._cfg.source if self._cfg else None,
+            "model": self._cfg.model if self._cfg else None,
+            "compute": self._cfg.compute if self._cfg else None,
+            "device": getattr(self._estimator, "device", None),
+            "timing": getattr(self._estimator, "timing", None),
             "weights": self._cfg.weights if self._cfg else None,
             "frames": self._frames,
             "errors": self._errors,

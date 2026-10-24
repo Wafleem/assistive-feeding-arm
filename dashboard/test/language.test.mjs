@@ -26,10 +26,14 @@ test('whole-command grammar rejects extra meaning and unknown foods', () => {
 test('safety words use boundaries and handle curly apostrophes', () => {
   assert.equal(parse('yogurt').intent.item,'yogurt'); assert.equal(parse('I’m done').intent.action,'done');
 });
-test('offline UI has no robot transport or background requests', () => {
-  const app=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
+test('robot transport only in the token-gated live mode (served by the dashboard)', () => {
+  const full=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
   const page=readFileSync(new URL('../static/language.html',import.meta.url),'utf8');
+  const [app, liveMode]=full.split('// ---------------------------------------------------------------- live mode');
+  assert(liveMode, 'live-mode section exists');
   assert.doesNotMatch(app,/\bfetch\s*\(|WebSocket|XMLHttpRequest|\/api\/|viam-connection|doCommand/);
+  assert.match(liveMode,/if \(!liveToken\) return;/);  // no token (opened offline): no requests at all
+  assert.match(liveMode,/action: 'stop'/);  // stop words are sent straight away when live
   assert.match(page,/id="send" disabled/);
   assert.doesNotMatch(page,/stream\.mjpg|\/api\/|<iframe[^>]*src=/);
   assert.match(app,/clearReview\(\); say\('idle', 'Command changed/);
@@ -80,6 +84,17 @@ test('bowl requests preserve the full request and never ignore qualifiers', () =
 test('changing bowl labels invalidates the previous review and voice generation', () => {
   const app=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
   assert.match(app,/for \(const id of \['bowl-1-food', 'bowl-2-food'\]\).*addEventListener\('change', \(\) => \{\s*invalidateVoice\(\); micUp\(\); clearReview\(\);/);
+});
+
+test('bowl sweep phrases map to the sweep_bowls action', () => {
+  for (const s of ['check the bowls', "what's in the bowls", 'sweep bowls', 'look into the bowls', 'scan both bowls'])
+    assert.equal(parse(s).command && parse(s).command.action, 'sweep_bowls', s);
+});
+
+test('find phrases sweep for one food', () => {
+  assert.deepEqual(parse('find cereal').command, { action: 'find_food', food: 'cereal' });
+  assert.deepEqual(parse('look for m and ms').command, { action: 'find_food', food: 'mms' });
+  assert.deepEqual(parse('where are the m&ms').command, { action: 'find_food', food: 'mms' });
 });
 
 test('everyday cereal requests resolve to the cereal bowl', () => {

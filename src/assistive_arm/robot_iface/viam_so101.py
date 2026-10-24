@@ -32,7 +32,10 @@ class SO101ViamRobot:
         self.client = self._io.run(connect(address))
         self.arm = Arm.from_robot(self.client, arm)
         self.teleop_name = teleop
-        self._teleop = Generic.from_robot(self.client, teleop) if teleop else None
+        try:  # optional: teleop only exists while the leader arm is plugged in
+            self._teleop = Generic.from_robot(self.client, teleop) if teleop else None
+        except Exception:
+            self._teleop = None
         if camera_address:
             self.rig = ViamCameraRig(cameras, address=camera_address, io=self._io)
         else:
@@ -49,6 +52,13 @@ class SO101ViamRobot:
 
     def camera_pose(self, name: str):
         return self.rig.camera_pose(name)
+
+    def vision_command(self, service: str, command: dict, timeout: float = 20.0) -> dict:
+        """do_command on a Viam vision service (e.g. bowl-contents: CLIP on the Orin GPU)."""
+        from viam.services.vision import VisionClient
+
+        client = self.rig.client
+        return self._io.run(VisionClient(service, client._channel).do_command(command), timeout=timeout)
 
     # arm
     def joints(self, timeout: float = 10.0) -> np.ndarray:

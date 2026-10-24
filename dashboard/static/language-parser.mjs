@@ -86,6 +86,11 @@ export function parseInstruction(input, bowls = DEFAULT_BOWLS) {
     return motion('scoop', 'Scoop food and come back.');
   if (/^(?:home|(?:go|return|go back) (?:to )?home|start centered)$/.test(text))
     return motion('home', 'Return to the taught start pose.');
+  const lookFor = text.match(/^(?:find|look for|where (?:is|are)(?: the)?) (cereal|m&ms|m&m's|m and ms|mms)$/);
+  if (lookFor) return result('find_food', `Sweep the bowls until one holds ${lookFor[1]}.`,
+    { action: 'find_food', food: bowlFoods.get(lookFor[1]) === 'm&ms' ? 'mms' : 'cereal' });
+  if (/^(?:(?:sweep|check|scan|identify|look (?:at|in|into)) (?:the |both )?bowls?|what(?:'s| is) in (?:the |each |both )?bowls?)$/.test(text))
+    return motion('sweep_bowls', 'Sweep over the bowls: the camera looks into each and CLIP on the Orin says what is in it.');
   if (/^(find (?:my|the) face|look for (?:my|the) face)$/.test(text))
     return motion('find_face', 'Find the face near the taught look pose.');
   if (/^(center(?: on (?:my|the) face)?|centre(?: on (?:my|the) face)?)$/.test(text))

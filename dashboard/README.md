@@ -20,6 +20,15 @@ requests. Browser speech services may use the internet after microphone/voice
 activation; typing and translation work locally. No real microphone or hardware
 was used in UI checks.
 
+### Live natural-language feeding (`/language.html?token=...`)
+Served by the real dashboard (link at the top of the main page). With the token the Language page
+is **live**: the bowl selectors start from the last **Identify bowls** result (CLIP on the Orin),
+"I want some cereal" / "give me M&Ms" + **Send** runs `scoop_food` (the bowl that holds that food,
+the scoop refitted to it), then waits for "ready" (or the button) before `feed` brings the spoon to
+the mouth. Single commands ("go home", "level the spoon", ...) are sent as they are. "Stop",
+"wait", "no" and "I'm done" send STOP immediately. Opened without a token (or via `preview.py`) it
+stays the offline preview below.
+
 The **Language** view defaults to Bowl 1: cereal and Bowl 2: M&Ms. The selectors
 can swap those assignments or mark a bowl empty. Requests such as “grab me some
 cereal,” “could you bring me some cereal, please?” and “I'd like some M&Ms”
