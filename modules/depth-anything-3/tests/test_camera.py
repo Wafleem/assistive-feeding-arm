@@ -92,7 +92,10 @@ def test_config_rejects_typos_and_bad_values():
     cfg = CameraConfig.from_attributes({"source": "a", "max_range_m": 3, "scan_beams": 32})
     assert cfg.ranges.max_range == 3.0 and cfg.ranges.scan_beams == 32
     assert cfg.model == "depth-pro" and cfg.weights is None  # Depth Pro by default, its default weights
-    assert CameraConfig.from_attributes({"source": "a", "model": "da3-metric"}).model == "da3-metric"
+    assert cfg.compute == "cloud" and cfg.cloud_fallback  # on the cloud GPU, the local model as fallback
+    with pytest.raises(ValueError, match="depth-pro only"):
+        CameraConfig.from_attributes({"source": "a", "model": "da3-metric"})
+    assert CameraConfig.from_attributes({"source": "a", "model": "da3-metric", "compute": "local"}).compute == "local"
     with pytest.raises(ValueError, match="model must be"):
         CameraConfig.from_attributes({"source": "a", "model": "midas"})
 
@@ -121,7 +124,7 @@ async def test_serves_images_point_cloud_and_ranges(make_camera):
     r = await cam.do_command({"command": "ranges"})
     assert r["distance_m"] == pytest.approx(1.5, abs=0.01) and r["age_s"] < 1.0
     status = await cam.do_command({})
-    assert status["status"] == "running on cpu" and status["frames"] >= 1
+    assert status["status"] == "running" and status["device"] == "cpu" and status["frames"] >= 1
 
 
 @pytest.mark.asyncio
@@ -174,7 +177,7 @@ async def test_a_failed_model_load_is_retried(make_camera, monkeypatch):
             if cam._frame is not None:
                 break
             await asyncio.sleep(0.01)
-        assert FlakyEstimator.loads == 2 and cam._frame is not None and cam._status == "running on cpu"
+        assert FlakyEstimator.loads == 2 and cam._frame is not None and cam._status == "running"
     finally:
         cam._stop()
 

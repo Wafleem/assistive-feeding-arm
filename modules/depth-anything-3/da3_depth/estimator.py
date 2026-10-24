@@ -9,6 +9,7 @@ scale is only trustworthy at room scale (0.5 m+), like the benchmarks it was tes
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import sys
@@ -44,11 +45,15 @@ class DepthEstimator(Protocol):
 
 
 def make_estimator(cfg) -> "DepthEstimator":
-    """The estimator a CameraConfig asks for."""
+    """The estimator a CameraConfig asks for: the cloud (with the local model as fallback) or local."""
     weights = cfg.weights or DEFAULT_WEIGHTS[cfg.model]
     if cfg.model == "depth-pro":
-        return DepthProEstimator(weights, cfg.device)
-    return DA3Estimator(weights, cfg.device, cfg.process_res)
+        local = DepthProEstimator(weights, cfg.device)
+    else:
+        local = DA3Estimator(weights, cfg.device, cfg.process_res)
+    if cfg.compute == "cloud":
+        return CloudEstimator(cfg.cloud_url, cfg.cloud_timeout_s, local if cfg.cloud_fallback else None)
+    return local
 
 
 def _stub_export_modules() -> None:
@@ -216,3 +221,107 @@ class DepthProEstimator:
         self.focal_px = float(out["focallength_px"])
         depth = out["depth"].float().cpu().numpy()
         return np.where(np.isfinite(depth) & (depth > 0), depth, 0.0).astype(np.float32)
+
+
+CLOUD_RETRY_S = 30.0  # after a cloud failure, use the fallback this long before trying the cloud again
+CLOUD_JPEG_QUALITY = 90
+
+
+class CloudEstimator:
+    """Depth Pro on a cloud GPU (cloud/depth_server.py), reached through an SSH tunnel.
+
+    PLAN
+    1. POST the frame as a JPEG (plus fx when known); get uint16 millimetres back.
+    2. If the cloud fails (tunnel down, instance stopped, timeout), run ``fallback`` (the
+       local model, loaded only then) and try the cloud again after CLOUD_RETRY_S.
+       Without a fallback the failure is raised and the frame is skipped.
+    """
+
+    estimates_focal = True
+
+    def __init__(self, url: str, timeout_s: float, fallback: Optional["DepthEstimator"] = None):
+        self.url = url.rstrip("/")
+        self.timeout_s = timeout_s
+        self.fallback = fallback
+        self.device = "unloaded"
+        self.focal_px: Optional[float] = None
+        self.timing: dict = {}  # last frame: where it ran, round trip and server-side ms
+        self._gpu = None
+        self._fallback_loaded = False
+        self._cloud_down_until = 0.0
+        self._cloud_error: Optional[str] = None
+
+    def _health(self) -> dict:
+        import urllib.request
+
+        with urllib.request.urlopen(self.url + "/health", timeout=self.timeout_s) as r:
+            return json.load(r)
+
+    def load(self) -> None:
+        try:
+            self._gpu = self._health().get("gpu")
+            self.device = f"cloud ({self._gpu})"
+        except Exception as e:  # noqa: BLE001
+            if self.fallback is None:
+                raise RuntimeError(f"depth cloud at {self.url} unreachable: {e}") from e
+            self._cloud_failed(e)
+            self._use_fallback()
+
+    def _cloud_failed(self, e: Exception) -> None:
+        import time
+
+        self._cloud_error = f"{type(e).__name__}: {e}"[:160]
+        self._cloud_down_until = time.monotonic() + CLOUD_RETRY_S
+        LOGGER.warning("depth cloud at %s failed (%s); local for %.0f s", self.url, self._cloud_error, CLOUD_RETRY_S)
+
+    def _use_fallback(self) -> None:
+        if not self._fallback_loaded:
+            self.fallback.load()
+            self._fallback_loaded = True
+        self.device = f"local {self.fallback.device} (cloud down: {self._cloud_error})"
+
+    def predict(self, rgb: np.ndarray, k: Optional[Intrinsics]) -> np.ndarray:
+        import time
+
+        if time.monotonic() >= self._cloud_down_until:
+            try:
+                return self._predict_cloud(rgb, k)
+            except Exception as e:  # noqa: BLE001
+                if self.fallback is None:
+                    raise
+                self._cloud_failed(e)
+        self._use_fallback()
+        t = time.perf_counter()
+        depth = self.fallback.predict(rgb, k)
+        self.focal_px = self.fallback.focal_px
+        self.timing = {"where": "local", "total_ms": round((time.perf_counter() - t) * 1000, 1)}
+        return depth
+
+    def _predict_cloud(self, rgb: np.ndarray, k: Optional[Intrinsics]) -> np.ndarray:
+        import io
+        import time
+        import urllib.request
+        import zlib
+
+        from PIL import Image
+
+        h, w = rgb.shape[:2]
+        buf = io.BytesIO()
+        Image.fromarray(rgb).save(buf, format="JPEG", quality=CLOUD_JPEG_QUALITY)
+        req = urllib.request.Request(self.url + "/depth", data=buf.getvalue(), method="POST",
+                                     headers={"Content-Type": "image/jpeg"})
+        if k is not None:
+            req.add_header("X-Focal-Px", f"{k.fx:.3f}")
+        t = time.perf_counter()
+        with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
+            body, hdr = r.read(), r.headers
+        total_ms = (time.perf_counter() - t) * 1000.0
+        dw, dh = int(hdr["X-Width"]), int(hdr["X-Height"])
+        depth = np.frombuffer(zlib.decompress(body), "<u2").reshape(dh, dw).astype(np.float32) / 1000.0
+        if (dh, dw) != (h, w):
+            depth = resize_nearest(depth, h, w)
+        self.focal_px = float(hdr["X-Focal-Px"])
+        self.device = f"cloud ({self._gpu})"
+        self.timing = {"where": "cloud", "total_ms": round(total_ms, 1), "server_ms": float(hdr["X-Infer-Ms"]),
+                       "bytes_up": len(buf.getvalue()), "bytes_down": len(body)}
+        return depth
