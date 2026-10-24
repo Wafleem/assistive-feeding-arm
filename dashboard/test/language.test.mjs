@@ -81,3 +81,55 @@ test('changing bowl labels invalidates the previous review and voice generation'
   const app=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
   assert.match(app,/for \(const id of \['bowl-1-food', 'bowl-2-food'\]\).*addEventListener\('change', \(\) => \{\s*invalidateVoice\(\); micUp\(\); clearReview\(\);/);
 });
+
+test('everyday cereal requests resolve to the cereal bowl', () => {
+  for (const text of [
+    'grab me some cereal', 'Grab me some cereal, please!',
+    'Hey, could you please grab me some cereal? Thanks',
+    'Could you get me some cereal?', 'Bring me some cereal please',
+    'Can you bring some cereal for me?', 'Fetch me the cereal',
+    'Please pass me some cereal', 'Serve me a spoonful of cereal',
+    'Hand me some cereal', 'Scoop me a bite of cereal',
+    'I want to eat some cereal', "I'd like to try some cereal",
+    'I would like to have cereal', "I'll have some cereal",
+    'I feel like eating cereal', "I'm craving cereal",
+    'Can I please have a little cereal?', 'Could I get some cereal?',
+    'May I try a bite of cereal?', 'How about some cereal?',
+    'Would you mind getting me some cereal?',
+    'Um, please grab me a little bit of cereal, thank you',
+    'Some more cereal, please', 'Another bite of cereal please',
+  ]) {
+    const r=parse(text);
+    assert.equal(r.ok,true,text);
+    assert.equal(r.request?.food,'cereal',text);
+    assert.equal(r.request?.source_bowl,'bowl_1',text);
+    assert.equal(r.command,null,text);
+  }
+});
+
+test('everyday M&Ms requests and speech spellings resolve to their bowl', () => {
+  for(const text of [
+    'grab me some M&Ms', 'Could you pass me the M and Ms?',
+    'I feel like some M&Ms', 'Please bring me M & M’s',
+    'Would you mind grabbing some em and ems for me?',
+    'May I have a spoonful of M&Ms?', "I'll have some M&M's, thanks",
+  ]) {
+    const r=parse(text);
+    assert.equal(r.ok,true,text);
+    assert.equal(r.request?.food,'m&ms',text);
+    assert.equal(r.request?.source_bowl,'bowl_2',text);
+  }
+});
+
+test('conversational wording still preserves stops, quantities, qualifiers and ambiguity', () => {
+  for(const text of [
+    'grab me cereal and M&Ms', 'grab me cereal or M&Ms',
+    'bring me cereal then go home', 'grab me three bites of cereal',
+    'get me cereal from the left bowl', 'grab me cereal tomorrow',
+    'I wonder whether cereal is healthy', 'I do not want cereal',
+    'could you avoid giving me cereal', 'grab me cereal instead of M&Ms',
+    'grab me cereal with milk', 'grab me oatmeal',
+  ]) assert.equal(parse(text).ok,false,text);
+  for(const text of ['grab me cereal, stop', 'could you get cereal, wait', 'no, grab me cereal'])
+    assert.deepEqual(parse(text).command,{action:'stop'},text);
+});

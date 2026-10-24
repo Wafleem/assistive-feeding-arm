@@ -19,8 +19,12 @@ activation; typing and translation work locally. No real microphone or hardware
 was used in UI checks.
 
 The **Language** view defaults to Bowl 1: cereal and Bowl 2: M&Ms. The selectors
-can swap those assignments or mark a bowl empty. “I want some cereal” and
-“give me M&Ms” (also spoken “m and ms”) select their labeled bowl. Labels are
+can swap those assignments or mark a bowl empty. Requests such as “grab me some
+cereal,” “could you bring me some cereal, please?” and “I'd like some M&Ms”
+(also spoken “m and ms”) select their labeled bowl. Translation runs locally
+and accepts conversational greetings, polite wording and several request verbs.
+It requires one complete request; mixed foods, extra task clauses and unsupported
+quantities or qualifiers need clarification. Labels are
 local to the page and do not imply a physical position or saved calibration.
 Missing/duplicate food labels require clarification. Editing text, changing bowl
 labels or starting another recording clears the previous review.
