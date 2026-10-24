@@ -139,3 +139,30 @@ async def test_missing_intrinsics_is_an_error_not_a_guess(make_camera):
     assert "hfov_deg or fx/fy" in (cam._last_error or "")
     with pytest.raises(RuntimeError, match="no depth yet"):
         await cam.get_images()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_model_load_is_retried(make_camera, monkeypatch):
+    import da3_depth.camera as camera_mod
+
+    class FlakyEstimator(FakeEstimator):
+        loads = 0
+
+        def load(self):
+            FlakyEstimator.loads += 1
+            if FlakyEstimator.loads == 1:
+                raise RuntimeError("No CUDA GPUs are available")
+            super().load()
+
+    monkeypatch.setattr(camera_mod, "LOAD_RETRY_S", 0.05)
+    monkeypatch.setattr(DepthAnything3Camera, "estimator_factory", FlakyEstimator)
+    cam = DepthAnything3Camera.new(config("depth", DepthAnything3Camera.MODEL, source="src", hfov_deg=90.0, produce_hz=50.0),
+                                   {Camera.get_resource_name("src"): FakeSource()})
+    try:
+        for _ in range(200):
+            if cam._frame is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert FlakyEstimator.loads == 2 and cam._frame is not None and cam._status == "running on cpu"
+    finally:
+        cam._stop()

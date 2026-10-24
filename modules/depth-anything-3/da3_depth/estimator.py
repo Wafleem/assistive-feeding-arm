@@ -52,17 +52,24 @@ def _unavailable(module: str, attr: str):
 
 
 def pick_device(requested: str) -> str:
+    """``auto``: CUDA with a CUDA build of torch, else MPS, else CPU.
+
+    A CUDA build of torch is installed to use a GPU, so if that GPU is unusable ``auto``
+    raises instead of falling back: on the Orin the CPU takes ~8 minutes per frame and
+    starves teleop and viam-server (seen 2026-10-24 when the GPU failed to power on).
+    Set ``device: cpu`` to run on the CPU on purpose."""
     import torch
 
     if requested != "auto":
         return requested
-    if torch.cuda.is_available():
-        try:  # PyPI torch on a Jetson lists CUDA but has no kernels for the Orin's sm_87
+    if torch.version.cuda:
+        try:
             x = torch.randn(1, 3, 16, 16, device="cuda")
             torch.nn.functional.conv2d(x, torch.randn(4, 3, 3, 3, device="cuda")).sum().item()
             return "cuda"
         except Exception as e:  # noqa: BLE001
-            LOGGER.warning("CUDA is visible but unusable with this torch build (%s); falling back", e)
+            raise RuntimeError(f"this torch is a CUDA build but the GPU is unusable ({e}); "
+                               "set device: cpu to run on the CPU anyway") from e
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
