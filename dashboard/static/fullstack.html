@@ -38,8 +38,8 @@
 <main>
 <div class="stack top">
   <section class="cmd">
-    <button class="arm" id="arm" onclick="toggleHandsFree()" aria-pressed="false">🛡 Operator: area is safe — start hands-free voice</button>
-    <button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button>
+    <button class="arm" id="arm" onclick="toggleHandsFree()" aria-pressed="false">Operator: area is safe — start hands-free voice</button>
+    <button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">Tap and talk</button>
     <div class="say-input"><input type="text" id="text" aria-label="Command for the robot"
         onkeydown="if (event.key === 'Enter') go(this.value)"><button class="primary" onclick="go(document.getElementById('text').value)">Go</button></div>
     <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite"></div>
@@ -79,7 +79,7 @@
   <section class="wide" style="grid-column:1/-1">
     <details><summary>Debug</summary>
       <div class="row" style="margin-top:12px">
-        <button class="dbg" onclick="debug('sweep_bowls')">🔍 Sweep bowls</button>
+        <button class="dbg" onclick="debug('sweep_bowls')">Sweep bowls</button>
         <button class="dbg" onclick="debug('find_food',{food:'cereal'})">Find cereal</button>
         <button class="dbg" onclick="debug('find_food',{food:'mms'})">Find M&amp;Ms</button>
         <button class="dbg move" onclick="debug('scoop_food',{food:'cereal'})">Scoop cereal only</button>
@@ -215,8 +215,8 @@ const STOP_WORDS = /\b(stop|wait|no|halt|freeze|done|enough)\b/i;
 
 function micLabel() {
   const m = $('mic');
-  if (handsFree) { m.classList.add('on'); m.textContent = '🎙 Hands-free: listening'; m.setAttribute('aria-pressed', 'true'); }
-  else if (!rec) { m.classList.remove('on'); m.textContent = '🎤 Tap and talk'; m.setAttribute('aria-pressed', 'false'); }
+  if (handsFree) { m.classList.add('on'); m.textContent = 'Hands-free: listening'; m.setAttribute('aria-pressed', 'true'); }
+  else if (!rec) { m.classList.remove('on'); m.textContent = 'Tap and talk'; m.setAttribute('aria-pressed', 'false'); }
 }
 function toggleMic() {
   if (handsFree) return;  // already listening all the time
@@ -236,7 +236,7 @@ function toggleMic() {
     const pick = finals.find(f => understand(f)) || finals[0];
     if (pick) go(pick);
   };
-  $('mic').classList.add('on'); $('mic').textContent = '🎙 Listening… tap to finish'; $('mic').setAttribute('aria-pressed', 'true');
+  $('mic').classList.add('on'); $('mic').textContent = 'Listening… tap to finish'; $('mic').setAttribute('aria-pressed', 'true');
   show('result', 'listen', 'Listening…');
   try { session.start(); } catch (e) { rec = null; show('result', 'bad', 'Mic: ' + e.message); }
 }
@@ -251,7 +251,7 @@ function arm() {
   if (rec) { try { rec.abort(); } catch (e) {} rec = null; }
   handsFree = true;
   $('arm').classList.add('on'); $('arm').setAttribute('aria-pressed', 'true');
-  $('arm').textContent = '🛡 Hands-free ON · press to turn off';
+  $('arm').textContent = 'Hands-free ON · press to turn off';
   micLabel(); show('result', 'listen', 'Hands-free: say what you would like.');
   talk('Hands free voice is on. What would you like?');
   listen();
@@ -261,7 +261,7 @@ function disarm(why) {
   const r = hfRec; hfRec = null;
   if (r) { try { r.abort(); } catch (e) {} }
   $('arm').classList.remove('on'); $('arm').setAttribute('aria-pressed', 'false');
-  $('arm').textContent = '🛡 Operator: area is safe — start hands-free voice';
+  $('arm').textContent = 'Operator: area is safe — start hands-free voice';
   micLabel(); if (why) show('result', 'idle', why);
 }
 function listen() {
