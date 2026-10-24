@@ -105,7 +105,7 @@ class Stopped(Exception):
 
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
-               "scoop", "home_scoop", "identify_bowls", "scoop_food", "feed")
+               "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "scoop_food", "feed")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -1028,39 +1028,50 @@ class FaceServoSession:
             self.BOWL_LOOK.write_text(json.dumps(cache, indent=1))
         return np.asarray(cache[key]["joints"], float)
 
+    SWEEP_SETTLE_S = 0.6  # pause at each bowl for a sharp frame
+
     def _do_identify_bowls(self) -> None:
-        """Look into each fixed bowl, crop its opening, and ask CLIP on the Orin what is in it."""
-        from ..food_perception.bowl_id import BowlLabel, crop, jpeg_b64, opening_outline
+        self._do_sweep_bowls()
+
+    def _do_sweep_bowls(self) -> None:
+        """Sweeping mode: one look-down posture, the base turns from bowl to bowl (the spoon's tilt
+        can't change), a frame at each; several crops of each bowl's inside go to CLIP on the Orin
+        in one call and are averaged per bowl. Then home; labels saved and drawn on the feed."""
+        from ..food_perception.bowl_id import BowlLabel, combine, jpeg_b64, opening_outline, sweep_poses, vote_crops
 
         bowls = self.fixed_bowls()
         self.robot.stop_teleop()
-        crops, metas = [], []
-        for b in bowls:
-            q = self._look_pose(b)
-            self._event("bowls", f"looking into {b.name}")
-            self._glide(q, speed_degs=45.0, what=f"bowls: looking into {b.name}")
-            time.sleep(0.7)  # settle: a sharp frame
+        plan = sweep_poses(bowls, self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        crops, owner, boxes = [], [], {}
+        for i, (b, q) in enumerate(plan):
+            what = f"sweep: {b.name}"
+            self._event("bowls", f"sweeping to {b.name}")
+            self._glide(q, speed_degs=45.0 if i == 0 else 30.0, what=what)  # into the posture, then pan-only
+            time.sleep(self.SWEEP_SETTLE_S)
             frame = self.robot.get_frames([self.camera]).get(self.camera)
             if frame is None:
                 raise RuntimeError("no camera frame")
-            T = self.robot.camera_pose(self.camera).as_matrix()
-            _, box, frac = opening_outline(b, T)
-            img = None if box is None else crop(frame.rgb, box)
-            if img is None:
-                self._event("bowls", f"{b.name}: opening not in view")
-                continue
-            crops.append(jpeg_b64(img))
-            metas.append((b, box, frac))
-        self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+            try:
+                _, box, _ = opening_outline(b, self.robot.camera_pose(self.camera).as_matrix())
+                boxes[b.bowl_id] = None if box is None else tuple(round(v) for v in box)
+            except Exception:
+                boxes[b.bowl_id] = None
+            for c in vote_crops(frame.rgb):
+                crops.append(jpeg_b64(c))
+                owner.append(b)
+        self._glide(self.home_pose(), speed_degs=45.0, what="sweep: back home")
         if not crops:
-            raise RuntimeError("no bowl was in view")
+            raise RuntimeError("no bowl frames")
         res = self.robot.vision_command("bowl-contents", {"command": "classify", "images_b64": crops})
         labels = []
-        for (b, box, frac), r in zip(metas, res["results"]):
-            labels.append(BowlLabel(b.bowl_id, r["label"], r["scores"], r["margin"], tuple(round(v) for v in box)))
+        for b in bowls:
+            rs = [r for r, o in zip(res["results"], owner) if o.bowl_id == b.bowl_id]
+            if rs:
+                c = combine(rs)
+                labels.append(BowlLabel(b.bowl_id, c["label"], c["scores"], c["margin"], boxes.get(b.bowl_id)))
         self.BOWLS_SEEN.write_text(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "ms": res.get("ms"),
-                                               "device": res.get("device"),
-                                               "bowls": [vars(x) | {"box": x.box} for x in labels]}, indent=1))
+                                               "device": res.get("device"), "crops_per_bowl": len(crops) // max(1, len(plan)),
+                                               "bowls": [vars(x) for x in labels]}, indent=1))
         names = {b.bowl_id: b.name for b in bowls}
         self.reason = "bowls: " + ", ".join(f"{names[x.bowl_id]} = {x.label} ({max(x.scores.values()):.2f})"
                                             for x in labels) + f" [CLIP on the Orin {res.get('device')}, {res.get('ms')} ms]"
