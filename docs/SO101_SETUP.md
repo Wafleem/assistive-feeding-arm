@@ -298,3 +298,19 @@ Why not a 90° rotation: with the spoon tip 13.3 cm out of the gripper, the SO-1
 ~45-65° near the table while keeping its elbow bent one way. The planner tries 90° first and
 uses the deepest dip that fits. Details and checks: `src/assistive_arm/grasping/README.md`.
 
+## Smooth streamed motion (2026-10-24)
+Streamed setpoints (`stream_joints`, the teleop path) have no servo profile behind them: the
+servos do exactly what the stream does. The jerky moments came from the stream, not the servos:
+
+| Cause | What the arm felt | Fix |
+|---|---|---|
+| The recorded scoop was sent on its own timestamps, 5-48 ms apart | speed spikes to ~500 deg/s, 31,000 deg/s^2 (wrist roll) | resampled onto an even 30 Hz grid, then a light zero-phase Gaussian (0.05 s) |
+| The replay started at full speed (~86 deg/s) right after a glide that ended at rest | a kick at the start of every scoop | playback eases in and out (0.4 s minimum-jerk ramp of the playback rate) |
+| Its "is the arm following?" check read the joints over the cloud link mid-stream | a 300-600 ms stall twice a second on venue Wi-Fi, then a burst of late setpoints | the check runs on its own thread (`_LagWatch`); streams follow the wall clock, so a slow call skips ahead instead of bursting |
+| Glides started from the measured joints (which lag and sag) | a small backward step at the start of each glide | a glide starts from the last setpoint when it is fresh (< 1 s, within 8 deg) |
+| Cosine profiles (glides, planned scoop phases) | an acceleration jump at every start and stop | minimum-jerk profiles, same peak speeds |
+
+Offline, the recorded scoop now peaks at ~195 deg/s and ~1,240 deg/s^2 with no step at the
+start (`FaceServoSession._replay_path`), 0.4 s longer for the eases. Speed and acceleration are
+capped at 200 deg/s and 2000 deg/s^2 (`motion.smoothing.SmoothingConfig`): a recording that
+needs more is slowed down, never clipped. Glides keep their peak speed, so they take ~17% longer.
