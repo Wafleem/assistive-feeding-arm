@@ -41,7 +41,7 @@ camera's optical frame (+z out of the lens, +x right, +y down).
 |---|---|---|
 | `source` | required | the RGB camera |
 | `weights` | `depth-anything/DA3METRIC-LARGE` | HF repo id or local dir; metric models only (DA3METRIC, DA3NESTED) |
-| `device` | `auto` | `auto` / `cuda` / `mps` / `cpu`; `auto` checks that CUDA really runs |
+| `device` | `auto` | `auto` / `cuda` / `mps` / `cpu`. `auto` with a CUDA build of torch requires a working GPU: if it is down, the module reports an error and retries every 30 s instead of crawling on the CPU (on the Orin ~8 min per frame, starving teleop). Use `cpu` to force the CPU |
 | `process_res` | 504 | DA3 input size (longest side); lower = faster, coarser |
 | `produce_hz` | 2 | background inference rate (upper bound) |
 | `stale_after_s` | 5 | older depth is refused with an error, never served |

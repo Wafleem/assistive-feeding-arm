@@ -42,6 +42,7 @@ from .preview import DepthPreview
 LOGGER = logging.getLogger(__name__)
 FAMILY = ModelFamily("assistive-arm", "depth-anything-3")
 JPEG_QUALITY = 85
+LOAD_RETRY_S = 30.0  # a failed model load (GPU not up, download interrupted) is retried this often
 
 
 @dataclass(frozen=True)
@@ -140,15 +141,15 @@ class DepthAnything3Camera(Camera, EasyResource):
     async def _run(self) -> None:
         cfg = self._cfg
         assert cfg is not None and self._estimator is not None
-        if not self._loaded:
+        while not self._loaded:
             self._status = f"loading {cfg.weights} (the first run downloads ~1.3 GB)"
             try:
                 await asyncio.to_thread(self._estimator.load)
-            except Exception as e:  # noqa: BLE001
-                self._status = f"model failed to load: {e!r}"
+                self._loaded = True
+            except Exception as e:  # noqa: BLE001 - e.g. the GPU isn't up yet; downloads resume
+                self._status = f"model failed to load, retrying in {LOAD_RETRY_S:.0f} s: {e!r}"
                 LOGGER.error("%s: %s", self.name, self._status)
-                return  # no retry loop around a multi-GB download; reconfigure to try again
-            self._loaded = True
+                await asyncio.sleep(LOAD_RETRY_S)
         self._status = f"running on {self._estimator.device}"
         period = 1.0 / cfg.produce_hz
         while True:
