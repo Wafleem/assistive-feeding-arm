@@ -1043,7 +1043,7 @@ class FaceServoSession:
         tips = np.array([self._tip(qi) for qi in out])
         deep = tips[tips[:, 2] < tips[:, 2].min() + 0.02]
         off = float(np.linalg.norm(deep[:, :2].mean(axis=0) - c_new))
-        self._event("scoop", f"fitted to the bowl: turned {np.degrees(alpha):+.1f} deg, reach {dr * 1000:+.0f} mm; "
+        self._event("scoop", f"fitted to {bowl.get('name', 'the bowl')}: turned {np.degrees(alpha):+.1f} deg, reach {dr * 1000:+.0f} mm; "
                              f"lowest tip {tips[:, 2].min() * 1000:.0f} mm (floor {floor_z * 1000:.0f}), "
                              f"scoop {off * 1000:.0f} mm from the bowl centre, {raised} setpoints raised")
         return out
