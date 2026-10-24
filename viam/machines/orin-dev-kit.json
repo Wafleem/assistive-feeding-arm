@@ -249,7 +249,7 @@
             "y": 45,
             "label": "spoon",
             "x": 50,
-            "z": 143,
+            "z": 146,
             "type": "box"
           }
         ]
@@ -259,7 +259,7 @@
         "translation": {
           "x": 0,
           "y": 0,
-          "z": 61.5
+          "z": 63
         },
         "orientation": {
           "type": "ov_degrees",
