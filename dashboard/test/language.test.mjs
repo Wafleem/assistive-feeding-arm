@@ -90,3 +90,9 @@ test('bowl sweep phrases map to the sweep_bowls action', () => {
   for (const s of ['check the bowls', "what's in the bowls", 'sweep bowls', 'look into the bowls', 'scan both bowls'])
     assert.equal(parse(s).command && parse(s).command.action, 'sweep_bowls', s);
 });
+
+test('find phrases sweep for one food', () => {
+  assert.deepEqual(parse('find cereal').command, { action: 'find_food', food: 'cereal' });
+  assert.deepEqual(parse('look for m and ms').command, { action: 'find_food', food: 'mms' });
+  assert.deepEqual(parse('where are the m&ms').command, { action: 'find_food', food: 'mms' });
+});

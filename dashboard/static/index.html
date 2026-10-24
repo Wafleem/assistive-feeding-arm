@@ -62,7 +62,8 @@
   <section>
     <div class="card">
       <button id="stop">STOP</button>
-      <a id="langlink" style="display:block;margin:6px 0 10px;color:var(--accent)" href="#">🗣 Natural-language feeding (say "I want some cereal")</a>
+      <a id="langlink" style="display:block;margin:6px 0 4px;color:var(--accent)" href="#">🗣 Natural-language feeding (say "I want some cereal")</a>
+      <label style="display:block;margin:0 0 10px"><input type="checkbox" id="speak" checked> 🔊 Speak what the robot is doing</label>
       <div class="row" style="margin-bottom:8px">
         <button class="step" data-a="teleop_start">Teleop on</button>
         <button class="step" data-a="teleop_stop">Teleop off</button>
@@ -130,8 +131,10 @@
         <button class="step" data-a="scoop" style="border-color: var(--accent)"><b>S</b>Scoop and come back</button>
         <button class="step" data-a="home_scoop" style="grid-column: span 2; border-color: var(--accent)"><b>1</b>Home → Scoop from Bowl 1 (cereal) → back home (then press Feed)</button>
         <button class="step" data-a="sweep_bowls" style="grid-column: span 2"><b>🔍</b>Sweep bowls: look down, turn across both bowls, CLIP on the Orin says what's in each</button>
-        <button class="step" id="scoop_cereal" style="border-color: var(--accent)">Scoop <b>cereal</b> (from whichever bowl has it)</button>
-        <button class="step" id="scoop_mms" style="border-color: var(--accent)">Scoop <b>M&amp;Ms</b> (from whichever bowl has it)</button>
+        <button class="step" id="find_cereal">Debug: find <b>cereal</b> (sweep only)</button>
+        <button class="step" id="find_mms">Debug: find <b>M&amp;Ms</b> (sweep only)</button>
+        <button class="step" id="scoop_cereal" style="border-color: var(--accent)">Scoop <b>cereal</b> (looks first, then scoops)</button>
+        <button class="step" id="scoop_mms" style="border-color: var(--accent)">Scoop <b>M&amp;Ms</b> (looks first, then scoops)</button>
         <div id="bowlsinfo" style="grid-column: span 2; color:var(--dim); font-size:12px"></div>
       </div>
       <div id="scoopinfo" style="color:var(--dim);font-size:12px;margin-bottom:6px"></div>
@@ -206,7 +209,20 @@ document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nu
 document.querySelectorAll("button.jog").forEach(b => b.onclick = () => cmd("jog", {
   yaw_deg: parseFloat(b.dataset.yaw || 0), dz_cm: parseFloat(b.dataset.dz || 0) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
+$("find_cereal").onclick = () => cmd("find_food", { food: "cereal" });
+$("find_mms").onclick = () => cmd("find_food", { food: "mms" });
 $("scoop_cereal").onclick = () => cmd("scoop_food", { food: "cereal" });
+// Narration: speak the session's new sentences (only ones newer than when the page opened)
+let lastSpoken = null;
+function speakNew(list) {
+  if (!list || !list.length) return;
+  const newest = list[list.length - 1].id;
+  if (lastSpoken === null) { lastSpoken = newest; return; }
+  for (const m of list) if (m.id > lastSpoken && $("speak").checked && window.speechSynthesis) {
+    const u = new SpeechSynthesisUtterance(m.text); u.rate = 1.0; speechSynthesis.speak(u);
+  }
+  lastSpoken = Math.max(lastSpoken, newest);
+}
 $("scoop_mms").onclick = () => cmd("scoop_food", { food: "mms" });
 $("teach_bowl").onclick = () => cmd("teach_bowl", { rim_radius_cm: $("b_rim").value, depth_cm: $("b_depth").value });
 $("applyraise").onclick = () => cmd("set_params", { aim_raise_cm: $("aimraise").value });
@@ -263,6 +279,7 @@ async function poll() {
     $("lvl").textContent = (L.hand_guide ? "HAND-GUIDE ON · " : "") + "spoon tilt now " +
       (L.spoon_tilt_now_deg == null ? "?" : L.spoon_tilt_now_deg + "°") +
       (L.saved_tool_pitch_deg == null ? " (not calibrated: tool level = 0°)" : " (calibrated: level at tool pitch " + L.saved_tool_pitch_deg + "°)");
+    speakNew(s.speech);
     const BS = s.bowls_seen;
     $("bowlsinfo").textContent = BS ? "seen " + BS.t.slice(11, 16) + ": " + BS.bowls.map(x => x.bowl_id + " = " +
       (x.label || "?") + " (" + Math.max(...Object.values(x.scores)).toFixed(2) + ")").join(", ") +

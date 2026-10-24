@@ -257,6 +257,11 @@ async function sendReviewed() {
       return;
     }
     if (cmd.action === 'sweep_bowls') { await sweepBowls(); return; }
+    if (cmd.action === 'find_food') {
+      await api('/api/cmd', { action: 'find_food', food: cmd.food });
+      const s = await waitIdle(`Looking for ${cmd.food === 'mms' ? 'M&Ms' : 'cereal'}`);
+      applySeen(s.bowls_seen); say(/failed/.test(s.reason) ? 'bad' : 'ok', s.reason); return;
+    }
     if (cmd.action) { await api('/api/cmd', { action: cmd.action }); say('ok', `Sent ${cmd.action}.`); }
   } catch (e) { say('bad', `Robot: ${e.message}`); $('send').disabled = false; }
 }
@@ -296,6 +301,19 @@ async function goLive() {
   $('manual-dashboard').src = '/?token=' + encodeURIComponent(liveToken);
   const enable = () => { $('send').disabled = !(reviewedCommand || pendingFeed); };
   setInterval(enable, 300);
+  // Robot narration ("Looking for cereal", "Take a bite", ...) spoken with the reply voice when
+  // "Spoken replies" is on (turn off the main dashboard's speaker to avoid hearing it twice).
+  let lastSpoken = null;
+  setInterval(async () => {
+    try {
+      const st = await api('/api/state'); const list = st.speech || [];
+      if (!list.length) return;
+      const newest = list[list.length - 1].id;
+      if (lastSpoken === null) { lastSpoken = newest; return; }
+      for (const m of list) if (m.id > lastSpoken && $('spoken-replies').checked) speakReply(m.text, voiceGeneration, replyGeneration);
+      lastSpoken = Math.max(lastSpoken, newest);
+    } catch (e) { /* the next poll retries */ }
+  }, 1000);
 }
 // "ready"/"yes" while a loaded spoon waits = feed; stop words go out immediately
 const parseLive = nlParse;
