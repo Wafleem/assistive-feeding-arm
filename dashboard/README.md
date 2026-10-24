@@ -1,5 +1,44 @@
 # Dashboard: face-servo debugging (SO-101 rig)
 
+## Human-interface preview
+
+The separate `static/language.html` page reuses the Viam hackathon's Ultraviolet
+styling, text/voice command card, hold-to-talk and keyboard microphone controls,
+voice selection and spoken acknowledgments. It does not change `server.py`, the
+original `static/index.html`, controller code, robot configuration or calibration.
+
+```bash
+python3 dashboard/preview.py
+```
+
+Open `http://127.0.0.1:8091/`. The preview server serves only an explicit list of
+UI assets. It rejects POST requests and exposes no robot API, camera stream,
+credentials or proxy. **Send is disabled**, and typing/checking makes no robot
+requests. Browser speech services may use the internet after microphone/voice
+activation; typing and translation work locally. No real microphone or hardware
+was used in UI checks.
+
+The **Language** view defaults to Bowl 1: cereal and Bowl 2: M&Ms. The selectors
+can swap those assignments or mark a bowl empty. “I want some cereal” and
+“give me M&Ms” (also spoken “m and ms”) select their labeled bowl. Labels are
+local to the page and do not imply a physical position or saved calibration.
+Missing/duplicate food labels require clarification. Editing text, changing bowl
+labels or starting another recording clears the previous review.
+
+Two-bowl requests produce `kind: feeding_request_preview` JSON with food, logical
+source bowl, one bite and scoop → confirm readiness → mouth approach → return home.
+This is a human-interface specification, **not an executable command supported by
+main's controller**. No generic scoop/feed action is substituted for a named bowl.
+Existing individual dashboard commands (home, scoop, stop, etc.) can be previewed
+as their current JSON. Stop/wait in this page cannot halt the physical robot.
+
+The **Cameras & controls** view shows `static/face-servo.html`, a separate offline
+copy of main's dashboard with both video panels and all original manual controls.
+It uses video placeholders, disables commands and makes no API/video requests.
+The real dashboard and its live startup script remain exactly as on main.
+
+Offline UI checks: `node --test dashboard/test/*.test.mjs`.
+
 A browser page for stepping through "sweep to the person, find the face, centre on it,
 extend toward it" one command at a time, with the gripper camera overlay and every number
 the controller uses.
