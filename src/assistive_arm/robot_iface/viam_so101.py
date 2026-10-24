@@ -50,6 +50,13 @@ class SO101ViamRobot:
     def camera_pose(self, name: str):
         return self.rig.camera_pose(name)
 
+    def vision_command(self, service: str, command: dict, timeout: float = 20.0) -> dict:
+        """do_command on a Viam vision service (e.g. bowl-contents: CLIP on the Orin GPU)."""
+        from viam.services.vision import VisionClient
+
+        client = self.rig.client
+        return self._io.run(VisionClient(service, client._channel).do_command(command), timeout=timeout)
+
     # arm
     def joints(self, timeout: float = 10.0) -> np.ndarray:
         jp = self._io.run(self.arm.get_joint_positions(), timeout=timeout)

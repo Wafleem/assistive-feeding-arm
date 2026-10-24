@@ -77,6 +77,21 @@ def make_render():
         else:  # still show where the spoon points at a nominal 50 cm
             cx, cy = w // 2, h // 2
             cv2.drawMarker(bgr, (cx, cy), (160, 160, 160), cv2.MARKER_CROSS, 20, 1)
+        # Bowl openings (fixed bowls from the Viam scene, projected through the camera pose) + CLIP labels
+        try:
+            overlays = session.bowl_overlays()
+        except Exception:
+            overlays = []
+        for o in overlays:
+            col = {"cereal": (0, 200, 255), "mms": (255, 0, 200), "empty": (160, 160, 160)}.get(o["food"], (0, 255, 255))
+            pts = o["outline"][np.all(np.isfinite(o["outline"]), axis=1)].astype(np.int32)
+            if len(pts) > 2:
+                cv2.polylines(bgr, [pts], True, col, 2, cv2.LINE_AA)
+            x0, y0, x1, y1 = (int(round(v)) for v in o["box"])
+            cv2.rectangle(bgr, (max(0, x0), max(0, y0)), (min(w - 1, x1), min(h - 1, y1)), col, 1)
+            ty = max(16, min(h - 32, y0 + 18))
+            cv2.putText(bgr, o["text"], (max(4, x0 + 4), ty), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(bgr, o["text"], (max(4, x0 + 4), ty), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
         label = f"{session.mode.upper()}  {session.reason}"[:90]
         cv2.rectangle(bgr, (0, h - 24), (w, h), (0, 0, 0), -1)
         cv2.putText(bgr, label, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)

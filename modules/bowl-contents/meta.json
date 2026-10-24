@@ -1,0 +1,13 @@
+{
+  "module_id": "assistive-arm:bowl-contents",
+  "visibility": "private",
+  "description": "CLIP on the Orin GPU: which food is in each bowl crop (cereal, M&Ms, empty, ...).",
+  "models": [
+    {
+      "api": "rdk:service:vision",
+      "model": "assistive-arm:bowl-contents:clip",
+      "short_description": "Zero-shot CLIP classification of bowl crops (do_command classify, or GetClassifications)"
+    }
+  ],
+  "entrypoint": "run.sh"
+}
