@@ -213,7 +213,7 @@ def sweep_poses(bowls: list[FixedBowl], q_from, look=look_pose) -> list[tuple[Fi
     first = min(bowls, key=lambda b: abs(-np.degrees(np.arctan2(b.centre[1], b.centre[0] - 0.0388)) - q0[0]))
     posture, _ = look(first, q0)
     out = [(b, pan_to_centre(b, posture)[0]) for b in bowls]
-    return sorted(out, key=lambda bq: abs(bq[1][0] - q0[0]))
+    return sorted(out, key=lambda bq: bq[0].bowl_id)  # always Bowl 1, then Bowl 2 (predictable order)
 
 
 def vote_crops(rgb: np.ndarray, bottom_skip: int = 70) -> list[np.ndarray]:
@@ -232,11 +232,36 @@ def vote_crops(rgb: np.ndarray, bottom_skip: int = 70) -> list[np.ndarray]:
     return out
 
 
+NON_FOOD = ("other",)  # CLIP classes for table / bowl-rim crops: never a bowl's contents
+
+
 def combine(results: list[dict]) -> dict:
-    """Average CLIP's per-crop scores into one label for the bowl."""
+    """Average CLIP's per-crop scores into one label for the bowl. Non-food classes ("other": the
+    table or the bowl's rim in the crop) are dropped and the rest renormalised, so a crop that is
+    half rim still votes by the food it shows."""
     names = sorted({k for r in results for k in r["scores"]})
-    mean = {n: float(np.mean([r["scores"].get(n, 0.0) for r in results])) for n in names}
+    foods = [n for n in names if n not in NON_FOOD] or names
+    per = []
+    for r in results:
+        tot = sum(r["scores"].get(n, 0.0) for n in foods) or 1.0
+        per.append({n: r["scores"].get(n, 0.0) / tot for n in foods})
+    mean = {n: float(np.mean([p[n] for p in per])) for n in foods}
     order = sorted(mean, key=lambda n: -mean[n])
     margin = mean[order[0]] - (mean[order[1]] if len(order) > 1 else 0.0)
+    other = float(np.mean([sum(r["scores"].get(n, 0.0) for n in NON_FOOD) for r in results])) if foods != names else 0.0
     return {"label": order[0], "scores": {n: round(v, 4) for n, v in mean.items()}, "margin": round(margin, 4),
-            "votes": [r["label"] for r in results]}
+            "votes": [max(p, key=p.get) for p in per], "non_food": round(other, 3)}
+
+
+def pick_bowl(food: str, labels: list[BowlLabel], min_score: float = 0.3, min_lead: float = 0.1):
+    """After looking into EVERY bowl: the one whose score for ``food`` is highest, if it is high
+    enough and clearly ahead of the others (relative, so a bowl that merely 'looks a bit like
+    cereal' loses to the bowl that looks much more like it). None if no bowl qualifies."""
+    ranked = sorted(labels, key=lambda x: -x.scores.get(food, 0.0))
+    if not ranked:
+        return None
+    best = ranked[0].scores.get(food, 0.0)
+    second = ranked[1].scores.get(food, 0.0) if len(ranked) > 1 else 0.0
+    if best < min_score or best - second < min_lead:
+        return None
+    return ranked[0].bowl_id

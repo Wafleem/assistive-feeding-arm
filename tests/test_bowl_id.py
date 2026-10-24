@@ -50,7 +50,7 @@ def test_food_goes_to_the_bowl_clip_named_and_falls_back_to_the_fixed_one():
 def test_sweep_uses_one_posture_and_turns_only_the_base():
     from assistive_arm.food_perception.bowl_id import combine, sweep_poses, vote_crops
     plan = sweep_poses([B1, B2], HOME)
-    assert [b.bowl_id for b, _ in plan] == ["bowl2", "bowl1"]  # nearest heading first from home
+    assert [b.bowl_id for b, _ in plan] == ["bowl1", "bowl2"]  # always Bowl 1, then Bowl 2
     (_, qa), (_, qb) = plan
     assert np.allclose(qa[1:], qb[1:])  # same posture: only the pan differs
     for b, q in plan:
@@ -76,7 +76,7 @@ def test_sweep_mode_labels_each_bowl_from_crops_sent_to_the_orin(tmp_path):
         seen = {b["bowl_id"]: b["label"] for b in json.loads((tmp_path / "seen.json").read_text())["bowls"]}
         assert seen == {"bowl2": "empty", "bowl1": "cereal"}, s.reason
         assert np.max(np.abs(arm.q - HOME)) < 3  # back home
-        assert [m["text"] for m in s.speech][-2:] == ["Bowl 2 has nothing.", "Bowl 1 has cereal."]
+        assert [m["text"] for m in s.speech][-2:] == ["Bowl 1 has cereal.", "Bowl 2 has nothing."]
     finally:
         s.close()
 
@@ -121,7 +121,7 @@ def test_find_food_stops_at_the_bowl_that_holds_it_even_when_the_bowls_are_swapp
                 assert reason.startswith(f"{food} is in") and ("Bowl 1" in reason) == (bowl == "bowl1"), reason
                 assert np.max(np.abs(arm.q - HOME)) < 3  # back home
             spoken = [m["text"] for m in s.speech]
-            assert any(t.startswith("Looking for M and Ms") for t in spoken) and any("Found cereal" in t for t in spoken)
+            assert any(t.startswith("Looking for M and Ms") for t in spoken) and any(t.startswith("Cereal is in") for t in spoken)
         finally:
             s.close()
 
@@ -131,7 +131,16 @@ def test_find_food_says_so_when_no_bowl_has_it(tmp_path):
     s.start()
     try:
         reason = _run(s, "find_food", food="mms")
-        assert "failed" in reason and "no bowl with mms" in reason
-        assert any("couldn't find any M and Ms" in m["text"] for m in s.speech)
+        assert "failed" in reason and "no bowl clearly holds mms" in reason
+        assert any("couldn't tell which bowl has M and Ms" in m["text"] for m in s.speech)
     finally:
         s.close()
+
+
+def test_pick_bowl_is_relative_and_refuses_unclear_answers():
+    from assistive_arm.food_perception.bowl_id import pick_bowl
+    looks_like_cereal_too = [BowlLabel("bowl1", "cereal", {"cereal": 0.9, "mms": 0.05}),
+                             BowlLabel("bowl2", "cereal", {"cereal": 0.62, "mms": 0.35})]  # M&Ms bowl, mislabelled
+    assert pick_bowl("cereal", looks_like_cereal_too) == "bowl1"
+    assert pick_bowl("mms", looks_like_cereal_too) == "bowl2"  # relatively the most M&M-like
+    assert pick_bowl("mms", [BowlLabel("bowl1", "x", {"mms": 0.31}), BowlLabel("bowl2", "x", {"mms": 0.3})]) is None

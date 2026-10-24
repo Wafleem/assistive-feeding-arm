@@ -131,6 +131,7 @@
         <button class="step" data-a="scoop" style="border-color: var(--accent)"><b>S</b>Scoop and come back</button>
         <button class="step" data-a="home_scoop" style="grid-column: span 2; border-color: var(--accent)"><b>1</b>Home → Scoop from Bowl 1 (cereal) → back home (then press Feed)</button>
         <button class="step" data-a="sweep_bowls" style="grid-column: span 2"><b>🔍</b>Sweep bowls: look down, turn across both bowls, CLIP on the Orin says what's in each</button>
+        <button class="step" id="teach_bowls" style="grid-column: span 2">Debug: <b>teach</b> the real foods (Bowl 1 = cereal, Bowl 2 = M&amp;Ms as set up now)</button>
         <button class="step" id="find_cereal">Debug: find <b>cereal</b> (sweep only)</button>
         <button class="step" id="find_mms">Debug: find <b>M&amp;Ms</b> (sweep only)</button>
         <button class="step" id="scoop_cereal" style="border-color: var(--accent)">Scoop <b>cereal</b> (looks first, then scoops)</button>
@@ -209,6 +210,7 @@ document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nu
 document.querySelectorAll("button.jog").forEach(b => b.onclick = () => cmd("jog", {
   yaw_deg: parseFloat(b.dataset.yaw || 0), dz_cm: parseFloat(b.dataset.dz || 0) }));
 document.addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); cmd("stop"); } });
+$("teach_bowls").onclick = () => cmd("teach_bowls", { bowl1: "cereal", bowl2: "mms" });
 $("find_cereal").onclick = () => cmd("find_food", { food: "cereal" });
 $("find_mms").onclick = () => cmd("find_food", { food: "mms" });
 $("scoop_cereal").onclick = () => cmd("scoop_food", { food: "cereal" });
