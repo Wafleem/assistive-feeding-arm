@@ -171,15 +171,28 @@ class FaceServoSession:
         if self.depth_camera and self.depth_det is not None:
             threading.Thread(target=self._depth_loop, daemon=True).start()
 
-    def _depth_loop(self, period: float = 0.25) -> None:
-        """Metric depth (a few Hz) teaches the fast face pipeline this person's eye span."""
+    def _depth_loop(self, period: float = 0.5) -> None:
+        """Metric depth (about 1 Hz) teaches the fast face pipeline this person's eye span.
+        Depth is optional: its failures never reconnect the shared connection (which carries the
+        gripper camera and the arm's streamed moves), it backs off while failing, and an unchanged
+        depth frame is not processed again."""
+        last_sig, fails = None, 0
         while self._running:
             t0 = time.monotonic()
             try:
-                frame = self.robot.get_frames([self.depth_camera]).get(self.depth_camera)
+                try:
+                    frames = self.robot.get_frames([self.depth_camera], may_reconnect=False)
+                except TypeError:  # robots without the option (tests, sim)
+                    frames = self.robot.get_frames([self.depth_camera])
+                frame = frames.get(self.depth_camera)
+                fails = 0
+                sig = None if frame is None or frame.depth is None else hash(frame.depth[::16, ::16].tobytes())
                 if frame is None or frame.depth is None or not np.any(frame.depth > 0):
                     self.depth_status = "no depth frame"
+                elif sig == last_sig:
+                    pass  # same depth frame as last time: nothing new
                 else:
+                    last_sig = sig
                     found = self.depth_det.landmarks(frame.rgb, self.robot.now())
                     if self.depth_render is not None:
                         jpg = self.depth_render(frame, None if found is None else found[0], self)
@@ -195,8 +208,10 @@ class FaceServoSession:
                                 params.eye_span_m = self.depth.eye_span_m  # the 20 Hz pipeline now ranges metrically
                         self.depth_status = "ok" if self.depth.ready else f"learning ({len(self.depth.samples)} samples)"
             except Exception as e:
+                fails += 1
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
-            time.sleep(max(0.0, period - (time.monotonic() - t0)))
+            wait = period if fails == 0 else min(10.0, period * 2 ** fails)  # back off while depth is down
+            time.sleep(max(0.0, wait - (time.monotonic() - t0)))
 
     DEPTH_FRESH_S = 2.5  # Extend uses the depth-measured lips while they are at most this old (local Depth Pro at 0.8 Hz)
 

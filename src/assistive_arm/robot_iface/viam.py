@@ -312,7 +312,9 @@ class ViamCameraRig:
         self._cams = {c: self._find(Camera, c) for c in self._names}
         self._failures = 0
 
-    def get_frames(self, names=None, timeout: float = 5.0) -> dict[str, RGBDFrame]:
+    def get_frames(self, names=None, timeout: float = 5.0, may_reconnect: bool = True) -> dict[str, RGBDFrame]:
+        """``may_reconnect=False`` for optional cameras (depth): their failures must never tear down
+        the shared connection, which also carries the gripper camera and the arm's streamed moves."""
         out = {}
         try:
             for name in names or list(self._cams):
@@ -321,11 +323,13 @@ class ViamCameraRig:
                 rgb, depth = _rgb_and_depth(images)
                 out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
         except Exception:
-            self._failures += 1
-            if self._failures >= 2 and self._own_client:
-                self.reconnect()
+            if may_reconnect:
+                self._failures += 1
+                if self._failures >= 2 and self._own_client:
+                    self.reconnect()
             raise
-        self._failures = 0
+        if may_reconnect:
+            self._failures = 0
         return out
 
     def camera_pose(self, name: str) -> Pose:
