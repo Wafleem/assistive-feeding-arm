@@ -1,0 +1,11 @@
+{
+ "id": "bowl2",
+ "name": "Bowl 2 (M&M bowl)",
+ "viam_obstacle": "bowl-right",
+ "scene_centre_mm": [
+  309.2,
+  94.5
+ ],
+ "calibrated": false,
+ "note": "position from the Viam scene (bowl-right), not yet touched with the spoon tip; calibrate like Bowl 1"
+}
