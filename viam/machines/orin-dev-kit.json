@@ -59,9 +59,9 @@
       "attributes": {
         "geometries": [
           {
-            "y": 685.8,
+            "y": 565,
             "label": "table",
-            "x": 1447.8,
+            "x": 726,
             "z": 30,
             "type": "box"
           }
@@ -70,8 +70,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 698.1,
-          "y": 266.7,
+          "x": 287.2,
+          "y": 227,
           "z": -15
         },
         "orientation": {
@@ -282,8 +282,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 316.2,
-          "y": 173.8,
+          "x": 309.2,
+          "y": 94.5,
           "z": 0
         },
         "orientation": {
@@ -307,8 +307,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 316.2,
-          "y": 323.8,
+          "x": 234.2,
+          "y": 259.5,
           "z": 0
         },
         "orientation": {

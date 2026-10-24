@@ -14,7 +14,7 @@ run on a Raspberry Pi Viam machine, `pi-arm2`.
 | Leader | `leader-arm` + `leader-gripper`, port `/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C124416-if00`, `calibration_file: so101_leader_calibration.json`, frame at y = −600 mm |
 | Calibration sensors | `follower-calibration`, `leader-calibration` (same ports and files as their arms) |
 | Teleop | `teleop` (`devrel:so101:teleop`): leader → follower, grippers mirrored, 100 Hz, `auto_start: false` |
-| Other | `arm-camera` (USB webcam, 640×480), `table` obstacle (the real 27 in × 4 ft 9 in table, 30 mm thick, top at z = 0), `spoon` collision box on the gripper (see below), discovery services |
+| Other | `arm-camera` (USB webcam, 640×480), `table` obstacle (the 72.6 × 56.5 cm marble table, 30 mm thick, top at z = 0), `spoon` collision box on the gripper (see below), discovery services |
 
 Calibration files live in the module's data directory on the Pi
 (`/root/.viam/module-data/<part-id>/devrel_so101-arm/`), not in this repo.
@@ -132,10 +132,10 @@ Viewing detections:
 
 | Component | Parent | Geometry | Why |
 |---|---|---|---|
-| `table` | `world`, (x 698.1, y 266.7, z −15) | box x 1447.8 × y 685.8 × z 30 mm | the real table, 4 ft 9 in × 27 in (measured 2026-10-23): its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base sits on the short edge behind it (x −25.8, the back of the module's base box), and the long edge on the arm's right is 3 in (76.2 mm) from the base centre (y −76.2; the left edge is at y +609.6). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
+| `table` | `world`, (x 287.2, y 227, z −15) | box x 726 × y 565 × z 30 mm | the marble table (measured 2026-10-24), 72.6 × 56.5 cm: its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base is 5 cm from the near edge (x −75.8; the back of the module's base box is x −25.8), and the base's right side is flush with the right edge (y −55.5, half the base box's 111 mm width; the left edge is at y +509.5). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
 | `spoon` | `follower-gripper`, z +61.5 | box x 50 × y 45 × z 143 mm | the spoon sticks out **123 mm** past the jaw tips (measured 2026-10-23); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
-| `bowl-right` | `world`, (x 316.2, y 173.8, z 0) | mesh `bowl-150x60.ply` | paper bowl, 150 mm across the rim, modelled 60 mm tall (measured ~70 mm, lowered 15% on 2026-10-23; the 100 mm bottom is a guess). Its rim is 175 mm from the table's right edge and 267 mm from the back edge |
-| `bowl-left` | `world`, (x 316.2, y 323.8, z 0) | mesh `bowl-150x60.ply` | the same bowl, touching `bowl-right` on its left (centres 150 mm apart) |
+| `bowl-right` | `world`, (x 309.2, y 94.5, z 0) | mesh `bowl-150x60.ply` | paper bowl, 150 mm across the rim, modelled 60 mm tall (measured ~70 mm, lowered 15%; the 100 mm bottom is a guess). The empty bowl nearest the arm: its rim is 75 mm from the right edge and 310 mm from the near edge (2026-10-24) |
+| `bowl-left` | `world`, (x 234.2, y 259.5, z 0) | mesh `bowl-150x60.ply` | the same bowl (the cereal bowl): its rim is 240 mm from the right edge and 235 mm from the near edge (2026-10-24). A third bowl, farther back, isn't modelled yet |
 
 - `follower-gripper`'s frame is the module's TCP, the point between the jaw tips, with the arm
   tool's axes (+Z along the spoon). So the spoon box starts at the tips, and it moves with the
@@ -144,7 +144,9 @@ Viewing detections:
   weren't measured). Check it against the real spoon in the 3D SCENE tab and shrink it if
   close approaches get refused.
 - If the follower sits on a riser, lower `table` by the riser height. If the arm or table moves,
-  re-measure: centre `x` = −25.8 + length / 2, centre `y` = −(base centre to the right edge) + width / 2.
+  re-measure: with the near edge at `x_near` (= −25.8 − gap behind the base) and the right edge at
+  `y_right` (= −55.5 when the base's side is flush), the centre is `x_near + length / 2`,
+  `y_right + width / 2`.
 - Past the table's edges the planner lets the arm reach below z = 0, as the real arm can.
 - The bowl mesh is only the sloped wall: no top (so planned moves can put the spoon inside)
   and no bottom (the table is the bottom). Viam treats meshes as surfaces, not solids, so the
@@ -156,8 +158,8 @@ Viewing detections:
   `viam machines part cp --part af8aae81-2f68-46bb-a2a0-fdc12ed08ad0 viam/meshes/bowl-150x60.ply machine:/home/ultraviolet/bowl-150x60.ply`,
   then restart both bowl components (the mesh is read once, at construction).
 - Moving a bowl: change its frame `translation` (bowl centre, on the table top). A frame at
-  `x = −25.8 + d_back + 75`, `y = −76.2 + d_right + 75` puts the rim `d_back` from the back
-  edge and `d_right` from the right edge.
+  `x = x_near + d_near + 75`, `y = y_right + d_right + 75` puts the rim `d_near` from the near
+  edge and `d_right` from the right edge (now `x_near` = −75.8, `y_right` = −55.5).
 - **Only motion-service moves are checked.** Teleop and direct `MoveToJointPositions` ignore
   these boxes.
 - The planner ignores any contact that already exists when a move starts. That's why the base's
