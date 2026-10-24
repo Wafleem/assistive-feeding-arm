@@ -1,0 +1,41 @@
+{
+ "centre_mm": [
+  222.0,
+  229.0
+ ],
+ "radius_mm": 47.0,
+ "rim_z_mm": 94.0,
+ "floor_z_mm": 62.0,
+ "note": "spoon-tip calibration (hand-guided, 2026-10-24): centre in the cereal + near/far/left rim; radius = how far the spoon tip got from the centre inside the rim; floor = 4 mm above the lowest in-bowl tip of the hand-guided scoop (58 mm)",
+ "points_joints": {
+  "centre": [
+   -49.0,
+   -13.3,
+   20.8,
+   40.6,
+   26.5
+  ],
+  "rim1": [
+   -42.9,
+   -34.7,
+   38.1,
+   37.3,
+   74.5
+  ],
+  "rim_far": [
+   -48.6,
+   1.8,
+   4.4,
+   37.1,
+   74.7
+  ],
+  "rim_left": [
+   -60.7,
+   -21.9,
+   26.1,
+   37.0,
+   74.7
+  ]
+ },
+ "t": "2026-10-24T13:10:06"
+}

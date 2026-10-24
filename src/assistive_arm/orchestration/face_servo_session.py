@@ -944,6 +944,7 @@ class FaceServoSession:
         self._event("scoop", self.reason)
 
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
+    BOWL_CAL = Path("poses/so101_bowl.json")  # spoon-tip bowl calibration (centre, radius, rim and floor heights)
     # Adjustments on top of the recording (all off: the hand-guided demo already has the pre-roll,
     # depth and sweep the team wanted). Kept for quick tuning.
     SCOOP_ROLL_GAIN = 1.0  # x the recorded wrist roll (measured from where the dip starts)
@@ -996,6 +997,55 @@ class FaceServoSession:
                              f"+{self.SCOOP_EXTRA_SWEEP:g} deg sweep along it")
         return out
 
+    def _tip(self, q) -> np.ndarray:
+        T = so101_fk(q)
+        return T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2]
+
+    def _fit_scoop_to_bowl(self, q: np.ndarray, bowl: dict) -> np.ndarray:
+        """Move the recorded scoop onto the calibrated bowl (turn about the pan axis + reach, same
+        heights and spoon angles), then make sure the spoon tip never goes below the bowl floor, or
+        below the rim outside the bowl (raising the tool where it would). Raises if it can't."""
+        from ..feeding.face_track import solve_level_pose
+        from ..grasping.scoop import pan_axis_xy
+        axis = np.asarray(pan_axis_xy(), float)
+        c_new = np.asarray(bowl["centre_mm"], float) / 1000
+        R, rim_z, floor_z = bowl["radius_mm"] / 1000, bowl["rim_z_mm"] / 1000, bowl["floor_z_mm"] / 1000
+        tips = np.array([self._tip(qi) for qi in q])
+        c_old = tips[tips[:, 2] < tips[:, 2].min() + 0.02][:, :2].mean(axis=0)  # where the recording scooped
+        ang = lambda v: np.arctan2(v[1], v[0])
+        alpha = ang(c_new - axis) - ang(c_old - axis)
+        dr = np.linalg.norm(c_new - axis) - np.linalg.norm(c_old - axis)
+        out = q.copy()
+        out[:, PAN] -= np.degrees(alpha)  # + pan turns the arm the other way (checked with FK)
+        for i in range(len(out)):
+            T = so101_fk(out[i])
+            u = (T[:2, 3] - axis) / (np.linalg.norm(T[:2, 3] - axis) or 1.0)
+            reach = float(np.linalg.norm(T[:2, 3] + dr * u))
+            qn, ok = solve_level_pose(out[i], reach, float(T[2, 3]), _tool_pitch(out[i]))
+            if ok:
+                out[i, 1:4] = qn[1:4]
+        raised = 0
+        for i in range(len(out)):  # the floor and the rim
+            tip = self._tip(out[i])
+            inside = np.linalg.norm(tip[:2] - c_new) <= R
+            need = (floor_z if inside else rim_z + 0.012) - tip[2]
+            if need > 0:
+                T = so101_fk(out[i])
+                qn, ok = solve_level_pose(out[i], float(np.linalg.norm(T[:2, 3])), float(T[2, 3]) + need + 0.002,
+                                         _tool_pitch(out[i]))
+                if not ok:
+                    raise RuntimeError(f"scoop refused: setpoint {i} would put the spoon tip {need * 1000:.0f} mm "
+                                       f"too low and can't be raised")
+                out[i, 1:4] = qn[1:4]
+                raised += 1
+        tips = np.array([self._tip(qi) for qi in out])
+        deep = tips[tips[:, 2] < tips[:, 2].min() + 0.02]
+        off = float(np.linalg.norm(deep[:, :2].mean(axis=0) - c_new))
+        self._event("scoop", f"fitted to the bowl: turned {np.degrees(alpha):+.1f} deg, reach {dr * 1000:+.0f} mm; "
+                             f"lowest tip {tips[:, 2].min() * 1000:.0f} mm (floor {floor_z * 1000:.0f}), "
+                             f"scoop {off * 1000:.0f} mm from the bowl centre, {raised} setpoints raised")
+        return out
+
     def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
         """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
         up a little so the food stays on -> home."""
@@ -1004,6 +1054,8 @@ class FaceServoSession:
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
         q = self._deepen_scoop(q)
+        if self.BOWL_CAL.exists():
+            q = self._fit_scoop_to_bowl(q, json.loads(self.BOWL_CAL.read_text()))
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
         # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
@@ -1024,9 +1076,20 @@ class FaceServoSession:
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
         t0, last_check = time.monotonic(), time.monotonic()
+        fast = getattr(self.robot, "joints_fast", None)
+        sag = np.zeros(5)  # servo-sag feedback (shoulder/elbow/flex sag under the arm's weight)
+        lag_n = int(round(self.servo_lag * 60))
         for i in range(len(q)):
             self._check_stop()
-            self.robot.stream_joints(q[i])
+            if fast is not None and i > lag_n:
+                try:
+                    err = q[i - lag_n] - np.asarray(fast(timeout=0.2), float)
+                    err[[PAN, ROLL]] = 0.0
+                    sag += np.where(np.abs(err) < 4.0, self.sag_gain * err / 60.0, 0.0)
+                    np.clip(sag, -5.0, 5.0, out=sag)
+                except Exception:
+                    pass
+            self.robot.stream_joints(q[i] + sag)
             self.reason = f"scoop: recorded dip ({t[i]:.1f}/{t[-1]:.1f} s)"
             if time.monotonic() - last_check > 0.5:  # is the real arm following?
                 last_check = time.monotonic()
