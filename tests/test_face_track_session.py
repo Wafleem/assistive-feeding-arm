@@ -300,3 +300,15 @@ def test_feed_button_goes_home_sweeps_to_the_person_bites_and_comes_back_home(tm
         assert any("bite done" in e["msg"] for e in s.log)
     finally:
         s.close()
+
+
+def test_extend_ranges_with_fresh_depth_and_falls_back_to_the_eye_span(tmp_path):
+    arm = KinArm(LOOK)
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    fast = np.array([0.5, -0.1, 0.3])
+    assert s._stop_face(fast)[1] == "eye span"  # no depth yet
+    s._depth_lips = (time.monotonic(), np.array([0.45, -0.1, 0.3]), 0.4)
+    face, src = s._stop_face(fast)
+    assert src == "depth" and np.allclose(face, [0.45, -0.1, 0.3])
+    s._depth_lips = (time.monotonic() - 5.0, np.array([0.45, -0.1, 0.3]), 0.4)  # stale
+    assert s._stop_face(fast)[1] == "eye span"
