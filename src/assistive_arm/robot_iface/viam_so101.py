@@ -47,8 +47,13 @@ class SO101ViamRobot:
     def now(self) -> float:
         return self.rig.now()
 
-    def get_frames(self, names=None):
-        return self.rig.get_frames(names)
+    def get_frames(self, names=None, may_reconnect: bool = True):
+        if may_reconnect:
+            return self.rig.get_frames(names)
+        try:
+            return self.rig.get_frames(names, timeout=3.0, may_reconnect=False)
+        except TypeError:  # a rig without the option
+            return self.rig.get_frames(names)
 
     def camera_pose(self, name: str):
         return self.rig.camera_pose(name)
