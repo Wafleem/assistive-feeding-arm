@@ -39,5 +39,11 @@
    74.7
   ]
  },
- "t": "2026-10-24T13:10:06"
+ "t": "2026-10-24T13:10:06",
+ "scene_centre_mm": [
+  229.6,
+  216.5
+ ],
+ "scene_note": "centre with the viam scene's spoon geometry (tip (14.4, 0, 130.7) mm in the gripper frame); the Viam scene obstacle bowl-left was moved here on 2026-10-24",
+ "viam_obstacle": "bowl-left"
 }
