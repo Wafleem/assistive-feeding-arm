@@ -133,7 +133,7 @@ Viewing detections:
 | Component | Parent | Geometry | Why |
 |---|---|---|---|
 | `table` | `world`, (x 287.2, y 227, z −15) | box x 726 × y 565 × z 30 mm | the marble table (measured 2026-10-24), 72.6 × 56.5 cm: its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base is 5 cm from the near edge (x −75.8; the back of the module's base box is x −25.8), and the base's right side is flush with the right edge (y −55.5, half the base box's 111 mm width; the left edge is at y +509.5). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
-| `spoon` | `follower-gripper`, z +61.5 | box x 50 × y 45 × z 143 mm | the spoon sticks out **123 mm** past the jaw tips (measured 2026-10-23); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
+| `spoon` | `follower-gripper`, z +63 | box x 50 × y 45 × z 146 mm | the spoon sticks out **126 mm** past the jaw tips (measured 2026-10-24; was 123 mm); the box runs from 10 mm behind the tips to 10 mm past the spoon tip |
 | `bowl-right` | `world`, (x 309.2, y 94.5, z 0) | mesh `bowl-150x60.ply` | paper bowl, 150 mm across the rim, modelled 60 mm tall (measured ~70 mm, lowered 15%; the 100 mm bottom is a guess). The empty bowl nearest the arm: its rim is 75 mm from the right edge and 310 mm from the near edge (2026-10-24) |
 | `bowl-left` | `world`, (x 234.2, y 259.5, z 0) | mesh `bowl-150x60.ply` | the same bowl (the cereal bowl): its rim is 240 mm from the right edge and 235 mm from the near edge (2026-10-24). A third bowl, farther back, isn't modelled yet |
 
