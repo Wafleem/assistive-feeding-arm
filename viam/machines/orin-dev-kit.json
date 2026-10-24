@@ -249,8 +249,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 316.2,
-          "y": 173.8,
+          "x": 309.2,
+          "y": 94.5,
           "z": 0
         },
         "orientation": {
@@ -274,8 +274,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 316.2,
-          "y": 323.8,
+          "x": 234.2,
+          "y": 259.5,
           "z": 0
         },
         "orientation": {
