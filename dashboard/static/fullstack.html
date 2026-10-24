@@ -5,12 +5,15 @@
   /* Full-stack test: Ultraviolet look (language.css) + a few page parts */
   main { max-width:1500px; padding-top:14px; }
   .stack { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
-  .stack.top { grid-template-columns:minmax(0,5fr) minmax(0,6fr); align-items:start; }  /* command | camera */
-  .stack.top img.cam { max-height:calc(100vh - 170px); }
+  .stack.top { grid-template-columns:minmax(260px,3fr) minmax(0,4fr) minmax(0,4fr); align-items:start; }  /* command | camera | depth */
+  .stack.top img.cam { max-height:calc(100vh - 190px); aspect-ratio:4/3; }
+  .cmd { display:grid; gap:10px; } .cmd .say-input input { flex-basis:120px; }
+  .say-result:empty { display:none; }
   .stack.secondary { margin-top:14px; opacity:.92; }
   .stack.secondary section { padding:10px 14px; }
   .stack.secondary ol.progress li { padding:6px 10px; }
-  @media (max-width:820px) { .stack, .stack.top { grid-template-columns:minmax(0,1fr); } }
+  @media (max-width:1000px) { .stack.top { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .stack.top .cmd { grid-column:1/-1; } }
+  @media (max-width:640px) { .stack, .stack.top { grid-template-columns:minmax(0,1fr); } }
   button.mic.pill.big { width:100%; padding:20px; font-size:20px; }
   ol.progress { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
   ol.progress li { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--line);
@@ -31,27 +34,26 @@
   <button class="stop" onclick="stopAll()" title="Stop the arm now (Esc)">STOP</button></header>
 <main>
 <div class="stack top">
-  <section>
-    <h2>Say a command</h2>
-    <div class="say-mic"><button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button></div>
-    <div class="say-input"><input type="text" id="text" placeholder="e.g. grab me some cereal" aria-label="Command for the robot"
+  <section class="cmd">
+    <button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button>
+    <div class="say-input"><input type="text" id="text" aria-label="Command for the robot"
         onkeydown="if (event.key === 'Enter') go(this.value)"><button class="primary" onclick="go(document.getElementById('text').value)">Go</button></div>
-    <div class="say-ex"><span class="muted">Try:</span>
-      <button class="ex" onclick="go(this.textContent)">grab me some cereal</button>
-      <button class="ex" onclick="go(this.textContent)">could you bring me some M&amp;Ms?</button>
-      <button class="ex" onclick="go(this.textContent)">go home</button></div>
-    <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite">Start the arm centred, then tap the mic (or Space). “Stop”, “wait” or “no” stop the arm (or Esc).</div>
-    <div class="say-result" id="status" data-kind="idle">Idle.</div>
+    <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite"></div>
   </section>
-  <section>
-    <h2>Gripper camera</h2>
+  <section class="view">
+    <h2>Camera</h2>
     <img class="cam" id="cam" alt="Live gripper camera with bowl outlines">
-    <p class="muted" id="bowls">No bowl sweep yet.</p>
+  </section>
+  <section class="view">
+    <h2>Depth</h2>
+    <img class="cam" id="depth" alt="Live depth view">
+    <p class="muted" id="depth-note" hidden></p>
   </section>
 </div>
 <div class="stack secondary">
   <section>
     <h2>Progress</h2>
+    <div class="say-result" id="status" data-kind="idle" style="margin:0 0 10px">Idle.</div>
     <ol class="progress" id="steps">
       <li data-k="heard"><span class="dot"></span>Understood the request<small class="muted"></small></li>
       <li data-k="find"><span class="dot"></span>Sweep: look into both bowls<small class="muted"></small></li>
@@ -59,6 +61,7 @@
       <li data-k="feed"><span class="dot"></span>Find the face and feed<small class="muted"></small></li>
       <li data-k="home"><span class="dot"></span>Back home<small class="muted"></small></li>
     </ol>
+    <p class="muted" id="bowls">No bowl sweep yet.</p>
   </section>
   <section>
     <h2>Robot says</h2>
@@ -258,7 +261,15 @@ async function poll() {
   setTimeout(poll, 700);
 }
 Object.assign(window, { go, toggleMic, stopAll, debug, toggleTheme });
-if (token) $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token); else { $('cam').hidden = true; $('bowls').textContent = 'The live camera shows here when this page is opened from the robot dashboard (/test?token=...).'; }
+if (token) {
+  $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token);
+  $('depth').src = '/depth.mjpg?token=' + encodeURIComponent(token);
+  setTimeout(() => { if (!$('depth').naturalWidth) { $('depth').hidden = true; $('depth-note').hidden = false;
+    $('depth-note').textContent = 'No depth frames (cloud depth GPU not reachable, or the dashboard started without depth).'; } }, 6000);
+} else {
+  for (const id of ['cam', 'depth']) $(id).hidden = true;
+  $('depth-note').hidden = false; $('depth-note').textContent = 'Live views appear when opened from the robot dashboard (/test?token=...).';
+}
 $('full').href = '/?token=' + encodeURIComponent(token);
 $('lang').href = '/language.html?token=' + encodeURIComponent(token);
 poll();
