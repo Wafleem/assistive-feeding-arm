@@ -1,0 +1,15 @@
+[Unit]
+Description=SSH tunnel to the depth-cloud Brev GPU (Depth Pro server) on 127.0.0.1:8800
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ultraviolet
+# The AGX's own key, authorized on the instance for this forward only; via Brev's gateway
+# (the conference network blocks the instance's direct SSH port).
+ExecStart=/usr/bin/ssh -i /home/ultraviolet/.ssh/brev_depth -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -p 19459 -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -L 127.0.0.1:8800:127.0.0.1:8800 ubuntu@global.prd.ga.run.brev.nvidia.com
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
