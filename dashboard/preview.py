@@ -13,6 +13,8 @@ ASSETS = {
     '/index.html': ('language.html', 'text/html; charset=utf-8'),
     '/language.html': ('language.html', 'text/html; charset=utf-8'),
     '/face-servo.html': ('face-servo.html', 'text/html; charset=utf-8'),
+    '/test': ('fullstack.html', 'text/html; charset=utf-8'),
+    '/fullstack.html': ('fullstack.html', 'text/html; charset=utf-8'),
     '/language.css': ('language.css', 'text/css'),
     '/language-app.js': ('language-app.js', 'text/javascript'),
     '/language-parser.mjs': ('language-parser.mjs', 'text/javascript'),

@@ -57,7 +57,7 @@ def test_sweep_uses_one_posture_and_turns_only_the_base():
         c = project(camera_pose(q), np.r_[b.centre, b.rim_z][None])[0]
         assert abs(c[0] - 320) < 5  # bowl centre in the middle of the image
     crops = vote_crops(np.zeros((480, 640, 3), np.uint8))
-    assert len(crops) == 4 and all(c.shape[0] == c.shape[1] for c in crops)
+    assert len(crops) == 10 and all(c.shape[0] == c.shape[1] for c in crops)
     r = combine([{"label": "cereal", "scores": {"cereal": 0.9, "empty": 0.1}},
                  {"label": "empty", "scores": {"cereal": 0.4, "empty": 0.6}}])
     assert r["label"] == "cereal" and abs(r["margin"] - 0.3) < 1e-6
@@ -72,7 +72,7 @@ def test_sweep_mode_labels_each_bowl_from_crops_sent_to_the_orin(tmp_path):
     s.start()
     try:
         _run(s, "sweep_bowls")
-        assert calls == [4, 4], s.reason  # 4 crops per bowl, one call per bowl
+        assert calls == [10, 10], s.reason  # 10 tiles per bowl, one call per bowl
         seen = {b["bowl_id"]: b["label"] for b in json.loads((tmp_path / "seen.json").read_text())["bowls"]}
         assert seen == {"bowl2": "empty", "bowl1": "cereal"}, s.reason
         assert np.max(np.abs(arm.q - HOME)) < 3  # back home
