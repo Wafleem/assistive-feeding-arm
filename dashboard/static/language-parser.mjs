@@ -13,10 +13,29 @@ export const DEFAULT_BOWLS = Object.freeze([
 ]);
 const bowlFoods = new Map([
   ['cereal', 'cereal'], ['cereals', 'cereal'],
-  ['m&ms', 'm&ms'], ["m&m's", 'm&ms'], ['m & ms', 'm&ms'],
+  ['m&ms', 'm&ms'], ["m&m's", 'm&ms'], ['m & ms', 'm&ms'], ["m & m's", 'm&ms'],
   ['m and ms', 'm&ms'], ["m and m's", 'm&ms'], ['m and m s', 'm&ms'],
-  ['m and ems', 'm&ms'], ['em and ems', 'm&ms'], ['mms', 'm&ms'],
+  ['m and ems', 'm&ms'], ['em and ems', 'm&ms'], ["em and em's", 'm&ms'], ['mms', 'm&ms'],
 ]);
+function conversationalText(text) {
+  // Remove only conversational wrappers, never conditions, quantities or task clauses.
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/[.!?]+$/, '').trim()
+      .replace(/^(?:(?:hey|hi|hello|um|uh)[,!]?\s+|please[, ]+|(?:can|could|would|will) you (?!mind\b)(?:please )?)/, '')
+      .replace(/(?:,?\s+(?:please|thanks|thank you|for me))$/, '').trim();
+  } while (text !== previous);
+  return text;
+}
+
+function requestedFood(text) {
+  // Match a whole request, then an exact food alias. Finding a food word inside a
+  // sentence is insufficient: "grab cereal and go home" must not become a bite.
+  const request = /^(?:(?:grab|get|give|bring|fetch|pass|serve|hand|feed)(?: me)?|scoop me|i want(?: to (?:eat|have|try))?|i(?:'d| would) like(?: to (?:eat|have|try))?|i(?:'ll| will) have|i feel like(?: eating)?|i(?:'m| am) craving|(?:can|could|may) i (?:please )?(?:have|get|eat|try)|let me have|how about|would you mind (?:getting|grabbing|bringing|giving|serving)(?: me)?) /;
+  return text.replace(request, '')
+    .replace(/^(?:(?:a|one|another) (?:bite|spoonful|scoop) of |(?:a little bit|a bit) of |a little |some(?: more)? |the |an? )/, '');
+}
 function bowlRequest(food, bowls) {
   if (!Array.isArray(bowls) || bowls.length !== 2 ||
       bowls.some((b, i) => !b || b.id !== `bowl_${i + 1}` || !['cereal', 'm&ms', ''].includes(b.food)))
@@ -58,11 +77,9 @@ export function parseInstruction(input, bowls = DEFAULT_BOWLS) {
   if (/\bno\b/.test(text)) return result('confirm', 'No: cancel the pending action and stop.', { action: 'stop' }, { answer: false });
   if (/\b(not|never|dont|don't|cannot|can't|without|except|unless)\b/.test(text))
     return unknown('That instruction includes a condition or negation. Please give one clear command.');
-  text = text.replace(/[.!?]+$/, '').replace(/^(?:(?:can|could|would) you (?:please )?|please )/, '')
-    .replace(/(?:,? please|,? thanks|,? thank you)$/, '').trim();
-  const requestedFood = text.replace(/^(?:i want|i would like|i'd like|can i have|could i have|feed me|give me|get me) /, '')
-    .replace(/^(?:(?:a|one) (?:bite|spoonful) of |some |the )/, '');
-  if (bowlFoods.has(requestedFood)) return bowlRequest(bowlFoods.get(requestedFood), bowls);
+  text = conversationalText(text);
+  const food = requestedFood(text);
+  if (bowlFoods.has(food)) return bowlRequest(bowlFoods.get(food), bowls);
   if (/^(feed me(?: (?:a|one|the|another|next) bite)?|(?:next|another|one more) bite|a bite)$/.test(text))
     return motion('feed', 'Prepare one feeding cycle. Readiness confirmation is required before any live bite.');
   if (/^(scoop(?: (?:some )?food| (?:a|one) bite)?|scoop and come back)$/.test(text))
@@ -90,7 +107,6 @@ export function parseInstruction(input, bowls = DEFAULT_BOWLS) {
     return result('query', 'Ask what food is available. No camera or plate observations are connected.');
   if (/^(yes|yes please|ready|i'?m ready|okay|ok)$/.test(text))
     return result('confirm', 'Confirmation understood. There is no live pending bite in this preview.', null, { answer: true });
-  const food = text.replace(/^feed me /, '').replace(/^(?:a|an|the|some) /, '');
   if (foods.has(food)) return result('feed', `Requested ${foods.get(food)}. Food selection is not wired to the dashboard yet.`, null, { item: foods.get(food) });
-  return unknown('I could not map that whole instruction. Try “feed me a bite”, “scoop some food”, “go home”, or “wait”.');
+  return unknown('I could not understand one complete request. Try “grab me some cereal”, “bring me some M&Ms”, “go home”, or “wait”.');
 }
