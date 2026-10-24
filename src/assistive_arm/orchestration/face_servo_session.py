@@ -171,7 +171,7 @@ class FaceServoSession:
         if self.depth_camera and self.depth_det is not None:
             threading.Thread(target=self._depth_loop, daemon=True).start()
 
-    def _depth_loop(self, period: float = 0.5) -> None:
+    def _depth_loop(self, period: float = 0.25) -> None:
         """Metric depth (about 1 Hz) teaches the fast face pipeline this person's eye span.
         Depth is optional: its failures never reconnect the shared connection (which carries the
         gripper camera and the arm's streamed moves), it backs off while failing, and an unchanged
@@ -213,7 +213,7 @@ class FaceServoSession:
             wait = period if fails == 0 else min(10.0, period * 2 ** fails)  # back off while depth is down
             time.sleep(max(0.0, wait - (time.monotonic() - t0)))
 
-    DEPTH_FRESH_S = 2.5  # Extend uses the depth-measured lips while they are at most this old (local Depth Pro at 0.8 Hz)
+    DEPTH_FRESH_S = 1.2  # Extend uses the depth-measured lips while they are at most this old (cloud Depth Pro at 3 Hz)
 
     def _depth_range_face(self, lm, frame, params) -> None:
         """Lips position (arm base frame) ranged by the depth camera itself, for Extend's stop."""
