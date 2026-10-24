@@ -86,17 +86,33 @@ class SO101ViamRobot:
         return dict(self._io.run(self.arm.do_command(cmd), timeout=timeout))
 
     def _fast_arm(self):
-        """The arm over the direct (camera) connection when there is one: ~5 ms per call."""
-        if self._fast is None:
+        """The arm over the direct (camera) connection when there is one: ~5 ms per call.
+        Rebound whenever that connection has been replaced (a reconnect)."""
+        if self._fast is None or getattr(self, "_fast_on", None) is not self.rig.client:
             from viam.components.arm.client import ArmClient
 
             same = self.rig.client is self.client
             self._fast = self.arm if same else ArmClient(self._arm_name, self.rig.client._channel)
+            self._fast_on = self.rig.client
         return self._fast
+
+    def _fast_call(self, make, timeout: float):
+        """Run a fast-link arm call; if the link broke (e.g. viam-server reconfigured a module and
+        dropped the connection), reconnect once and retry instead of failing the motion."""
+        try:
+            return self._io.run(make(self._fast_arm()), timeout=timeout)
+        except Exception:
+            self._fast = None
+            if getattr(self.rig, "_address", None) and self.rig.client is not self.client:
+                try:
+                    self.rig.reconnect()
+                except Exception:
+                    pass
+            return self._io.run(make(self._fast_arm()), timeout=timeout)
 
     def joints_fast(self, timeout: float = 1.0) -> np.ndarray:
         """MEASURED joints (servo encoders, so including gravity sag) over the fast link."""
-        jp = self._io.run(self._fast_arm().get_joint_positions(), timeout=timeout)
+        jp = self._fast_call(lambda arm: arm.get_joint_positions(), timeout)
         return np.asarray(jp.values, float)
 
     def stream_joints(self, q) -> None:
@@ -105,8 +121,8 @@ class SO101ViamRobot:
         Sent over the direct connection when available (lower latency than the cloud)."""
         from viam.proto.component.arm import JointPositions
 
-        self._io.run(self._fast_arm().move_to_joint_positions(JointPositions(values=[float(v) for v in q]),
-                                                              extra={"wait": False, "streamed": True}), timeout=2.0)
+        jp = JointPositions(values=[float(v) for v in q])
+        self._fast_call(lambda arm: arm.move_to_joint_positions(jp, extra={"wait": False, "streamed": True}), 2.0)
 
     def set_speed(self, degs_per_sec: float) -> float:
         out = self._io.run(self.arm.do_command({"set_speed": float(degs_per_sec)}), timeout=10)
