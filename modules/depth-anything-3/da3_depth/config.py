@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from .geometry import RangeParams
+
+MODELS = ("depth-pro", "da3-metric")  # keep in step with estimator.DEFAULT_WEIGHTS
 
 DEVICES = ("auto", "cuda", "mps", "cpu")
 
@@ -13,17 +15,22 @@ DEVICES = ("auto", "cuda", "mps", "cpu")
 @dataclass(frozen=True)
 class CameraConfig:
     source: str  # the RGB camera to read (e.g. "webcam-2")
-    # Hugging Face repo id or a local directory. Must be a metric model: DA3METRIC-LARGE
-    # (Apache-2.0) or DA3NESTED-GIANT-LARGE(-1.1) (CC BY-NC 4.0, 1.4B params).
-    weights: str = "depth-anything/DA3METRIC-LARGE"
-    device: str = "auto"  # auto = CUDA if this torch build can run on the GPU, else MPS, else CPU
-    process_res: int = 504  # DA3 input size (longest side, px); lower is faster and coarser
+    # "depth-pro" (Apple Depth Pro, default): accurate close up, ~1.6 s per frame on the Orin.
+    # "da3-metric" (Depth Anything 3 metric): ~0.15 s per frame, but ~2.5x too far at 0.25 m;
+    # trust it from about 0.5 m out. Measurements in estimator.py.
+    model: str = "depth-pro"
+    # None = the model's default (estimator.DEFAULT_WEIGHTS): a Hugging Face repo id, or a local
+    # path (Depth Pro: the .pt file; DA3: a directory, a metric model such as DA3METRIC-LARGE).
+    weights: Optional[str] = None
+    device: str = "auto"  # auto = CUDA with a CUDA build of torch (required then), else MPS, else CPU
+    process_res: int = 504  # DA3 only: input size (longest side, px). Depth Pro always uses 1536
     produce_hz: float = 2.0  # background inference rate (an upper bound: one frame at a time)
     stale_after_s: float = 5.0  # point clouds and ranges older than this are refused, not served
     source_timeout_s: float = 5.0  # per get_images call on the source camera
     # Intrinsics of the source frames. Order of preference: fx/fy here, then the source
-    # camera's own properties, then hfov_deg. Metric depth scales with the focal length,
-    # so a 5 % focal error is a 5 % distance error: calibrate when it matters.
+    # camera's own properties, then hfov_deg, then (Depth Pro only) its own focal estimate.
+    # Metric depth scales with the focal length, so a 5 % focal error is a 5 % distance
+    # error: calibrate when it matters.
     fx: float | None = None
     fy: float | None = None
     cx: float | None = None
@@ -56,7 +63,7 @@ class CameraConfig:
         kw = {k: num(k) for k in ("fx", "fy", "cx", "cy", "hfov_deg", "produce_hz", "stale_after_s", "source_timeout_s")}
         kw.update(process_res=num("process_res", int), stride=num("stride", int), preview_port=num("preview_port", int))
         kw = {k: v for k, v in kw.items() if v is not None}
-        for k in ("weights", "device", "vision_status_url"):
+        for k in ("model", "weights", "device", "vision_status_url"):
             if attrs.get(k) is not None:
                 kw[k] = str(attrs[k]).strip()
         rp = {range_keys[k]: (int if k in ("scan_beams", "min_support_px") else float)(attrs[k])
@@ -68,6 +75,7 @@ class CameraConfig:
     def _check(self) -> None:
         r = self.ranges
         problems = [
+            (self.model not in MODELS, f"model must be one of {MODELS}"),
             (self.device not in DEVICES, f"device must be one of {DEVICES}"),
             ((self.fx is None) != (self.fy is None), "give fx and fy together"),
             ((self.cx is None) != (self.cy is None), "give cx and cy together"),
