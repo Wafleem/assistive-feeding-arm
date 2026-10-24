@@ -944,10 +944,14 @@ class FaceServoSession:
         self._event("scoop", self.reason)
 
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
-    SCOOP_ROLL_GAIN = 2.0  # x the recorded wrist roll (measured from where the dip starts): a bigger twist scoops more
-    SCOOP_PRE_ROLL = 25.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
-    SCOOP_EXTRA_DEPTH = 0.025  # m: go this much deeper than the recording at the bottom of the dip
-    SCOOP_EXTRA_SWEEP = 8.0  # deg of base pan: keep sweeping this much further along the bottom before lifting
+    # Adjustments on top of the recording (all off: the hand-guided demo already has the pre-roll,
+    # depth and sweep the team wanted). Kept for quick tuning.
+    SCOOP_ROLL_GAIN = 1.0  # x the recorded wrist roll (measured from where the dip starts)
+    SCOOP_PRE_ROLL = 0.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
+    SCOOP_EXTRA_DEPTH = 0.0  # m: go this much deeper than the recording at the bottom of the dip
+    SCOOP_EXTRA_SWEEP = 0.0  # deg of base pan: keep sweeping this much further along the bottom before lifting
+    LOADED_DEGS = 30.0  # deg/s peak for moves with food on the spoon (smooth: no shaking it off)
+    SCOOP_PAUSE_KEEP = 0.1  # fraction of the recording's still pauses kept in the replay
 
     def _do_home_scoop(self) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
@@ -996,7 +1000,7 @@ class FaceServoSession:
         """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
         up a little so the food stays on -> home."""
         q = np.asarray(demo["q"], float)
-        k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
+        k = 5 if demo.get("kind") == "hand-guided" else 3  # moving average: hand/servo jitter out, motion kept
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
         q = self._deepen_scoop(q)
@@ -1010,6 +1014,13 @@ class FaceServoSession:
             w = 0.5 - 0.5 * np.cos(np.pi * np.arange(peak + 1) / peak)  # 0 -> 1
             q[:peak + 1, ROLL] -= sign * self.SCOOP_PRE_ROLL * (1.0 - w)
         t = np.asarray(demo["t"], float) / max(speed, 0.1)
+        # Moving parts at the recorded speed; the still holds (the hand pausing) shrunk 10x.
+        dt = np.diff(t)
+        moving = np.linalg.norm(np.diff(q, axis=0), axis=1) / np.maximum(dt, 1e-3) > 3.0
+        t = np.r_[0.0, np.cumsum(np.where(moving, dt, dt * self.SCOOP_PAUSE_KEEP))]
+        t60 = np.arange(0.0, t[-1], 1.0 / 60.0)  # 60 Hz: half-size steps (streamed setpoints run unprofiled)
+        q = np.stack([np.interp(t60, t, q[:, j]) for j in range(q.shape[1])], axis=1)
+        t = t60
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
         t0, last_check = time.monotonic(), time.monotonic()
@@ -1020,7 +1031,7 @@ class FaceServoSession:
             if time.monotonic() - last_check > 0.5:  # is the real arm following?
                 last_check = time.monotonic()
                 q_real = np.asarray(self.robot.joints(timeout=1.0), float)
-                recent = q[max(0, i - int(0.6 * demo.get("hz", 30))):i + 1]
+                recent = q[max(0, i - 36):i + 1]  # the last 0.6 s of setpoints
                 lag = float(min(np.max(np.abs(q_real[:4] - qs[:4])) for qs in recent))  # roll: fast twist, not checked
                 if lag > 15.0:
                     self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
@@ -1033,8 +1044,8 @@ class FaceServoSession:
         slope = _tool_pitch(q1) - _tool_pitch(carry)
         if abs(slope) > 0.2:
             carry[FLEX] = float(np.clip(carry[FLEX] - (self._spoon_tilt(carry) - 5.0) / slope, -94.0, 94.0))
-        self._glide(carry, speed_degs=40.0, what="scoop: tipping the spoon up")
-        self._glide(self.home_pose(), what="scoop: back home")
+        self._glide(carry, speed_degs=self.LOADED_DEGS, what="scoop: tipping the spoon up")
+        self._glide(self.home_pose(), speed_degs=self.LOADED_DEGS, what="scoop: back home (loaded, slow)")
 
     def _do_center(self) -> None:
         self._require_level()
@@ -1088,13 +1099,14 @@ class FaceServoSession:
         span = float(np.max(np.abs(q1 - q0)))
         if span < 0.3:
             return
-        rate = self.track_cfg.rate_hz
-        dur = max(0.6, span / (speed_degs or self.FEED_GLIDE_DEGS) * 1.6)  # cosine peak = 1.57 x mean speed
+        rate = 60.0  # small steps: streamed setpoints run unprofiled on the servos, big steps shake
+        dur = max(0.8, span / (speed_degs or self.FEED_GLIDE_DEGS) * 1.875)  # min-jerk peak = 1.875 x mean speed
         n = int(dur * rate)
         t0 = time.monotonic()
         for i in range(1, n + 1):
             self._check_stop()
-            s = 0.5 - 0.5 * np.cos(np.pi * i / n)
+            tau = i / n
+            s = tau**3 * (10 - 15 * tau + 6 * tau**2)  # minimum jerk: speed AND acceleration start/end at 0
             self.robot.stream_joints(q0 + s * (q1 - q0))
             if what:
                 self.reason = f"{what} ({100 * i // n}%)"
@@ -1116,24 +1128,39 @@ class FaceServoSession:
         self._need("look")
         return float(self.taught.look[PAN])
 
+    # Gentle settings while the spoon carries food (Feed): every motion slower and softer.
+    LOADED_TRACK = {"max_vel_deg": (45.0, 30.0, 30.0, 25.0), "max_acc_deg": 120.0, "gain": 2.0}
+    LOADED_EXTEND = {"approach_speed": 0.05, "near_speed": 0.03, "near_m": 0.06, "retreat_speed": 0.06,
+                     "reach_accel": 0.08}
+
     def _do_feed(self) -> None:
+        """One bite with a loaded spoon, gently (LOADED_*), restoring the normal tuning after."""
+        saved = (self.track_cfg, self.ext_cfg)
+        self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), **self.LOADED_TRACK})
+        self.ext_cfg = ExtendConfig(**{**asdict(self.ext_cfg), **self.LOADED_EXTEND})
+        try:
+            self._feed_once()
+        finally:
+            self.track_cfg, self.ext_cfg = saved
+
+    def _feed_once(self) -> None:
         """One bite: home -> sweep to where the person usually sits -> find the face -> centre
         and extend (stop 3 cm from the lips, hold 10 s) -> back out -> home. STOP at any time
         leaves the arm where it is."""
         home = self.home_pose()
         self._event("feed", "going home")
-        self._glide(home, what="feed: going home")
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         sweep = home.copy()
         sweep[PAN] = self._person_pan()  # pan only: the spoon's tilt can't change on the way
         self._event("feed", f"sweeping to the person (pan {sweep[PAN]:.0f} deg)")
-        self._glide(sweep, what="feed: sweeping to the person")
+        self._glide(sweep, speed_degs=self.LOADED_DEGS, what="feed: sweeping to the person")
         face, _ = self._face_target(need=1, timeout=1.5)
         for d in (12.0, -12.0, 24.0, -24.0):  # not in view: look around the usual spot (pan only)
             if face is not None:
                 break
             q = sweep.copy()
             q[PAN] = float(np.clip(sweep[PAN] + d, -108.0, 108.0))
-            self._glide(q, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
+            self._glide(q, speed_degs=self.LOADED_DEGS, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
             face, _ = self._face_target(need=1, timeout=1.0)
         if face is None:
             self._event("feed", "no face found: going home")
@@ -1146,7 +1173,7 @@ class FaceServoSession:
         self._track_loop(extend=True, once=True)
         self.mode = "feed"
         self._event("feed", "bite done: going home")
-        self._glide(home, what="feed: going home")
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         self.reason = "feed done: back home"
         self._event("feed", self.reason)
 
