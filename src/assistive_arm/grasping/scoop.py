@@ -22,7 +22,8 @@ stays the side that was levelled) and checked BEFORE anything moves: IK within `
 jaw under the tool) inside the bowl wherever it is below the rim and clear of the table
 elsewhere. A plan that fails any check is refused with a reason; nothing is ever clipped.
 
-Then the plan is timed: each phase starts and ends at rest (cosine profile), with tip speed,
+Then the plan is timed: each phase starts and ends at rest (minimum-jerk profile: zero speed
+and acceleration at both ends, so no kick at the phase changes), with tip speed,
 spoon rotation rate and joint speed capped. The result is setpoints at ``rate_hz`` for a
 streamed joint executor (``SO101ViamRobot.stream_joints``, wired in orchestration).
 
@@ -41,6 +42,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from ..motion.smoothing import MIN_JERK_PEAK, min_jerk
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..robot_iface.so101_kinematics import joint_limits, load
 
@@ -475,7 +477,7 @@ def _plan_once(q_start, bowl: BowlTarget, c: ScoopConfig, level_pitch_deg: float
                              report=worst)
     qs = np.asarray(qs)
 
-    # time it: per-sample cost at the caps, then a cosine (rest-to-rest) profile per phase
+    # time it: per-sample cost at the caps, then a minimum-jerk (rest-to-rest) profile per phase
     t_out, q_out, phases, t0 = [np.zeros(1)], [qs[:1]], [], 0.0
     names_arr = np.asarray(phase_of)
     tasks = np.array([sp.task(qq) for qq in qs])
@@ -490,11 +492,11 @@ def _plan_once(q_start, bowl: BowlTarget, c: ScoopConfig, level_pitch_deg: float
         dtip = np.linalg.norm(np.diff(seg_task[:, :3], axis=0), axis=1) / speed[name]
         drot = np.degrees(np.abs(np.diff(seg_task[:, 3]))) / c.max_rotate_deg_s
         cost = np.r_[0.0, np.cumsum(np.maximum.reduce([dq, dtip, drot]))]
-        T = 0.5 * np.pi * cost[-1]  # cosine profile: peak = pi/2 x mean, so peaks sit at the caps
+        T = MIN_JERK_PEAK * cost[-1]  # minimum-jerk peak = 1.875 x mean, so peaks sit at the caps
         if T > 0:
             n = max(2, int(np.ceil(T * c.rate_hz)) + 1)
             tt = np.linspace(0.0, T, n)
-            prog = 0.5 * (1 - np.cos(np.pi * tt / T)) * cost[-1]
+            prog = min_jerk(tt / T) * cost[-1]
             seg = np.array([np.interp(prog, cost, seg_q[:, j]) for j in range(5)]).T
             t_out.append(t0 + tt[1:]); q_out.append(seg[1:])
             phases.append((name, round(t0, 3), round(t0 + T, 3)))

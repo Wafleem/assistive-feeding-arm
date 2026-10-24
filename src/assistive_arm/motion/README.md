@@ -6,6 +6,7 @@
 |---|---|---|
 | `safety.py` | `SafetyConfig` (speeds, forces, reach, table height), keep-out zones (`Box`, `Sphere`), `SafetyEnvelope` (point/path checks, speed limit near the user, moving zones via `with_zones`) | works, tested |
 | `primitives.py` | `SkillContext` (safety + `confirm` + `log`), `SkillResult`, `safe_move`, `guarded_linear`, `guarded_waypoints`, `safe_move_first` | works (from the first scaffold) |
+| `smoothing.py` | `SmoothingConfig`, `min_jerk` / `point_to_point` (rest-to-rest with zero speed and acceleration at the ends), `resample` (uneven recordings onto an even grid), `gaussian_smooth` (zero-phase, ends held), `limit_speed` (stretch time under speed and acceleration caps), `ease_in_out` (playback starts and ends at rest): pure numpy, for streamed servo setpoints | works, tested (`tests/test_motion_smoothing.py`); caps need the safety lead's review |
 
 ## Rules
 - Sections move the arm only through these primitives (or `RobotInterface` calls they

@@ -31,6 +31,8 @@ from ..feeding.face_track import (ExtendConfig, LevelTracker, TrackConfig, appro
                                   max_level_reach)
 from ..geometry import Pose
 from ..grasping.scoop import BowlTarget, ScoopConfig, ScoopPlan, pan_axis_xy, plan_scoop
+from ..motion.smoothing import (SmoothingConfig, ease_in_out, gaussian_smooth, limit_speed, peaks, point_to_point,
+                                resample, sample)
 from ..robot_iface.so101_kinematics import fk as so101_fk
 from ..feeding.face_servo import (
     FLEX, PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
@@ -102,6 +104,43 @@ class Stopped(Exception):
     pass
 
 
+class _LagWatch:
+    """Reads the real joints every ``period`` s on its own thread, so a slow read (the cloud
+    link: 300-600 ms on venue Wi-Fi) never stalls a setpoint stream. ``take()`` hands over the
+    newest reading once, as (time it was asked for, joints); ``failing`` is set after
+    ``max_failures`` reads in a row fail."""
+
+    def __init__(self, read, period: float, max_failures: int = 4):
+        self._read, self._period, self._max_failures = read, period, max_failures
+        self._latest = None
+        self.failing = False
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._done.is_set():
+            asked = time.monotonic()
+            try:
+                q = np.asarray(self._read(), float)
+                failures = 0
+                with self._lock:
+                    self._latest = (asked, q)
+            except Exception:
+                failures += 1
+                self.failing = failures >= self._max_failures
+            self._done.wait(max(0.0, self._period - (time.monotonic() - asked)))
+
+    def take(self):
+        with self._lock:
+            out, self._latest = self._latest, None
+        return out
+
+    def close(self) -> None:
+        self._done.set()
+
+
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
                "scoop", "home_scoop", "feed")
@@ -145,6 +184,8 @@ class FaceServoSession:
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.scoop_cfg = ScoopConfig(spoon_tip_from_tool=self.ext_cfg.spoon_tip_from_tool)
         self.scoop_lag_deg = 10.0  # the arm this far behind the streamed scoop: stop
+        self.smooth_cfg = SmoothingConfig(rate_hz=self.track_cfg.rate_hz)
+        self._last_sent: tuple[float, np.ndarray] | None = None  # (monotonic s, joints): the last streamed setpoint
         self.last_scoop: dict | None = None
         self.track: LevelTracker | None = None
         self.servo_lag = 0.12  # s: streamed setpoint -> arm actually there (module docs: 40-160 ms)
@@ -784,7 +825,7 @@ class FaceServoSession:
                     ok = np.abs(err) < 4.0  # bigger = moving/blocked, not sag: don't wind up
                     sag += np.where(ok, self.sag_gain * err * dt, 0.0)
                     np.clip(sag, -self.sag_max, self.sag_max, out=sag)
-                self.robot.stream_joints(q + sag)
+                self._send(q + sag)
                 self._q_hist.append((self.robot.now(), q.copy()))  # the DESIRED joints
                 if fast is not None:
                     try:
@@ -917,28 +958,12 @@ class FaceServoSession:
         self._event("scoop", f"{plan.reason}: spoon tipped {plan.report['dip_deg']:g} deg, {plan.duration:.0f} s")
         phase_at = np.searchsorted([e for _, _, e in plan.phases], plan.t - 1e-9)
         names = [n for n, _, _ in plan.phases]
-        dt = 1.0 / self.scoop_cfg.rate_hz
-        fast = getattr(self.robot, "joints_fast", None)
-        sent: deque = deque(maxlen=int(2 * self.scoop_cfg.rate_hz))
-        t0 = last_check = time.monotonic()
-        for k, q in enumerate(plan.q):
-            self._check_stop()
+        def reason(e: float) -> str:
+            k = min(int(np.searchsorted(plan.t, e)), len(plan.t) - 1)
             phase = names[min(int(phase_at[k]), len(names) - 1)]
-            self.reason = f"scoop: {phase} (spoon tilt {plan.tilt_deg[k]:+.0f} deg, {plan.t[k]:.0f}/{plan.duration:.0f} s)"
-            self.robot.stream_joints(q)
-            now = time.monotonic()
-            sent.append((now, q))
-            if now - last_check > 0.5:  # is the real arm following?
-                last_check = now
-                q_real = fast(timeout=1.0) if fast else self.robot.joints(timeout=1.0)
-                recent = [qs for ts, qs in sent if ts >= now - 0.5]  # where it may be, given servo lag
-                lag = min(float(np.max(np.abs(q_real - qs))) for qs in recent)
-                if lag > self.scoop_lag_deg:
-                    self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
-                    raise Stopped()
-            pause = t0 + (k + 1) * dt - time.monotonic()
-            if pause > 0:
-                time.sleep(pause)
+            return f"scoop: {phase} (spoon tilt {plan.tilt_deg[k]:+.0f} deg, {plan.t[k]:.0f}/{plan.duration:.0f} s)"
+
+        self._stream_path(plan.t, plan.q, reason=reason, lag_deg=self.scoop_lag_deg, what="scoop")
         self._move(plan.q[-1])  # settle exactly where it started
         self.reason = f"scooped and back (spoon tipped {plan.report['dip_deg']:g} deg)"
         self._event("scoop", self.reason)
@@ -992,13 +1017,14 @@ class FaceServoSession:
                              f"+{self.SCOOP_EXTRA_SWEEP:g} deg sweep along it")
         return out
 
-    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
-        """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
-        up a little so the food stays on -> home."""
-        q = np.asarray(demo["q"], float)
-        k = 3  # ~0.1 s moving average: teleop/servo jitter out, motion kept
-        pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
-        q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
+    def _replay_path(self, demo: dict, speed: float = 1.0) -> tuple[np.ndarray, np.ndarray, dict]:
+        """The recorded dip as it will be streamed: resampled evenly (the recording's samples are
+        5-48 ms apart), smoothed (zero-phase: jitter out, timing and depth kept), deepened, its
+        roll gained and pre-rolled, then capped in speed and acceleration and eased in and out
+        (it starts from a glide that ended at rest, and the arm feels a sudden start as a kick)."""
+        c = self.smooth_cfg
+        t, q = resample(np.asarray(demo["t"], float) / max(speed, 0.1), np.asarray(demo["q"], float), c.rate_hz)
+        q = gaussian_smooth(q, c.rate_hz, c.sigma_s)
         q = self._deepen_scoop(q)
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
@@ -1009,25 +1035,23 @@ class FaceServoSession:
         if peak > 0:
             w = 0.5 - 0.5 * np.cos(np.pi * np.arange(peak + 1) / peak)  # 0 -> 1
             q[:peak + 1, ROLL] -= sign * self.SCOOP_PRE_ROLL * (1.0 - w)
-        t = np.asarray(demo["t"], float) / max(speed, 0.1)
+        t, stretch = limit_speed(t, q, c.max_speed, c.max_accel)
+        t, q = ease_in_out(t, q, c.ease_s, c.rate_hz)
+        v, a = peaks(t, q)
+        return t, q, {"duration_s": round(float(t[-1]), 2), "stretch": round(stretch, 2),
+                      "peak_speed_degs": round(v), "peak_accel_degs2": round(a)}
+
+    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
+        """Above the bowl -> the recorded dip (smoothed, see ``_replay_path``) -> spoon tipped
+        up a little so the food stays on -> home."""
+        t, q, rep = self._replay_path(demo, speed)
+        self._event("scoop", "replay: {duration_s} s, peak {peak_speed_degs} deg/s and {peak_accel_degs2} deg/s^2 "
+                             "(time stretched x{stretch} for the caps)".format(**rep))
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
-        t0, last_check = time.monotonic(), time.monotonic()
-        for i in range(len(q)):
-            self._check_stop()
-            self.robot.stream_joints(q[i])
-            self.reason = f"scoop: recorded dip ({t[i]:.1f}/{t[-1]:.1f} s)"
-            if time.monotonic() - last_check > 0.5:  # is the real arm following?
-                last_check = time.monotonic()
-                q_real = np.asarray(self.robot.joints(timeout=1.0), float)
-                recent = q[max(0, i - int(0.6 * demo.get("hz", 30))):i + 1]
-                lag = float(min(np.max(np.abs(q_real[:4] - qs[:4])) for qs in recent))  # roll: fast twist, not checked
-                if lag > 15.0:
-                    self.stop(f"arm is {lag:.0f} deg behind the scoop (blocked?): stopped")
-                    raise Stopped()
-            pause = t0 + t[i] - time.monotonic()
-            if pause > 0:
-                time.sleep(pause)
+        # roll: a fast twist, not checked
+        self._stream_path(t, q, reason=lambda e: f"scoop: recorded dip ({e:.1f}/{t[-1]:.1f} s)", lag_deg=15.0,
+                          lag_joints=slice(0, 4), lag_window_s=0.6, what="scoop")
         carry = q[-1].copy()  # tip the loaded spoon up (+5 deg from level) with the wrist only
         q1 = carry.copy(); q1[FLEX] += 1.0
         slope = _tool_pitch(q1) - _tool_pitch(carry)
@@ -1080,27 +1104,17 @@ class FaceServoSession:
     FEED_GLIDE_DEGS = 60.0  # deg/s for the big joint moves (home, sweep), streamed and synchronised
 
     def _glide(self, target, speed_degs: float | None = None, what: str = "") -> None:
-        """Smooth synchronised joint move: every joint starts and arrives together (cosine
-        profile), streamed at the tracker rate. Keeps the spoon level between two level poses
+        """Smooth synchronised joint move: every joint starts and arrives together on a
+        minimum-jerk profile (zero speed and acceleration at both ends; peak joint speed
+        ``speed_degs``), streamed at the tracker rate. Starts from the last streamed setpoint
+        when that is fresh (see ``_command_start``). Keeps the spoon level between two level poses
         (and, for a pan-only sweep, exactly level the whole way)."""
-        q0 = np.asarray(self.robot.joints(), float)
+        q0 = self._command_start()
         q1 = np.asarray(target, float)
-        span = float(np.max(np.abs(q1 - q0)))
-        if span < 0.3:
+        if float(np.max(np.abs(q1 - q0))) < 0.3:
             return
-        rate = self.track_cfg.rate_hz
-        dur = max(0.6, span / (speed_degs or self.FEED_GLIDE_DEGS) * 1.6)  # cosine peak = 1.57 x mean speed
-        n = int(dur * rate)
-        t0 = time.monotonic()
-        for i in range(1, n + 1):
-            self._check_stop()
-            s = 0.5 - 0.5 * np.cos(np.pi * i / n)
-            self.robot.stream_joints(q0 + s * (q1 - q0))
-            if what:
-                self.reason = f"{what} ({100 * i // n}%)"
-            pause = t0 + i / rate - time.monotonic()
-            if pause > 0:
-                time.sleep(pause)
+        t, q = point_to_point(q0, q1, speed_degs or self.FEED_GLIDE_DEGS, self.smooth_cfg.rate_hz)
+        self._stream_path(t, q, reason=(lambda e: f"{what} ({100 * e / t[-1]:.0f}%)") if what else None)
         deadline = time.monotonic() + 2.0  # let the servos arrive
         while time.monotonic() < deadline:
             self._check_stop()
@@ -1108,6 +1122,77 @@ class FaceServoSession:
                 break
             time.sleep(0.05)
         self.last_move_end = self.robot.now()
+
+    LAG_CHECK_S = 0.5  # a streamed path reads the real joints this often (off-thread)
+    FRESH_SETPOINT_S = 1.0  # a glide starts from the last setpoint if it was sent this recently ...
+    FRESH_SETPOINT_DEG = 8.0  # ... and the arm is within this of it (else: someone moved it)
+
+    def _send(self, q) -> None:
+        """Stream one setpoint and remember it."""
+        q = np.asarray(q, float)
+        self.robot.stream_joints(q)
+        self._last_sent = (time.monotonic(), q.copy())
+
+    def _command_start(self) -> np.ndarray:
+        """Where the next streamed move should start: the last setpoint when it is fresh, else the
+        measured joints. The measured joints lag the setpoints and sag under gravity, so starting
+        from them right after a stream steps the command backwards (a jerk)."""
+        q_meas = np.asarray(self.robot.joints(), float)
+        if self._last_sent is not None:
+            ts, qs = self._last_sent
+            if time.monotonic() - ts < self.FRESH_SETPOINT_S and float(np.max(np.abs(qs - q_meas))) < self.FRESH_SETPOINT_DEG:
+                return qs.copy()
+        return q_meas
+
+    def _read_joints(self) -> np.ndarray:
+        fast = getattr(self.robot, "joints_fast", None)
+        return np.asarray(fast(timeout=1.0) if fast else self.robot.joints(timeout=1.0), float)
+
+    def _stream_path(self, t, q, reason=None, lag_deg: float | None = None, lag_joints=slice(None),
+                     lag_window_s: float = 0.5, what: str = "move") -> None:
+        """Stream ``(t s, q deg)`` by the wall clock: each tick sends q at the elapsed time, so
+        uneven sample times play back evenly and a slow call only delays itself (no burst of
+        catch-up setpoints afterwards). With ``lag_deg``, the real joints are read off-thread
+        every ``LAG_CHECK_S`` and the stream is stopped when the arm is further than that (over
+        ``lag_joints``) from every setpoint sent in the ``lag_window_s`` before the reading."""
+        t, q = np.asarray(t, float), np.asarray(q, float)
+        t = t - t[0]
+        dt = 1.0 / self.smooth_cfg.rate_hz
+        sent: deque = deque()
+        watch = _LagWatch(self._read_joints, self.LAG_CHECK_S) if lag_deg is not None else None
+        try:
+            t0 = time.monotonic()
+            while True:
+                self._check_stop()
+                e = min(time.monotonic() - t0, float(t[-1]))
+                qe = sample(t, q, e)
+                self._send(qe)
+                if reason is not None:
+                    self.reason = reason(e)
+                if watch is not None:
+                    now = time.monotonic()
+                    sent.append((now, qe))
+                    while sent[0][0] < now - lag_window_s - 2.0:
+                        sent.popleft()
+                    if watch.failing:
+                        self.stop(f"can't read the arm's joints during the {what}: stopped")
+                        raise Stopped()
+                    reading = watch.take()
+                    recent = [] if reading is None else [qs for ts, qs in sent if reading[0] - lag_window_s <= ts <= reading[0]]
+                    if recent:
+                        qr = reading[1]
+                        lag = min(float(np.max(np.abs(qr[lag_joints] - qs[lag_joints]))) for qs in recent)
+                        if lag > lag_deg:
+                            self.stop(f"arm is {lag:.0f} deg behind the {what} (blocked?): stopped")
+                            raise Stopped()
+                if e >= t[-1]:
+                    break
+                pause = t0 + (np.floor((time.monotonic() - t0) / dt) + 1) * dt - time.monotonic()  # next tick
+                if pause > 0:
+                    time.sleep(pause)
+        finally:
+            if watch is not None:
+                watch.close()
 
     def _person_pan(self) -> float:
         """Where the person usually is: the taught close pose's heading, else the look pose's."""
