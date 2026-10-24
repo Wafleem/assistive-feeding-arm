@@ -62,6 +62,7 @@
   <section>
     <div class="card">
       <button id="stop">STOP</button>
+      <a id="langlink" style="display:block;margin:6px 0 10px;color:var(--accent)" href="#">🗣 Natural-language feeding (say "I want some cereal")</a>
       <div class="row" style="margin-bottom:8px">
         <button class="step" data-a="teleop_start">Teleop on</button>
         <button class="step" data-a="teleop_stop">Teleop off</button>
@@ -179,6 +180,7 @@
 </main>
 <script>
 const token = new URLSearchParams(location.search).get("token") || "";
+document.getElementById("langlink").href = "/language.html?token=" + encodeURIComponent(token);
 document.getElementById("cam").src = "/stream.mjpg?token=" + encodeURIComponent(token);
 document.getElementById("depthcam").src = "/depth.mjpg?token=" + encodeURIComponent(token);
 const $ = id => document.getElementById(id);

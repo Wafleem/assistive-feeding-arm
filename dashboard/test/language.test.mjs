@@ -26,10 +26,14 @@ test('whole-command grammar rejects extra meaning and unknown foods', () => {
 test('safety words use boundaries and handle curly apostrophes', () => {
   assert.equal(parse('yogurt').intent.item,'yogurt'); assert.equal(parse('I’m done').intent.action,'done');
 });
-test('offline UI has no robot transport or background requests', () => {
-  const app=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
+test('robot transport only in the token-gated live mode (served by the dashboard)', () => {
+  const full=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
   const page=readFileSync(new URL('../static/language.html',import.meta.url),'utf8');
+  const [app, liveMode]=full.split('// ---------------------------------------------------------------- live mode');
+  assert(liveMode, 'live-mode section exists');
   assert.doesNotMatch(app,/\bfetch\s*\(|WebSocket|XMLHttpRequest|\/api\/|viam-connection|doCommand/);
+  assert.match(liveMode,/if \(!liveToken\) return;/);  // no token (opened offline): no requests at all
+  assert.match(liveMode,/action: 'stop'/);  // stop words are sent straight away when live
   assert.match(page,/id="send" disabled/);
   assert.doesNotMatch(page,/stream\.mjpg|\/api\/|<iframe[^>]*src=/);
   assert.match(app,/clearReview\(\); say\('idle', 'Command changed/);
