@@ -204,48 +204,94 @@ def pan_to_centre(b: FixedBowl, q_posture, iters: int = 30) -> tuple[np.ndarray,
     return np.round(q, 2), frac
 
 
-def sweep_poses(bowls: list[FixedBowl], q_from, look=look_pose) -> list[tuple[FixedBowl, np.ndarray]]:
-    """One look-down posture for all bowls (found for the first bowl), each bowl reached by turning
-    the base only: a single smooth sweep, nearest bowl first from ``q_from``'s heading."""
+LOOK_TILT_DEG = 14.0  # the look pose aims high: food sat ~190 px below centre in both Oct-24 frames
+
+
+def camera_pitch_deg(q) -> float:
+    """How far the camera looks below horizontal."""
+    return float(np.degrees(np.arcsin(-camera_pose(q)[2, 2])))
+
+
+def tilt_camera_down(q, deg: float, iters: int = 80) -> np.ndarray:
+    """Pitch the gripper camera ``deg`` further down, pivoting about roughly the same camera
+    position, with shoulder lift / elbow / wrist flex (pan and roll unchanged; joint limits kept)."""
+    q = np.asarray(q, float).copy()
+    if abs(deg) < 1e-6:
+        return q
+    p0, target = camera_pose(q)[:3, 3].copy(), camera_pitch_deg(q) + deg
+    lim = joint_limits()[1:4]
+
+    def err(qq):
+        return np.r_[(p0 - camera_pose(qq)[:3, 3]) * 30.0, 3.0 * (target - camera_pitch_deg(qq))]  # pitch first; camera may shift a few cm
+
+    for _ in range(iters):
+        e = err(q)
+        if np.abs(e).max() < 0.2:
+            break
+        J = np.zeros((4, 3))
+        for j in range(3):
+            q1 = q.copy(); q1[1 + j] += 0.5
+            J[:, j] = (e - err(q1)) / 0.5
+        dq = np.linalg.solve(J.T @ J + 0.05 * np.eye(3), J.T @ e)
+        q[1:4] = np.clip(q[1:4] + np.clip(dq, -4, 4), lim[:, 0] + 2, lim[:, 1] - 2)
+    return np.round(q, 2)
+
+
+def sweep_poses(bowls: list[FixedBowl], q_from, look=look_pose, tilt_deg: float = LOOK_TILT_DEG
+                ) -> list[tuple[FixedBowl, np.ndarray]]:
+    """One look-down posture for all bowls (found for the first bowl, then tilted ``tilt_deg``
+    further down to correct the measured aim error), each bowl reached by turning the base only:
+    a single smooth sweep."""
     if not bowls:
         return []
     q0 = np.asarray(q_from, float)
     first = min(bowls, key=lambda b: abs(-np.degrees(np.arctan2(b.centre[1], b.centre[0] - 0.0388)) - q0[0]))
     posture, _ = look(first, q0)
+    posture = tilt_camera_down(posture, tilt_deg)
     out = [(b, pan_to_centre(b, posture)[0]) for b in bowls]
     return sorted(out, key=lambda bq: bq[0].bowl_id)  # always Bowl 1, then Bowl 2 (predictable order)
 
 
-def vote_crops(rgb: np.ndarray, bottom_skip: int = 70) -> list[np.ndarray]:
-    """Crops of the inside of the bowl at a look-down view (the bowl fills the middle of the image):
-    centre, left, right and upper, avoiding the bottom band where the gripper/spoon may show."""
+def vote_crops(rgb: np.ndarray, bottom_skip: int = 0, size: float = 0.55) -> list[np.ndarray]:
+    """Square tiles covering the WHOLE frame (3 x 3 grid, overlapping) plus one centred tile. The
+    camera's aim is only roughly right (on Oct 24 the food sat in the bottom third of the frame),
+    so every part of the image gets a vote; ``combine`` lets the tiles that show food decide."""
     h, w = rgb.shape[:2]
     H = h - bottom_skip
-    s = int(min(w, H) * 0.55)
-    cx, cy = w // 2, H // 2
-    boxes = [(cx - s // 2, cy - s // 2), (cx - s // 2 - s // 3, cy - s // 2), (cx - s // 2 + s // 3, cy - s // 2),
-             (cx - s // 2, max(0, cy - s // 2 - s // 4))]
-    out = []
-    for x, y in boxes:
-        x, y = int(np.clip(x, 0, w - s)), int(np.clip(y, 0, H - s))
-        out.append(rgb[y:y + s, x:x + s].copy())
-    return out
+    s = int(min(w, H) * size)
+    xs, ys = np.linspace(0, w - s, 3).astype(int), np.linspace(0, H - s, 3).astype(int)
+    boxes = [(x, y) for y in ys for x in xs] + [((w - s) // 2, (H - s) // 2)]
+    return [rgb[y:y + s, x:x + s].copy() for x, y in boxes]
 
 
 NON_FOOD = ("other",)  # CLIP classes for table / bowl-rim crops: never a bowl's contents
 
 
-def combine(results: list[dict]) -> dict:
-    """Average CLIP's per-crop scores into one label for the bowl. Non-food classes ("other": the
-    table or the bowl's rim in the crop) are dropped and the rest renormalised, so a crop that is
-    half rim still votes by the food it shows."""
+def combine(results: list[dict], empty: str = "empty", top_k: int = 2, min_foodness: float = 0.3) -> dict:
+    """One label for the bowl from CLIP's per-tile scores.
+
+    Tiles of table or rim ("other") hardly count: each tile is weighted by how much it looks like
+    a bowl's contents (1 - other). A food's score is its mean over its best ``top_k`` food-looking
+    tiles, so a few tiles full of M&Ms win even when most of the frame is table. "empty" is the
+    weighted mean over all tiles: a bowl is only empty when no tile shows food."""
     names = sorted({k for r in results for k in r["scores"]})
     foods = [n for n in names if n not in NON_FOOD] or names
-    per = []
+    per, wts = [], []
     for r in results:
         tot = sum(r["scores"].get(n, 0.0) for n in foods) or 1.0
         per.append({n: r["scores"].get(n, 0.0) / tot for n in foods})
-    mean = {n: float(np.mean([p[n] for p in per])) for n in foods}
+        wts.append(max(0.0, 1.0 - sum(r["scores"].get(n, 0.0) for n in NON_FOOD)) if foods != names else 1.0)
+    foodness = np.asarray(wts, float)
+    wts = foodness ** 2 + 1e-6
+    good = [i for i, wi in enumerate(wts) if wi >= min_foodness ** 2] or list(range(len(per)))
+    raw = {}
+    for n in foods:
+        if n == empty:
+            raw[n] = float(np.average([p[n] for p in per], weights=wts))
+        else:
+            raw[n] = float(np.mean(sorted((per[i][n] * foodness[i] for i in good), reverse=True)[:top_k]))
+    tot = sum(raw.values()) or 1.0
+    mean = {n: v / tot for n, v in raw.items()}
     order = sorted(mean, key=lambda n: -mean[n])
     margin = mean[order[0]] - (mean[order[1]] if len(order) > 1 else 0.0)
     other = float(np.mean([sum(r["scores"].get(n, 0.0) for n in NON_FOOD) for r in results])) if foods != names else 0.0

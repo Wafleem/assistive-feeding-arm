@@ -6,6 +6,7 @@
 
 Thin web layer over ``assistive_arm.orchestration.face_servo_session``:
   GET  /                 the page (dashboard/static/index.html)
+  GET  /test             the full-stack test page (voice -> sweep -> scoop -> feed; dashboard/static/fullstack.html)
   GET  /stream.mjpg      the gripper camera with the overlay (face, spoon aim point, error)
   GET  /api/state        mode, reason, joints, face numbers, taught poses, log
   POST /api/cmd          {"action": "sweep" | "find_face" | "calibrate" | "center" | "extend" |
@@ -192,6 +193,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/language.html":
             return self._static("language.html", "text/html; charset=utf-8")
+        if path in ("/test", "/fullstack.html"):  # the voice -> sweep -> scoop -> feed test page
+            return self._static("fullstack.html", "text/html; charset=utf-8")
         if path in ("/", "/index.html"):
             body = (ROOT / "dashboard/static/index.html").read_bytes()
             self.send_response(200)
@@ -291,6 +294,7 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     shown = "localhost" if args.host in ("127.0.0.1", "localhost") else "<this-machine>"
     print(f"dashboard: http://{shown}:{args.port}/?token={Handler.token}", flush=True)
+    print(f"full-stack test: http://{shown}:{args.port}/test?token={Handler.token}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

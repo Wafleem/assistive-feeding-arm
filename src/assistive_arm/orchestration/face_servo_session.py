@@ -31,7 +31,7 @@ from ..feeding.face_track import (ExtendConfig, LevelTracker, TrackConfig, appro
                                   max_level_reach)
 from ..geometry import Pose
 from ..grasping.scoop import BowlTarget, ScoopConfig, ScoopPlan, pan_axis_xy, plan_scoop
-from ..robot_iface.so101_kinematics import fk as so101_fk
+from ..robot_iface.so101_kinematics import fk as so101_fk, joint_limits
 from ..feeding.face_servo import (
     FLEX, PAN, FaceServoConfig, FaceView, PointingConfig, PointingServo, line_miss, spoon_tilt_deg, target_pixel, tip_distance,
 )
@@ -106,7 +106,7 @@ class Stopped(Exception):
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
                "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "find_food", "scoop_food", "teach_bowls",
-               "feed")
+               "feed", "dump")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -1054,9 +1054,14 @@ class FaceServoSession:
 
         self._glide(q, speed_degs=speed_degs, what=f"bowls: looking into {b.name}")
         time.sleep(self.SWEEP_SETTLE_S)
-        frame = self.robot.get_frames([self.camera]).get(self.camera)
-        if frame is None:
-            raise RuntimeError("no camera frame")
+        frame = None
+        for _ in range(4):  # the C270 sometimes hands back an all-black frame right after waking
+            frame = self.robot.get_frames([self.camera]).get(self.camera)
+            if frame is not None and float(frame.rgb.mean()) > 12:
+                break
+            time.sleep(0.3)
+        if frame is None or float(frame.rgb.mean()) <= 12:
+            raise RuntimeError("camera frame is black or missing")
         box = None
         try:
             _, bx, _ = opening_outline(b, self.robot.camera_pose(self.camera).as_matrix())
@@ -1189,6 +1194,96 @@ class FaceServoSession:
         self.reason = f"scooped {food} from {b.name}: back home (Feed next)"
         self._event("scoop", self.reason)
         self._say("Got it. Ready to feed.")
+
+    DUMP_HOVER_MM, DUMP_LOW_MM = 60.0, 30.0  # spoon tip above the rim: on the way in, while tipping
+    DUMP_ROLL_DEG, DUMP_ROLL_DEGS = 110.0, 35.0  # how far / how fast the spoon rolls over (slow = no flinging)
+    DUMP_TILT_OK_DEG = 15.0  # bowl centres are at the edge of the level-spoon workspace: allow some tilt
+    DUMP_IN_MM = 20.0  # pour this far from the bowl centre toward the arm (easier reach, still inside)
+
+    def _bowl_for_food(self, food: str) -> str:
+        """Which bowl holds ``food``: the last look into the bowls if it was clear, else the setup
+        default (Bowl 1 cereal, Bowl 2 M&Ms). No new sweep: the spoon may be full."""
+        from ..food_perception.bowl_id import pick_bowl
+
+        labels = self.bowl_labels()
+        bid = pick_bowl(food, labels) if labels else None
+        if bid is None:
+            bid = next((b.bowl_id for b in self.fixed_bowls() if b.default_food == food), None)
+        if bid is None:
+            raise RuntimeError(f"no bowl for {food}")
+        return bid
+
+    def _spoon_over(self, q0, tip_xyz, iters: int = 200) -> np.ndarray:
+        """Pan / lift / elbow / flex that put the spoon tip at ``tip_xyz`` (m) with the spoon as
+        level as the arm allows (within DUMP_TILT_OK_DEG; wrist roll at its level value), from a few
+        starting postures; the nearest to ``q0`` that gets within 5 mm wins. Raises if none does."""
+        level = float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0))
+        roll = float((self.taught.spoon_level or {}).get("wrist_roll_deg", np.asarray(q0, float)[ROLL]))
+        lim = joint_limits()
+        target = np.asarray(tip_xyz, float)
+
+        def err(qq):
+            return np.r_[(target - self._tip(qq)) * 100.0, 0.08 * (level - _tool_pitch(qq))]
+
+        def solve(q):
+            q = np.asarray(q, float).copy()
+            q[ROLL] = roll
+            for _ in range(iters):
+                e = err(q)
+                if np.abs(e).max() < 0.1:
+                    break
+                J = np.zeros((4, 4))
+                for j in range(4):
+                    q1 = q.copy(); q1[j] += 0.3
+                    J[:, j] = (e - err(q1)) / 0.3
+                dq = np.linalg.solve(J.T @ J + 0.02 * np.eye(4), J.T @ e)
+                q[:4] = np.clip(q[:4] + np.clip(dq, -5, 5), lim[:4, 0] + 2, lim[:4, 1] - 2)
+            return q, err(q)
+
+        pan = -np.degrees(np.arctan2(target[1], target[0] - 0.0388))
+        seeds = [q0] + [[pan, a, b, c, roll] for a, b, c in ((-40, 60, 20), (-20, 40, -20), (-60, 80, 0), (0, 60, -60))]
+        best, best_e = None, None
+        for sd in seeds:
+            q, e = solve(sd)
+            if np.abs(e[:3]).max() <= 0.5 and abs(e[3]) <= 0.08 * self.DUMP_TILT_OK_DEG:
+                if best is None or np.abs(q - q0).sum() < np.abs(best - q0).sum():
+                    best = q
+            elif best_e is None or np.abs(e[:3]).max() < best_e:
+                best_e = float(np.abs(e[:3]).max())
+        if best is None:
+            raise RuntimeError(f"can't hold the spoon level over that point (off by {best_e:.1f} cm)")
+        return np.round(best, 2)
+
+    def _do_dump(self) -> None:
+        """Debug: carefully pour the spoon back into the bowl that holds kw food (cereal / mms):
+        level spoon over the bowl centre, down to just above the rim, a slow roll about the spoon's
+        own length (the tip stays put), a pause, roll back, up, home."""
+        food = str((getattr(self, "_kw", {}) or {}).get("food", "cereal")).lower()
+        bid = self._bowl_for_food(food)
+        bowl = self._scoop_bowl_dict(bid)
+        from ..grasping.scoop import pan_axis_xy
+        c = np.asarray(bowl["centre_mm"], float) / 1000
+        toward = np.asarray(pan_axis_xy(), float) - c
+        c = c + toward / np.linalg.norm(toward) * self.DUMP_IN_MM / 1000
+        rim = float(bowl["rim_z_mm"]) / 1000
+        self.robot.stop_teleop()
+        self._say(f"Putting it back in the {self.FOOD_SPOKEN.get(food, food)} bowl.")
+        q_now = self.robot.joints()
+        hover = self._spoon_over(q_now, [c[0], c[1], rim + self.DUMP_HOVER_MM / 1000])
+        low = self._spoon_over(hover, [c[0], c[1], rim + self.DUMP_LOW_MM / 1000])
+        self._glide(hover, speed_degs=self.LOADED_DEGS, what=f"dump: over {bowl.get('name', bid)} (spoon level)")
+        self._glide(low, speed_degs=self.LOADED_DEGS / 2, what="dump: down to just above the rim")
+        lim = joint_limits()[ROLL]
+        tipped = low.copy()
+        tipped[ROLL] = low[ROLL] + self.DUMP_ROLL_DEG if low[ROLL] + self.DUMP_ROLL_DEG < lim[1] - 2 else low[ROLL] - self.DUMP_ROLL_DEG
+        self._glide(tipped, speed_degs=self.DUMP_ROLL_DEGS, what="dump: rolling the spoon over")
+        if self._stop.wait(1.5):  # let it fall; STOP still wins
+            raise Stopped()
+        self._glide(low, speed_degs=60.0, what="dump: spoon back upright")
+        self._glide(hover, speed_degs=45.0, what="dump: up")
+        self._glide(self.home_pose(), speed_degs=45.0, what="dump: home")
+        self.reason = f"poured back into {bowl.get('name', bid)} ({food}); home"
+        self._event("dump", self.reason)
 
     def bowl_overlays(self) -> list[dict]:
         """Each bowl's opening in the current camera view (for the video feed), with its label."""
