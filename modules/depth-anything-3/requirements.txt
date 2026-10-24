@@ -11,3 +11,6 @@ omegaconf
 addict
 opencv-python-headless
 imageio
+# Depth Pro (the default model); the package itself is installed by setup.sh
+timm
+pillow_heif

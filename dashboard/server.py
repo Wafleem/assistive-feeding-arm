@@ -102,39 +102,74 @@ def make_render():
     return render
 
 
-def make_depth_render(near_m: float = 0.25, far_m: float = 2.5):
-    """Depth as colour (near = red, far = blue), the face box with its measured distance."""
+LIPS_OUTER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61]
+LIP_SURFACE = (0, 37, 267, 17, 84, 314, 61, 291)  # on the lips themselves, never inside the opening
+
+
+def lips_depth(px: np.ndarray, depth: np.ndarray, half: int = 3, max_range: float = 1.5) -> float | None:
+    """Median depth (m, camera z) on the lip surface: upper/lower lip and the outer corners.
+    The open mouth is a hole (it reads as the far side), so it is never sampled."""
+    h, w = depth.shape
+    vals = []
+    for i in LIP_SURFACE:
+        u, v = int(round(px[i, 0])), int(round(px[i, 1]))
+        if 0 <= u < w and 0 <= v < h:
+            p = depth[max(0, v - half): v + half + 1, max(0, u - half): u + half + 1]
+            vals.extend(p[(p > 0) & (p < max_range) & np.isfinite(p)].ravel())
+    return float(np.median(vals)) if len(vals) >= 5 else None
+
+
+def make_depth_render(near_m: float = 0.10, far_m: float = 1.5, alpha: float = 0.45):
+    """Depth and the mouth in one picture: the depth camera's own colour frame with its depth
+    blended over it (near = red, far = blue), the face outline and lips that MediaPipe found
+    on that same frame, and the distances to the lips, the face and straight ahead.
+
+    Colour, depth and landmarks come from one capture, so they line up exactly; the picture
+    updates at the depth rate (about 1 Hz with Depth Pro), not the camera's 20 Hz."""
     import cv2
     from assistive_arm.mouth_perception import face_geometry as fg
 
+    def text(img, s, org, scale=0.6, colour=(255, 255, 255), thick=1):
+        cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 3, cv2.LINE_AA)
+        cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thick, cv2.LINE_AA)
+
     def render(frame, landmarks, session) -> bytes:
         d = frame.depth
+        bgr = cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2BGR)
         norm = np.clip((d - near_m) / (far_m - near_m), 0, 1)
-        img = cv2.applyColorMap((255 * (1 - norm)).astype(np.uint8), cv2.COLORMAP_JET)
-        img[d <= 0] = 0
+        colour = cv2.applyColorMap((255 * (1 - norm)).astype(np.uint8), cv2.COLORMAP_JET)
+        img = bgr.copy()
+        valid = d > 0
+        img[valid] = cv2.addWeighted(bgr, 1 - alpha, colour, alpha, 0)[valid]  # no depth: plain colour
         h, w = img.shape[:2]
         if landmarks is not None:
             px = fg.landmarks_to_pixels(landmarks, frame.intrinsics)
-            x0, y0 = px[:, :2].min(axis=0).astype(int)
-            x1, y1 = px[:, :2].max(axis=0).astype(int)
-            cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), 2)
-            z = fg.face_depth_from_image(px, d, getattr(session.det, "params", fg.FaceGeometryParams()))
-            lip = tuple(int(v) for v in px[13, :2])
-            cv2.circle(img, lip, 5, (255, 255, 255), -1)
-            if z is not None:
-                cv2.putText(img, f"face {z * 100:.0f} cm", (x0, max(18, y0 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            (255, 255, 255), 2, cv2.LINE_AA)
+            p2 = px[:, :2].astype(np.int32)
+            cv2.polylines(img, [p2[FACE_OVAL]], False, (230, 230, 230), 1, cv2.LINE_AA)
+            cv2.polylines(img, [p2[LIPS_OUTER]], True, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.polylines(img, [p2[LIPS_INNER]], True, (0, 220, 0), 1, cv2.LINE_AA)
+            mouth = tuple(int(v) for v in 0.5 * (px[fg.UPPER_INNER_LIP, :2] + px[fg.LOWER_INNER_LIP, :2]))
+            cv2.circle(img, mouth, 4, (0, 0, 255), -1)
+            z_lips = lips_depth(px, d)
+            text(img, f"lips {z_lips * 100:.1f} cm" if z_lips is not None else "lips: no depth",
+                 (mouth[0] + 12, mouth[1] + 22), 0.7, (0, 255, 255), 2)
+            z_face = fg.face_depth_from_image(px, d, getattr(session.det, "params", fg.FaceGeometryParams()))
+            if z_face is not None:
+                x0, y0 = p2[FACE_OVAL].min(axis=0)
+                text(img, f"face {z_face * 100:.0f} cm", (int(x0), max(20, int(y0) - 8)), 0.6)
         cy, cx = h // 2, w // 2
         c = d[cy - 4:cy + 5, cx - 4:cx + 5]
         c = c[c > 0]
         if c.size:
             cv2.drawMarker(img, (cx, cy), (255, 255, 255), cv2.MARKER_CROSS, 16, 1)
-            cv2.putText(img, f"{np.median(c) * 100:.0f} cm", (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.rectangle(img, (0, h - 22), (w, h), (0, 0, 0), -1)
-        cv2.putText(img, f"depth {near_m:.2f} m (red) .. {far_m:.1f} m (blue)   {session.depth_status}"[:80],
-                    (8, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            text(img, f"{np.median(c) * 100:.0f} cm", (cx + 10, cy - 10), 0.5)
+        # Colour key: near (red) .. far (blue), then the depth status.
+        bar = cv2.applyColorMap(np.linspace(255, 0, 160).astype(np.uint8)[None, :].repeat(10, 0), cv2.COLORMAP_JET)
+        cv2.rectangle(img, (0, h - 24), (w, h), (0, 0, 0), -1)
+        img[h - 17:h - 7, 8:168] = bar
+        cv2.putText(img, f"{near_m * 100:.0f} cm .. {far_m:.1f} m   {session.depth_status}"[:70], (176, h - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         return buf.tobytes() if ok else b""
 
     return render
