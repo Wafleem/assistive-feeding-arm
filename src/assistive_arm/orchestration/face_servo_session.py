@@ -198,7 +198,7 @@ class FaceServoSession:
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
-    DEPTH_FRESH_S = 0.8  # Extend uses the depth-measured lips while they are at most this old
+    DEPTH_FRESH_S = 1.5  # Extend uses the depth-measured lips while they are at most this old (depth runs at ~1 Hz)
 
     def _depth_range_face(self, lm, frame, params) -> None:
         """Lips position (arm base frame) ranged by the depth camera itself, for Extend's stop."""
