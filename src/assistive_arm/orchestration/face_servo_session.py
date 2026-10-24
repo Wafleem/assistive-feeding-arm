@@ -198,7 +198,7 @@ class FaceServoSession:
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
-    DEPTH_FRESH_S = 1.5  # Extend uses the depth-measured lips while they are at most this old (depth runs at ~1 Hz)
+    DEPTH_FRESH_S = 3.0  # Extend uses the depth-measured lips while they are at most this old (local Depth Pro at 0.5 Hz)
 
     def _depth_range_face(self, lm, frame, params) -> None:
         """Lips position (arm base frame) ranged by the depth camera itself, for Extend's stop."""
@@ -1555,7 +1555,7 @@ class FaceServoSession:
 
     def _feed_once(self) -> None:
         """One bite: home -> sweep to where the person usually sits -> find the face -> centre
-        and extend (stop 3 cm from the lips, hold 10 s) -> back out -> home. STOP at any time
+        and extend (stop 3 cm from the lips, hold 5 s) -> back out -> home. STOP at any time
         leaves the arm where it is."""
         home = self.home_pose()
         self._event("feed", "going home")

@@ -9,6 +9,8 @@
   .stack.top img.cam { max-height:calc(100vh - 190px); aspect-ratio:4/3; }
   .cmd { display:grid; gap:10px; } .cmd .say-input input { flex-basis:120px; }
   .say-result:empty { display:none; }
+  button.arm { min-height:52px; font-size:15px; font-weight:700; border:2px solid var(--warn); background:transparent; color:var(--ink); }
+  button.arm.on { background:var(--ok); border-color:var(--ok); color:#06170f; }
   .stack.secondary { margin-top:14px; opacity:.92; }
   .stack.secondary section { padding:10px 14px; }
   .stack.secondary ol.progress li { padding:6px 10px; }
@@ -35,6 +37,7 @@
 <main>
 <div class="stack top">
   <section class="cmd">
+    <button class="arm" id="arm" onclick="toggleHandsFree()" aria-pressed="false">🛡 Operator: area is safe — start hands-free voice</button>
     <button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button>
     <div class="say-input"><input type="text" id="text" aria-label="Command for the robot"
         onkeydown="if (event.key === 'Enter') go(this.value)"><button class="primary" onclick="go(document.getElementById('text').value)">Go</button></div>
@@ -192,6 +195,7 @@ async function debug(action, extra = {}) {
 }
 async function stopAll() {
   runId++; readyResolve = null;
+  if (handsFree) disarm();  // the operator re-arms after any stop
   try { await api('/api/cmd', { action: 'stop' }); status('STOPPED.', 'bad'); show('result', 'bad', 'STOP sent.'); }
   catch (e) { status('STOP failed: ' + e.message, 'bad'); }
   for (const li of $('steps').children) if (li.className === 'now') li.className = 'fail';
@@ -200,8 +204,18 @@ async function stopAll() {
 
 // voice in: browser speech recognition (several guesses; the first one understood wins)
 const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null;
+let rec = null;          // tap-and-talk session (one request)
+let handsFree = false;   // the operator armed always-on listening
+let hfRec = null, ttsUntil = 0;
+const STOP_WORDS = /\b(stop|wait|no|halt|freeze|done|enough)\b/i;
+
+function micLabel() {
+  const m = $('mic');
+  if (handsFree) { m.classList.add('on'); m.textContent = '🎙 Hands-free: listening'; m.setAttribute('aria-pressed', 'true'); }
+  else if (!rec) { m.classList.remove('on'); m.textContent = '🎤 Tap and talk'; m.setAttribute('aria-pressed', 'false'); }
+}
 function toggleMic() {
+  if (handsFree) return;  // already listening all the time
   if (rec) { rec.stop(); return; }
   if (!Rec) { show('result', 'bad', 'No speech recognition in this browser: use Chrome or Safari, or type.'); return; }
   try { speechSynthesis.cancel(); } catch (e) {}
@@ -214,13 +228,61 @@ function toggleMic() {
   };
   session.onerror = ev => show('result', 'bad', 'Mic: ' + ev.error + (ev.error === 'not-allowed' ? ' (allow the microphone for this page)' : ''));
   session.onend = () => {
-    rec = null; $('mic').classList.remove('on'); $('mic').textContent = '🎤 Tap and talk'; $('mic').setAttribute('aria-pressed', 'false');
+    rec = null; micLabel();
     const pick = finals.find(f => understand(f)) || finals[0];
     if (pick) go(pick);
   };
   $('mic').classList.add('on'); $('mic').textContent = '🎙 Listening… tap to finish'; $('mic').setAttribute('aria-pressed', 'true');
   show('result', 'listen', 'Listening…');
   try { session.start(); } catch (e) { rec = null; show('result', 'bad', 'Mic: ' + e.message); }
+}
+
+// Hands-free: the operator checks the area and presses the safety button once; from then on
+// every spoken request is acted on with no tapping. Any STOP (button, Esc, or the word) turns
+// it off again: the operator must re-arm. While the robot itself is talking, only stop words
+// count (so it never obeys its own narration).
+function toggleHandsFree() { handsFree ? disarm('Hands-free voice off.') : arm(); }
+function arm() {
+  if (!Rec) { show('result', 'bad', 'No speech recognition in this browser: use Chrome or Safari.'); return; }
+  if (rec) { try { rec.abort(); } catch (e) {} rec = null; }
+  handsFree = true;
+  $('arm').classList.add('on'); $('arm').setAttribute('aria-pressed', 'true');
+  $('arm').textContent = '🛡 Hands-free ON · press to turn off';
+  micLabel(); show('result', 'listen', 'Hands-free: say what you would like.');
+  talk('Hands free voice is on. What would you like?');
+  listen();
+}
+function disarm(why) {
+  handsFree = false;
+  const r = hfRec; hfRec = null;
+  if (r) { try { r.abort(); } catch (e) {} }
+  $('arm').classList.remove('on'); $('arm').setAttribute('aria-pressed', 'false');
+  $('arm').textContent = '🛡 Operator: area is safe — start hands-free voice';
+  micLabel(); if (why) show('result', 'idle', why);
+}
+function listen() {
+  if (!handsFree) return;
+  const session = hfRec = new Rec();
+  session.lang = 'en-US'; session.interimResults = true; session.maxAlternatives = 5; session.continuous = true;
+  session.onresult = ev => {
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (!r.isFinal) { $('text').value = r[0].transcript; continue; }
+      const guesses = [...r].map(a => a.transcript.trim()).filter(Boolean);
+      const robotTalking = (window.speechSynthesis && speechSynthesis.speaking) || Date.now() < ttsUntil;
+      const stop = guesses.find(g => STOP_WORDS.test(g));
+      if (stop) { $('text').value = stop; go(stop); continue; }
+      if (robotTalking) continue;  // its own voice, not a request
+      const pick = guesses.find(g => understand(g));
+      if (pick) go(pick);
+      else if (guesses[0] && guesses[0].split(' ').length > 1 && !busy) show('result', 'idle', `Heard “${guesses[0]}” (not a request).`);
+    }
+  };
+  session.onerror = ev => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') disarm('Mic blocked: allow the microphone for this page, then arm again.');
+  };
+  session.onend = () => { if (handsFree && hfRec === session) setTimeout(listen, 250); };  // Chrome ends sessions on silence
+  try { session.start(); } catch (e) { setTimeout(listen, 1000); }
 }
 // voice out
 function talk(text) {
@@ -229,6 +291,8 @@ function talk(text) {
     const u = new SpeechSynthesisUtterance(text); u.rate = 1.05;
     const v = speechSynthesis.getVoices().find(v => /^en/i.test(v.lang) && /natural|enhanced|premium|samantha|google us/i.test(v.name));
     if (v) u.voice = v;
+    ttsUntil = Date.now() + 1500 + 90 * text.length;
+    u.onend = () => { ttsUntil = Date.now() + 800; };
     speechSynthesis.speak(u);
   } catch (e) {}
 }
@@ -260,7 +324,7 @@ async function poll() {
   }
   setTimeout(poll, 700);
 }
-Object.assign(window, { go, toggleMic, stopAll, debug, toggleTheme });
+Object.assign(window, { go, toggleMic, toggleHandsFree, stopAll, debug, toggleTheme });
 if (token) {
   $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token);
   $('depth').src = '/depth.mjpg?token=' + encodeURIComponent(token);

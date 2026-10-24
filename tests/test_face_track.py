@@ -99,7 +99,7 @@ def test_extend_decision_rules():
     assert extend_decision(c, **{**ok, "face_seen": False, "age": 2.0, "travelled": 0.05})[0] == 0  # holds: Retreat/STOP backs out
     assert extend_decision(c, **{**ok, "face_seen": False})[0] == 0  # nothing to back out of
     assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 1.0})[0] == 0  # holding
-    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 11.0})[0] == -1  # 10 s to eat, then back out
+    assert extend_decision(c, **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 6.0})[0] == -1  # 5 s to eat, then back out
     assert extend_decision(ExtendConfig(stop_tip_distance=0.20, hold_s=8.0),
                            **{**ok, "tip": 0.20, "travelled": 0.1, "held_s": 9.0})[0] == -1  # optional hold timer
     assert extend_decision(c, **{**ok, "tip": 0.15, "travelled": 0.1})[0] == -1  # too close

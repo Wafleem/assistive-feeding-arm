@@ -86,7 +86,7 @@ class ExtendConfig:
     retreat_head_speed: float = 0.12  # m/s: faster => back out
     max_face_age: float = 0.4  # s without a face fix => hold still (close in, the face often drops out briefly)
     lost_backout_s: float = float("inf")  # s without a face fix => back out (inf: hold until Retreat/STOP)
-    hold_s: float = 10.0  # s at the stop (the person eats), then back out and keep tracking
+    hold_s: float = 5.0  # s at the stop (the person eats), then back out and keep tracking
     # With a taught close pose (its aim line), Extend measures along the spoon: close_fwd = where
     # the spoon tip is (spoon_tip_from_tool), close_margin = the gap to leave, spoon tip to lips.
     close_fwd: float | None = None
