@@ -256,7 +256,10 @@ servos do exactly what the stream does. The jerky moments came from the stream, 
 | Glides started from the measured joints (which lag and sag) | a small backward step at the start of each glide | a glide starts from the last setpoint when it is fresh (< 1 s, within 8 deg) |
 | Cosine profiles (glides, planned scoop phases) | an acceleration jump at every start and stop | minimum-jerk profiles, same peak speeds |
 
-Offline, the recorded scoop now peaks at ~195 deg/s and ~1,240 deg/s^2 with no step at the
-start (`FaceServoSession._replay_path`), 0.4 s longer for the eases. Speed and acceleration are
-capped at 200 deg/s and 2000 deg/s^2 (`motion.smoothing.SmoothingConfig`): a recording that
-needs more is slowed down, never clipped. Glides keep their peak speed, so they take ~17% longer.
+Offline, the teleop scoop recording went from ~500 deg/s and 31,000 deg/s^2 to ~195 deg/s and
+~1,240 deg/s^2 with no step at the start. The current hand-guided recording (samples 6-74 ms
+apart, 729 deg/s^2 peak) replays at 39 deg/s and 149 deg/s^2 peak, starting and ending at rest
+(`FaceServoSession._replay_path`: resample to 60 Hz, smooth, fit to the bowl, shrink pauses,
+cap, ease). Speed and acceleration are capped at 200 deg/s and 2000 deg/s^2
+(`motion.smoothing.SmoothingConfig`): a recording that needs more is slowed down, never clipped.
+The replay keeps main's servo-sag feedback, now fed by the off-thread joint reads. Glides keep their peak speed, so they take ~17% longer.

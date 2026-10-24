@@ -184,7 +184,8 @@ class FaceServoSession:
         self.ext_cfg = ExtendConfig(stop_tip_distance=self.cfg.stop_tip_distance)
         self.scoop_cfg = ScoopConfig(spoon_tip_from_tool=self.ext_cfg.spoon_tip_from_tool)
         self.scoop_lag_deg = 10.0  # the arm this far behind the streamed scoop: stop
-        self.smooth_cfg = SmoothingConfig(rate_hz=self.track_cfg.rate_hz)
+        # 60 Hz for streamed paths: streamed setpoints run unprofiled on the servos, so smaller steps shake less
+        self.smooth_cfg = SmoothingConfig(rate_hz=60.0)
         self._last_sent: tuple[float, np.ndarray] | None = None  # (monotonic s, joints): the last streamed setpoint
         self.last_scoop: dict | None = None
         self.track: LevelTracker | None = None
@@ -312,6 +313,8 @@ class FaceServoSession:
         if action in ("teach_home", "teach_look", "teach_near"):
             q = [round(float(v), 2) for v in self.robot.joints()]
             setattr(self.taught, action[6:], q)
+            if action == "teach_look":  # Feed sweeps to this pose (heading, height and extension)
+                self.taught.notes["look_t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             self.taught.save(self.path)
             return self._event(action, f"saved {q}")
         if action in ("hand_guide_on", "hand_guide_off"):
@@ -969,10 +972,16 @@ class FaceServoSession:
         self._event("scoop", self.reason)
 
     SCOOP_DEMO = Path("poses/so101_scoop_demo.json")  # a teleop scoop, recorded (joints at 30 Hz)
-    SCOOP_ROLL_GAIN = 2.0  # x the recorded wrist roll (measured from where the dip starts): a bigger twist scoops more
-    SCOOP_PRE_ROLL = 25.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
-    SCOOP_EXTRA_DEPTH = 0.025  # m: go this much deeper than the recording at the bottom of the dip
-    SCOOP_EXTRA_SWEEP = 8.0  # deg of base pan: keep sweeping this much further along the bottom before lifting
+    BOWL_CAL = Path("poses/so101_bowl.json")  # spoon-tip bowl calibration (centre, radius, rim and floor heights)
+    # Adjustments on top of the recording (all off: the hand-guided demo already has the pre-roll,
+    # depth and sweep the team wanted). Kept for quick tuning.
+    SCOOP_ROLL_GAIN = 1.0  # x the recorded wrist roll (measured from where the dip starts)
+    SCOOP_PRE_ROLL = 0.0  # deg: roll the other way first (over the bowl), unwound by the peak of the twist
+    SCOOP_EXTRA_DEPTH = 0.0  # m: go this much deeper than the recording at the bottom of the dip
+    SCOOP_EXTRA_SWEEP = 0.0  # deg of base pan: keep sweeping this much further along the bottom before lifting
+    LOADED_DEGS = 30.0  # deg/s peak for moves with food on the spoon (smooth: no shaking it off)
+    SCOOP_PAUSE_KEEP = 0.1  # fraction of the recording's still pauses kept in the replay
+    SCOOP_SMOOTH_HAND_S = 0.1  # s, Gaussian smoothing of a hand-guided recording (hand jitter); teleop: smooth_cfg.sigma_s
 
     def _do_home_scoop(self) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
@@ -1017,15 +1026,68 @@ class FaceServoSession:
                              f"+{self.SCOOP_EXTRA_SWEEP:g} deg sweep along it")
         return out
 
+    def _tip(self, q) -> np.ndarray:
+        T = so101_fk(q)
+        return T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2]
+
+    def _fit_scoop_to_bowl(self, q: np.ndarray, bowl: dict) -> np.ndarray:
+        """Move the recorded scoop onto the calibrated bowl (turn about the pan axis + reach, same
+        heights and spoon angles), then make sure the spoon tip never goes below the bowl floor, or
+        below the rim outside the bowl (raising the tool where it would). Raises if it can't."""
+        from ..feeding.face_track import solve_level_pose
+        from ..grasping.scoop import pan_axis_xy
+        axis = np.asarray(pan_axis_xy(), float)
+        c_new = np.asarray(bowl["centre_mm"], float) / 1000
+        R, rim_z, floor_z = bowl["radius_mm"] / 1000, bowl["rim_z_mm"] / 1000, bowl["floor_z_mm"] / 1000
+        tips = np.array([self._tip(qi) for qi in q])
+        c_old = tips[tips[:, 2] < tips[:, 2].min() + 0.02][:, :2].mean(axis=0)  # where the recording scooped
+        ang = lambda v: np.arctan2(v[1], v[0])
+        alpha = ang(c_new - axis) - ang(c_old - axis)
+        dr = np.linalg.norm(c_new - axis) - np.linalg.norm(c_old - axis)
+        out = q.copy()
+        out[:, PAN] -= np.degrees(alpha)  # + pan turns the arm the other way (checked with FK)
+        for i in range(len(out)):
+            T = so101_fk(out[i])
+            u = (T[:2, 3] - axis) / (np.linalg.norm(T[:2, 3] - axis) or 1.0)
+            reach = float(np.linalg.norm(T[:2, 3] + dr * u))
+            qn, ok = solve_level_pose(out[i], reach, float(T[2, 3]), _tool_pitch(out[i]))
+            if ok:
+                out[i, 1:4] = qn[1:4]
+        raised = 0
+        for i in range(len(out)):  # the floor and the rim
+            tip = self._tip(out[i])
+            inside = np.linalg.norm(tip[:2] - c_new) <= R
+            need = (floor_z if inside else rim_z + 0.012) - tip[2]
+            if need > 0:
+                T = so101_fk(out[i])
+                qn, ok = solve_level_pose(out[i], float(np.linalg.norm(T[:2, 3])), float(T[2, 3]) + need + 0.002,
+                                         _tool_pitch(out[i]))
+                if not ok:
+                    raise RuntimeError(f"scoop refused: setpoint {i} would put the spoon tip {need * 1000:.0f} mm "
+                                       f"too low and can't be raised")
+                out[i, 1:4] = qn[1:4]
+                raised += 1
+        tips = np.array([self._tip(qi) for qi in out])
+        deep = tips[tips[:, 2] < tips[:, 2].min() + 0.02]
+        off = float(np.linalg.norm(deep[:, :2].mean(axis=0) - c_new))
+        self._event("scoop", f"fitted to the bowl: turned {np.degrees(alpha):+.1f} deg, reach {dr * 1000:+.0f} mm; "
+                             f"lowest tip {tips[:, 2].min() * 1000:.0f} mm (floor {floor_z * 1000:.0f}), "
+                             f"scoop {off * 1000:.0f} mm from the bowl centre, {raised} setpoints raised")
+        return out
+
     def _replay_path(self, demo: dict, speed: float = 1.0) -> tuple[np.ndarray, np.ndarray, dict]:
-        """The recorded dip as it will be streamed: resampled evenly (the recording's samples are
-        5-48 ms apart), smoothed (zero-phase: jitter out, timing and depth kept), deepened, its
-        roll gained and pre-rolled, then capped in speed and acceleration and eased in and out
-        (it starts from a glide that ended at rest, and the arm feels a sudden start as a kick)."""
+        """The recorded scoop as it will be streamed: resampled evenly (recorded samples arrive
+        unevenly), smoothed (zero-phase: jitter out, timing and depth kept; more for a hand-guided
+        recording), deepened, fitted to the calibrated bowl, its roll gained and pre-rolled, its
+        pauses shrunk, then capped in speed and acceleration and eased in and out (it starts from a
+        glide that ended at rest, and the arm feels a sudden start as a kick)."""
         c = self.smooth_cfg
         t, q = resample(np.asarray(demo["t"], float) / max(speed, 0.1), np.asarray(demo["q"], float), c.rate_hz)
-        q = gaussian_smooth(q, c.rate_hz, c.sigma_s)
+        sigma = self.SCOOP_SMOOTH_HAND_S if demo.get("kind") == "hand-guided" else c.sigma_s
+        q = gaussian_smooth(q, c.rate_hz, sigma)
         q = self._deepen_scoop(q)
+        if self.BOWL_CAL.exists():
+            q = self._fit_scoop_to_bowl(q, json.loads(self.BOWL_CAL.read_text()))
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
         # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
@@ -1035,6 +1097,13 @@ class FaceServoSession:
         if peak > 0:
             w = 0.5 - 0.5 * np.cos(np.pi * np.arange(peak + 1) / peak)  # 0 -> 1
             q[:peak + 1, ROLL] -= sign * self.SCOOP_PRE_ROLL * (1.0 - w)
+        # The still holds (the hand pausing) shrunk to SCOOP_PAUSE_KEEP, the moving parts at their
+        # recorded speed; then even again and lightly re-smoothed (the shrunk pauses leave corners).
+        dt = np.diff(t)
+        moving = np.linalg.norm(np.diff(q, axis=0), axis=1) / np.maximum(dt, 1e-3) > 3.0
+        t = np.r_[0.0, np.cumsum(np.where(moving, dt, dt * self.SCOOP_PAUSE_KEEP))]
+        t, q = resample(t, q, c.rate_hz)
+        q = gaussian_smooth(q, c.rate_hz, c.sigma_s)
         t, stretch = limit_speed(t, q, c.max_speed, c.max_accel)
         t, q = ease_in_out(t, q, c.ease_s, c.rate_hz)
         v, a = peaks(t, q)
@@ -1042,23 +1111,23 @@ class FaceServoSession:
                       "peak_speed_degs": round(v), "peak_accel_degs2": round(a)}
 
     def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
-        """Above the bowl -> the recorded dip (smoothed, see ``_replay_path``) -> spoon tipped
-        up a little so the food stays on -> home."""
+        """Above the bowl -> the recorded dip (smoothed and fitted to the bowl, see ``_replay_path``)
+        -> spoon tipped up a little so the food stays on -> home."""
         t, q, rep = self._replay_path(demo, speed)
         self._event("scoop", "replay: {duration_s} s, peak {peak_speed_degs} deg/s and {peak_accel_degs2} deg/s^2 "
                              "(time stretched x{stretch} for the caps)".format(**rep))
         self.robot.stop_teleop()
         self._glide(q[0], what="scoop: over the bowl")
-        # roll: a fast twist, not checked
+        # roll: a fast twist, not checked; sag feedback keeps the loaded arm from drooping below the path
         self._stream_path(t, q, reason=lambda e: f"scoop: recorded dip ({e:.1f}/{t[-1]:.1f} s)", lag_deg=15.0,
-                          lag_joints=slice(0, 4), lag_window_s=0.6, what="scoop")
+                          lag_joints=slice(0, 4), lag_window_s=0.6, what="scoop", sag=True)
         carry = q[-1].copy()  # tip the loaded spoon up (+5 deg from level) with the wrist only
         q1 = carry.copy(); q1[FLEX] += 1.0
         slope = _tool_pitch(q1) - _tool_pitch(carry)
         if abs(slope) > 0.2:
             carry[FLEX] = float(np.clip(carry[FLEX] - (self._spoon_tilt(carry) - 5.0) / slope, -94.0, 94.0))
-        self._glide(carry, speed_degs=40.0, what="scoop: tipping the spoon up")
-        self._glide(self.home_pose(), what="scoop: back home")
+        self._glide(carry, speed_degs=self.LOADED_DEGS, what="scoop: tipping the spoon up")
+        self._glide(self.home_pose(), speed_degs=self.LOADED_DEGS, what="scoop: back home (loaded, slow)")
 
     def _do_center(self) -> None:
         self._require_level()
@@ -1102,6 +1171,7 @@ class FaceServoSession:
 
     # ---------------------------------------------------------------- one-button feed
     FEED_GLIDE_DEGS = 60.0  # deg/s for the big joint moves (home, sweep), streamed and synchronised
+    GLIDE_MIN_S = 0.8  # s, shortest glide
 
     def _glide(self, target, speed_degs: float | None = None, what: str = "") -> None:
         """Smooth synchronised joint move: every joint starts and arrives together on a
@@ -1113,7 +1183,8 @@ class FaceServoSession:
         q1 = np.asarray(target, float)
         if float(np.max(np.abs(q1 - q0))) < 0.3:
             return
-        t, q = point_to_point(q0, q1, speed_degs or self.FEED_GLIDE_DEGS, self.smooth_cfg.rate_hz)
+        t, q = point_to_point(q0, q1, speed_degs or self.FEED_GLIDE_DEGS, self.smooth_cfg.rate_hz,
+                              min_duration_s=self.GLIDE_MIN_S)
         self._stream_path(t, q, reason=(lambda e: f"{what} ({100 * e / t[-1]:.0f}%)") if what else None)
         deadline = time.monotonic() + 2.0  # let the servos arrive
         while time.monotonic() < deadline:
@@ -1124,6 +1195,8 @@ class FaceServoSession:
         self.last_move_end = self.robot.now()
 
     LAG_CHECK_S = 0.5  # a streamed path reads the real joints this often (off-thread)
+    SAG_READ_S = 0.05  # ... and this often when it also corrects servo sag
+    STREAM_SAG_MAX = 5.0  # deg: most the sag correction adds to any joint on a streamed path
     FRESH_SETPOINT_S = 1.0  # a glide starts from the last setpoint if it was sent this recently ...
     FRESH_SETPOINT_DEG = 8.0  # ... and the arm is within this of it (else: someone moved it)
 
@@ -1149,27 +1222,40 @@ class FaceServoSession:
         return np.asarray(fast(timeout=1.0) if fast else self.robot.joints(timeout=1.0), float)
 
     def _stream_path(self, t, q, reason=None, lag_deg: float | None = None, lag_joints=slice(None),
-                     lag_window_s: float = 0.5, what: str = "move") -> None:
+                     lag_window_s: float = 0.5, what: str = "move", sag: bool = False) -> None:
         """Stream ``(t s, q deg)`` by the wall clock: each tick sends q at the elapsed time, so
         uneven sample times play back evenly and a slow call only delays itself (no burst of
         catch-up setpoints afterwards). With ``lag_deg``, the real joints are read off-thread
         every ``LAG_CHECK_S`` and the stream is stopped when the arm is further than that (over
-        ``lag_joints``) from every setpoint sent in the ``lag_window_s`` before the reading."""
+        ``lag_joints``) from every setpoint sent in the ``lag_window_s`` before the reading.
+        With ``sag``, the joints are read as often as the link allows (off-thread) and a
+        servo-sag integrator (shoulder, elbow, wrist flex; as in the tracker) is added to every
+        setpoint, so a loaded arm doesn't droop below the path."""
         t, q = np.asarray(t, float), np.asarray(q, float)
         t = t - t[0]
         dt = 1.0 / self.smooth_cfg.rate_hz
         sent: deque = deque()
-        watch = _LagWatch(self._read_joints, self.LAG_CHECK_S) if lag_deg is not None else None
+        watching = lag_deg is not None or sag
+        watch = _LagWatch(self._read_joints, self.SAG_READ_S if sag else self.LAG_CHECK_S) if watching else None
+        correction, last_read = np.zeros(q.shape[1]), None
         try:
             t0 = time.monotonic()
             while True:
                 self._check_stop()
                 e = min(time.monotonic() - t0, float(t[-1]))
-                qe = sample(t, q, e)
+                reading = watch.take() if watch is not None else None
+                if sag and reading is not None:
+                    err = sample(t, q, reading[0] - t0 - self.servo_lag) - reading[1]  # desired vs where it is
+                    err[[PAN, ROLL]] = 0.0
+                    step = 0.0 if last_read is None else min(reading[0] - last_read, 0.5)
+                    correction += np.where(np.abs(err) < 4.0, self.sag_gain * err * step, 0.0)
+                    np.clip(correction, -self.STREAM_SAG_MAX, self.STREAM_SAG_MAX, out=correction)
+                    last_read = reading[0]
+                qe = sample(t, q, e) + correction
                 self._send(qe)
                 if reason is not None:
                     self.reason = reason(e)
-                if watch is not None:
+                if lag_deg is not None:
                     now = time.monotonic()
                     sent.append((now, qe))
                     while sent[0][0] < now - lag_window_s - 2.0:
@@ -1177,7 +1263,6 @@ class FaceServoSession:
                     if watch.failing:
                         self.stop(f"can't read the arm's joints during the {what}: stopped")
                         raise Stopped()
-                    reading = watch.take()
                     recent = [] if reading is None else [qs for ts, qs in sent if reading[0] - lag_window_s <= ts <= reading[0]]
                     if recent:
                         qr = reading[1]
@@ -1195,30 +1280,58 @@ class FaceServoSession:
                 watch.close()
 
     def _person_pan(self) -> float:
-        """Where the person usually is: the taught close pose's heading, else the look pose's."""
+        """Where the person usually is: a look pose taught for Feed, else the close pose's heading,
+        else the (old) look pose's."""
+        if self.taught.look is not None and self.taught.notes.get("look_t"):
+            return float(self.taught.look[PAN])
         if self.taught.close:
             return float(self.taught.close["joints"][PAN])
         self._need("look")
         return float(self.taught.look[PAN])
 
+    # Gentle settings while the spoon carries food (Feed): every motion slower and softer.
+    LOADED_TRACK = {"max_vel_deg": (45.0, 30.0, 30.0, 25.0), "max_acc_deg": 120.0, "gain": 2.0}
+    LOADED_EXTEND = {"approach_speed": 0.05, "near_speed": 0.03, "near_m": 0.06, "retreat_speed": 0.06,
+                     "reach_accel": 0.08}
+
     def _do_feed(self) -> None:
+        """One bite with a loaded spoon, gently (LOADED_*), restoring the normal tuning after."""
+        saved = (self.track_cfg, self.ext_cfg)
+        self.track_cfg = TrackConfig(**{**asdict(self.track_cfg), **self.LOADED_TRACK})
+        self.ext_cfg = ExtendConfig(**{**asdict(self.ext_cfg), **self.LOADED_EXTEND})
+        try:
+            self._feed_once()
+        finally:
+            self.track_cfg, self.ext_cfg = saved
+
+    def _feed_once(self) -> None:
         """One bite: home -> sweep to where the person usually sits -> find the face -> centre
         and extend (stop 3 cm from the lips, hold 10 s) -> back out -> home. STOP at any time
         leaves the arm where it is."""
         home = self.home_pose()
         self._event("feed", "going home")
-        self._glide(home, what="feed: going home")
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         sweep = home.copy()
+        if self.taught.look is not None and self.taught.notes.get("look_t"):
+            # the taught search pose (height + extension), spoon tipped up a little (food on it);
+            # its posture is taken on at home's heading, then the sweep itself is pan only
+            sweep = np.asarray(self.taught.look, float).copy()
+            q1 = sweep.copy(); q1[FLEX] += 1.0
+            slope = _tool_pitch(q1) - _tool_pitch(sweep)
+            if abs(slope) > 0.2:
+                sweep[FLEX] = float(np.clip(sweep[FLEX] - (self._spoon_tilt(sweep) - 5.0) / slope, -94.0, 94.0))
+            pre = sweep.copy(); pre[PAN] = home[PAN]
+            self._glide(pre, speed_degs=self.LOADED_DEGS, what="feed: to the search height")
         sweep[PAN] = self._person_pan()  # pan only: the spoon's tilt can't change on the way
         self._event("feed", f"sweeping to the person (pan {sweep[PAN]:.0f} deg)")
-        self._glide(sweep, what="feed: sweeping to the person")
+        self._glide(sweep, speed_degs=self.LOADED_DEGS, what="feed: sweeping to the person")
         face, _ = self._face_target(need=1, timeout=1.5)
         for d in (12.0, -12.0, 24.0, -24.0):  # not in view: look around the usual spot (pan only)
             if face is not None:
                 break
             q = sweep.copy()
             q[PAN] = float(np.clip(sweep[PAN] + d, -108.0, 108.0))
-            self._glide(q, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
+            self._glide(q, speed_degs=self.LOADED_DEGS, what=f"feed: looking for the face (pan {q[PAN]:.0f} deg)")
             face, _ = self._face_target(need=1, timeout=1.0)
         if face is None:
             self._event("feed", "no face found: going home")
@@ -1231,7 +1344,7 @@ class FaceServoSession:
         self._track_loop(extend=True, once=True)
         self.mode = "feed"
         self._event("feed", "bite done: going home")
-        self._glide(home, what="feed: going home")
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         self.reason = "feed done: back home"
         self._event("feed", self.reason)
 

@@ -92,10 +92,11 @@ def test_recorded_scoop_replays_smoothly(tmp_path):
         assert np.allclose(np.diff(t), np.diff(t)[0])  # even: equal steps at equal times
         assert v[0] < 2.0 and v[-1] < 2.0  # eased: no kick after the glide that ends at rest
         assert rep["peak_speed_degs"] <= c.max_speed + 1 and rep["peak_accel_degs2"] <= c.max_accel + 1
-        # the raw recording, as streamed before: 500 deg/s and 30000 deg/s^2 spikes from its uneven timestamps
+        # the raw recording has acceleration spikes from its uneven samples and hand jitter (the old
+        # teleop recording: 31000 deg/s^2; the hand-guided one: ~730)
         raw_t, raw_q = np.asarray(demo["t"], float), np.asarray(demo["q"], float)
         keep = np.r_[True, np.diff(raw_t) > 1e-6]
-        assert peaks(raw_t[keep], raw_q[keep])[1] > 5 * rep["peak_accel_degs2"]
+        assert peaks(raw_t[keep], raw_q[keep])[1] > 3 * rep["peak_accel_degs2"]
     finally:
         s.close()
 
@@ -118,11 +119,12 @@ def test_a_slow_call_does_not_cause_a_burst_of_catch_up_setpoints(tmp_path):
     arm = StallingArm(LOOK)
     s = session(arm, tmp_path)
     try:
-        t, q = point_to_point(LOOK, np.asarray(LOOK) + [30, 0, 0, 0, 0], 60.0, 30.0)
+        t, q = point_to_point(LOOK, np.asarray(LOOK) + [30, 0, 0, 0, 0], 60.0, s.smooth_cfg.rate_hz)
         s._stream_path(t, q)
-        gaps = np.diff(arm.sent_at)
-        assert np.sum(gaps < 0.01) <= 1  # the old loop sent ~9 setpoints back to back here
-        assert len(arm.streamed) < len(t) - 5  # the stalled stretch was skipped, not replayed late
+        sent = np.asarray(arm.sent_at)
+        after = sent[5]  # the stalled call returns: the old loop then sent the 0.3 s it missed back to back
+        assert np.sum((sent > after) & (sent < after + 0.1)) <= 9  # ~6 at 60 Hz; the old loop: ~24
+        assert len(arm.streamed) < len(t) - 10  # the stalled stretch was skipped, not replayed late
         assert np.allclose(arm.streamed[-1], q[-1])
     finally:
         s.close()

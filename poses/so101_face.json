@@ -7,11 +7,11 @@
     -1.05
   ],
   "look": [
-    12.04,
-    -98.2,
-    70.07,
-    16.88,
-    -7.3
+    80.79,
+    -56.79,
+    38.42,
+    12.57,
+    -1.49
   ],
   "near": null,
   "jacobian": {
@@ -27,17 +27,18 @@
     ]
   },
   "spoon_level": {
-    "tool_pitch_deg": -3.78,
-    "wrist_roll_deg": -2.73,
+    "tool_pitch_deg": 15.74,
+    "wrist_roll_deg": -1.49,
     "joints": [
-      83.34,
-      -31.38,
-      -49.41,
-      84.57,
-      -2.73
+      73.14,
+      -92.75,
+      74.55,
+      2.46,
+      -1.49
     ],
-    "t": "2026-10-23T18:58:49"
+    "t": "2026-10-24T12:55:38"
   },
+  "bowl": null,
   "close": {
     "joints": [
       94.0,
@@ -68,6 +69,7 @@
     "how": "hand-held pose, median of 86 face fixes; spoon raised 1.5 cm on request"
   },
   "notes": {
-    "home": "user's hand-placed home [6.9,-98.7,34.6,71.9,-3.0], flex levelled to 67.9 (tool pitch -3.8); 2026-10-23 19:04"
+    "home": "user's hand-placed home [6.9,-98.7,34.6,71.9,-3.0], flex levelled to 67.9 (tool pitch -3.8); 2026-10-23 19:04",
+    "look_t": "2026-10-24T13:21:08"
   }
 }
