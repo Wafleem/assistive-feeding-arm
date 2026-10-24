@@ -9,6 +9,7 @@
   .stack.top img.cam { max-height:calc(100vh - 190px); aspect-ratio:4/3; }
   .cmd { display:grid; gap:10px; } .cmd .say-input input { flex-basis:120px; }
   .say-result:empty { display:none; }
+  .legend { margin:6px 0 0; font-size:12px; } #depth-live:empty { display:none; } #depth-live { font-weight:600; }
   button.arm { min-height:52px; font-size:15px; font-weight:700; border:2px solid var(--warn); background:transparent; color:var(--ink); }
   button.arm.on { background:var(--ok); border-color:var(--ok); color:#06170f; }
   .stack.secondary { margin-top:14px; opacity:.92; }
@@ -46,11 +47,14 @@
   <section class="view">
     <h2>Camera</h2>
     <img class="cam" id="cam" alt="Live gripper camera with bowl outlines">
+    <p class="muted legend">Cyan cross = where the spoon points (tolerance circle) · red dot = lips · arrow = centring error (green when centred) · bowl outlines with their labels.</p>
   </section>
   <section class="view">
     <h2>Depth</h2>
     <img class="cam" id="depth" alt="Live depth view">
     <p class="muted" id="depth-note" hidden></p>
+    <p class="legend" id="depth-live"></p>
+    <p class="muted legend">Depth over the camera's own picture: red = 10 cm → blue = 1.5 m · yellow = lips (distance measured on the lips) · green = lip opening · cross = straight ahead. One capture, so depth and face line up; about 1 frame/s.</p>
   </section>
 </div>
 <div class="stack secondary">
@@ -313,6 +317,10 @@ async function poll() {
     const s = await api('/api/state');
     $('chip').textContent = busy ? 'Live · running' : 'Live'; $('chip').className = busy ? 'chip busy' : 'chip';
     showBowls(s.bowls_seen);
+    const d = s.depth || {};
+    $('depth-live').textContent = d.depth_cm != null
+      ? `Lips by depth: ${d.depth_cm} cm (eye-span guess ${d.eye_span_estimate_cm} cm) · the extend stops on the depth value`
+      : (/error/.test(d.status || '') ? 'Depth: ' + d.status.slice(0, 90) : d.status ? 'Depth: ' + d.status + ' · the extend uses the eye-span estimate' : '');
     const list = s.speech || [];
     const newest = list.length ? list[list.length - 1].id : -1;
     if (lastSpoken !== null) for (const m of list) if (m.id > lastSpoken) {
