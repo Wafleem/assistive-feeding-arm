@@ -271,6 +271,8 @@ class FaceServoSession:
         if action in ("teach_home", "teach_look", "teach_near"):
             q = [round(float(v), 2) for v in self.robot.joints()]
             setattr(self.taught, action[6:], q)
+            if action == "teach_look":  # Feed sweeps to this pose (heading, height and extension)
+                self.taught.notes["look_t"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             self.taught.save(self.path)
             return self._event(action, f"saved {q}")
         if action in ("hand_guide_on", "hand_guide_off"):
@@ -1185,7 +1187,10 @@ class FaceServoSession:
         self.last_move_end = self.robot.now()
 
     def _person_pan(self) -> float:
-        """Where the person usually is: the taught close pose's heading, else the look pose's."""
+        """Where the person usually is: a look pose taught for Feed, else the close pose's heading,
+        else the (old) look pose's."""
+        if self.taught.look is not None and self.taught.notes.get("look_t"):
+            return float(self.taught.look[PAN])
         if self.taught.close:
             return float(self.taught.close["joints"][PAN])
         self._need("look")
@@ -1214,6 +1219,16 @@ class FaceServoSession:
         self._event("feed", "going home")
         self._glide(home, speed_degs=self.LOADED_DEGS, what="feed: going home")
         sweep = home.copy()
+        if self.taught.look is not None and self.taught.notes.get("look_t"):
+            # the taught search pose (height + extension), spoon tipped up a little (food on it);
+            # its posture is taken on at home's heading, then the sweep itself is pan only
+            sweep = np.asarray(self.taught.look, float).copy()
+            q1 = sweep.copy(); q1[FLEX] += 1.0
+            slope = _tool_pitch(q1) - _tool_pitch(sweep)
+            if abs(slope) > 0.2:
+                sweep[FLEX] = float(np.clip(sweep[FLEX] - (self._spoon_tilt(sweep) - 5.0) / slope, -94.0, 94.0))
+            pre = sweep.copy(); pre[PAN] = home[PAN]
+            self._glide(pre, speed_degs=self.LOADED_DEGS, what="feed: to the search height")
         sweep[PAN] = self._person_pan()  # pan only: the spoon's tilt can't change on the way
         self._event("feed", f"sweeping to the person (pan {sweep[PAN]:.0f} deg)")
         self._glide(sweep, speed_degs=self.LOADED_DEGS, what="feed: sweeping to the person")
