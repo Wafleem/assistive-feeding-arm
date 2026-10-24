@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ultraviolet · Feeding assistant</title><link rel="stylesheet" href="language.css"></head><body>
+<header><div class="brand"><b>ULTRAVIOLET</b><span>NYU · feeding assistant</span></div><span class="chip">Local preview</span><button class="ghost" style="color:white" onclick="toggleTheme()" aria-label="Toggle light or dark theme">◐</button></header>
+<main><div class="intro"><h1>Your words. Your pace.</h1><p>Say what you need, check the meaning, and review the command.</p></div>
+<div class="preview-note" id="offline-note">Robot disconnected. Translation is local; sending is disabled while the arm is being tested.</div>
+<nav aria-label="Dashboard views" style="padding:0 0 12px"><button id="language-tab" class="on" onclick="showView('language')" aria-pressed="true">Language</button><button id="manual-tab" onclick="showView('manual')" aria-pressed="false">Cameras &amp; controls</button></nav>
+<div id="panel-Run" class="on">
+<section style="margin-bottom:14px"><h2>What's in each bowl?</h2>
+<div class="row"><label for="bowl-1-food">Bowl 1</label><select id="bowl-1-food"><option value="cereal" selected>Cereal</option><option value="m&amp;ms">M&amp;Ms</option><option value="">Empty / not set</option></select>
+<label for="bowl-2-food">Bowl 2</label><select id="bowl-2-food"><option value="m&amp;ms" selected>M&amp;Ms</option><option value="cereal">Cereal</option><option value="">Empty / not set</option></select></div>
+<p class="muted">Labels for this preview only. Bowl numbers do not imply left/right or a known robot position. Changing a label clears the previous request.</p></section>
+<section class="say"><h2>Say a command</h2>
+<div class="say-mic"><div class="voice-controls"><button class="mic pill" id="mic" title="Hold to talk, or activate to start and stop" aria-pressed="false" aria-describedby="mic-help"
+      onpointerdown="micDown(event)" onpointerup="micUp('pointer')" onpointerleave="micUp('pointer')" onpointercancel="micUp('pointer')" onclick="micClick(event)">🎤 Hold to talk</button>
+      <label class="voice-toggle"><input type="checkbox" id="spoken-replies" checked onchange="toggleSpokenReplies()"> Spoken replies</label>
+      <label for="reply-voice">Voice</label><select id="reply-voice" onchange="changeReplyVoice()"><option value="">Automatic</option></select>
+      <button id="preview-voice" onclick="previewReplyVoice()">Preview voice</button>
+      <span class="muted" id="voice-source"></span>
+      <span class="muted" id="voice-reply-status" role="status" aria-atomic="true"></span></div>
+      <span id="mic-help" class="muted">Hold with mouse or touch. With a keyboard, press Enter or Space to start, then again to stop.</span></div>
+    <div class="say-input"><input type="text" id="nltext" placeholder="e.g. I want some cereal" value=""
+        onkeydown="if (event.key === 'Enter') nlParse()" aria-label="Command for the robot">
+      <button onclick="nlParse()">Check meaning</button>
+      <button class="primary" id="send" disabled aria-describedby="offline-note">Send to robot</button></div>
+
+<div class="say-ex"><span class="muted">Try:</span>
+<button class="ex" onclick="tryEx(this)">I want some cereal</button><button class="ex" onclick="tryEx(this)">Give me some M&amp;Ms</button><button class="ex" onclick="tryEx(this)">feed me a bite</button><button class="ex" onclick="tryEx(this)">scoop some food</button><button class="ex" onclick="tryEx(this)">go home</button><button class="ex" onclick="tryEx(this)">slower</button><button class="ex" onclick="tryEx(this)">wait</button></div>
+<div class="say-result" id="nlexplain" data-kind="idle" role="status" aria-live="polite">Type or speak a feeding instruction, then check its meaning. Nothing is sent to the robot.</div>
+<p class="muted">Voice input may use your browser's online speech service. Typing and command translation work locally.</p></section>
+<div class="preview-grid"><section><h2>Understood intent</h2><p class="muted">What your words mean.</p><pre id="intent">Waiting for an instruction.</pre></section>
+<section><h2 id="preview-title">Command preview</h2><p class="muted" id="mapping">Review only · nothing has been sent.</p><pre id="raw">No command checked yet.</pre><button id="copy" onclick="copyCommand()" disabled>Copy command JSON</button><span id="copy-status" class="muted" role="status"></span></section></div>
+<section style="margin-top:14px"><h2>Available phrases</h2><p>Feed me a bite · Scoop some food · Go home · Find my face · Center on my face · Level the spoon · Retreat · Stop</p><p class="muted">Cereal and M&amp;Ms select their labeled bowl in the request preview. The controller on main is unchanged; two-bowl execution is not connected here. Drinks, pace and bite-size preferences remain intents only.</p><p class="muted">“Stop”, “wait”, “no” and “I'm done” take priority over other words. In this disconnected preview, they only show the stop command; they do not halt the physical robot.</p></section>
+</div>
+<section id="manual-panel" hidden><h2>Cameras &amp; manual controls</h2><p class="muted">The existing gripper video, depth video, teaching, jogging, scoop and feeding controls are preserved below. They are offline in this preview.</p>
+<iframe id="manual-dashboard" title="Original face servo cameras and movement controls" style="width:100%;height:1100px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></iframe></section>
+</main><script type="module" src="language-app.js"></script></body></html>
