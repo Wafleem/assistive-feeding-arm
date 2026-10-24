@@ -105,7 +105,7 @@ class Stopped(Exception):
 
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
-               "scoop", "home_scoop", "feed")
+               "scoop", "home_scoop", "identify_bowls", "scoop_food", "feed")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -979,17 +979,139 @@ class FaceServoSession:
     LOADED_DEGS = 30.0  # deg/s peak for moves with food on the spoon (smooth: no shaking it off)
     SCOOP_PAUSE_KEEP = 0.1  # fraction of the recording's still pauses kept in the replay
 
-    def _do_home_scoop(self) -> None:
+    def _do_home_scoop(self, bowl: dict | None = None) -> None:
         """Home, then scoop and come back to home (ready for Feed). Uses the recorded teleop
-        scoop when there is one (poses/so101_scoop_demo.json), else the planned scoop."""
+        scoop when there is one (poses/so101_scoop_demo.json), else the planned scoop.
+        ``bowl``: the bowl dict to fit the scoop to (default Bowl 1's calibration)."""
         self._event("scoop", "going home")
         self._glide(self.home_pose(), what="scoop: going home")
         if self.SCOOP_DEMO.exists():
-            self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()))
+            self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()), bowl=bowl)
         else:
             self._do_scoop()
         self.reason = "scooped: back home (Feed next)"
         self._event("scoop", self.reason)
+
+    # ---------------------------------------------------------------- which bowl holds what
+    BOWLS_SEEN = Path("poses/so101_bowls_seen.json")  # last identification (labels per bowl)
+    BOWL_LOOK = Path("poses/so101_bowl_look.json")  # cached look poses per bowl
+
+    def fixed_bowls(self):
+        """The two fixed bowls, from the Viam scene positions (poses/so101_bowl*.json)."""
+        from ..food_perception.bowl_id import FixedBowl
+
+        out = []
+        for path, bid, food in ((self.BOWL_CAL, "bowl1", "cereal"), (Path("poses/so101_bowl2.json"), "bowl2", "mms")):
+            if path.exists():
+                d = json.loads(path.read_text())
+                c = d.get("scene_centre_mm") or d.get("centre_mm")
+                out.append(FixedBowl(bid, d.get("name", bid), np.asarray(c, float) / 1000, default_food=food))
+        return out
+
+    def bowl_labels(self):
+        from ..food_perception.bowl_id import BowlLabel
+
+        if not self.BOWLS_SEEN.exists():
+            return []
+        d = json.loads(self.BOWLS_SEEN.read_text())
+        return [BowlLabel(r["bowl_id"], r.get("label"), r.get("scores", {}), r.get("margin", 0.0), r.get("box"))
+                for r in d.get("bowls", [])]
+
+    def _look_pose(self, b) -> np.ndarray:
+        from ..food_perception.bowl_id import look_pose
+
+        cache = json.loads(self.BOWL_LOOK.read_text()) if self.BOWL_LOOK.exists() else {}
+        key = f"{b.bowl_id}@{b.centre[0]:.4f},{b.centre[1]:.4f}"
+        if key not in cache:
+            q, info = look_pose(b, self.home_pose())
+            cache[key] = {"joints": q.tolist(), **info}
+            self.BOWL_LOOK.write_text(json.dumps(cache, indent=1))
+        return np.asarray(cache[key]["joints"], float)
+
+    def _do_identify_bowls(self) -> None:
+        """Look into each fixed bowl, crop its opening, and ask CLIP on the Orin what is in it."""
+        from ..food_perception.bowl_id import BowlLabel, crop, jpeg_b64, opening_outline
+
+        bowls = self.fixed_bowls()
+        self.robot.stop_teleop()
+        crops, metas = [], []
+        for b in bowls:
+            q = self._look_pose(b)
+            self._event("bowls", f"looking into {b.name}")
+            self._glide(q, speed_degs=45.0, what=f"bowls: looking into {b.name}")
+            time.sleep(0.7)  # settle: a sharp frame
+            frame = self.robot.get_frames([self.camera]).get(self.camera)
+            if frame is None:
+                raise RuntimeError("no camera frame")
+            T = self.robot.camera_pose(self.camera).as_matrix()
+            _, box, frac = opening_outline(b, T)
+            img = None if box is None else crop(frame.rgb, box)
+            if img is None:
+                self._event("bowls", f"{b.name}: opening not in view")
+                continue
+            crops.append(jpeg_b64(img))
+            metas.append((b, box, frac))
+        self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+        if not crops:
+            raise RuntimeError("no bowl was in view")
+        res = self.robot.vision_command("bowl-contents", {"command": "classify", "images_b64": crops})
+        labels = []
+        for (b, box, frac), r in zip(metas, res["results"]):
+            labels.append(BowlLabel(b.bowl_id, r["label"], r["scores"], r["margin"], tuple(round(v) for v in box)))
+        self.BOWLS_SEEN.write_text(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "ms": res.get("ms"),
+                                               "device": res.get("device"),
+                                               "bowls": [vars(x) | {"box": x.box} for x in labels]}, indent=1))
+        names = {b.bowl_id: b.name for b in bowls}
+        self.reason = "bowls: " + ", ".join(f"{names[x.bowl_id]} = {x.label} ({max(x.scores.values()):.2f})"
+                                            for x in labels) + f" [CLIP on the Orin {res.get('device')}, {res.get('ms')} ms]"
+        self._event("bowls", self.reason)
+
+    def _scoop_bowl_dict(self, bowl_id: str) -> dict:
+        """The scoop's bowl dict: Bowl 1's spoon calibration; Bowl 2 shares its size and heights and
+        is placed by the Viam scene (shifted by the same scene-to-spoon offset as Bowl 1)."""
+        cal = json.loads(self.BOWL_CAL.read_text())
+        if bowl_id == "bowl1":
+            return cal
+        d2 = json.loads(Path("poses/so101_bowl2.json").read_text())
+        off = np.asarray(cal["centre_mm"], float) - np.asarray(cal.get("scene_centre_mm", cal["centre_mm"]), float)
+        c = np.asarray(d2["scene_centre_mm"], float) + off
+        return {**cal, "id": "bowl2", "name": d2.get("name", "Bowl 2"), "centre_mm": [round(float(v), 1) for v in c]}
+
+    def _do_scoop_food(self) -> None:
+        """Scoop the requested food (kw food: cereal / mms) from the bowl that holds it."""
+        from ..food_perception.bowl_id import bowl_for
+
+        food = str((getattr(self, "_kw", {}) or {}).get("food", "cereal")).lower()
+        b, why = bowl_for(food, self.bowl_labels(), self.fixed_bowls())
+        self._event("scoop", f"{food}: {b.name} ({why})")
+        self._do_home_scoop(bowl=self._scoop_bowl_dict(b.bowl_id))
+        self.reason = f"scooped {food} from {b.name}: back home (Feed next)"
+        self._event("scoop", self.reason)
+
+    def bowl_overlays(self) -> list[dict]:
+        """Each bowl's opening in the current camera view (for the video feed), with its label."""
+        from ..food_perception.bowl_id import opening_outline
+
+        q = getattr(self, "_last_joints", None)
+        if not isinstance(q, list) or len(q) != 5:
+            return []
+        if getattr(self, "_cam_offset_cache", None) is None:
+            try:
+                self._cam_offset_cache = np.linalg.inv(so101_fk(np.array(q))) @ self.robot.camera_pose(self.camera).as_matrix()
+            except Exception:
+                return []
+        T = so101_fk(np.array(q)) @ self._cam_offset_cache
+        labels = {x.bowl_id: x for x in self.bowl_labels()}
+        out = []
+        for b in self.fixed_bowls():
+            uv, box, frac = opening_outline(b, T)
+            if box is None:
+                continue
+            lab = labels.get(b.bowl_id)
+            text = b.name + (f": {lab.label} {max(lab.scores.values()):.2f}" if lab and lab.label else "")
+            out.append({"bowl_id": b.bowl_id, "outline": uv, "box": box, "text": text,
+                        "food": lab.label if lab else None})
+        return out
 
     def _deepen_scoop(self, q: np.ndarray) -> np.ndarray:
         """Deeper and a longer sweep than the recording: the tool goes SCOOP_EXTRA_DEPTH lower
@@ -1071,7 +1193,7 @@ class FaceServoSession:
                              f"scoop {off * 1000:.0f} mm from the bowl centre, {raised} setpoints raised")
         return out
 
-    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0) -> None:
+    def _replay_scoop_demo(self, demo: dict, speed: float = 1.0, bowl: dict | None = None) -> None:
         """Above the bowl -> the recorded dip (lightly smoothed, its own timing) -> spoon tipped
         up a little so the food stays on -> home."""
         q = np.asarray(demo["q"], float)
@@ -1079,8 +1201,8 @@ class FaceServoSession:
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
         q = self._deepen_scoop(q)
-        if self.BOWL_CAL.exists():
-            q = self._fit_scoop_to_bowl(q, json.loads(self.BOWL_CAL.read_text()))
+        if bowl is not None or self.BOWL_CAL.exists():
+            q = self._fit_scoop_to_bowl(q, bowl if bowl is not None else json.loads(self.BOWL_CAL.read_text()))
         r0 = q[0, ROLL]
         q[:, ROLL] = r0 + self.SCOOP_ROLL_GAIN * (q[:, ROLL] - r0)
         # pre-roll against the twist: starts at -pre, unwinds smoothly by the twist's peak, so the
@@ -1375,6 +1497,7 @@ class FaceServoSession:
                           _tool_pitch(np.array(self._last_joints)) - float((self.taught.spoon_level or {}).get("tool_pitch_deg", 0.0)), 1),
                       "hand_guide": self.hand_guide},
             "bowl": self.taught.bowl, "scoop": self.last_scoop,
+            "bowls_seen": json.loads(self.BOWLS_SEEN.read_text()) if self.BOWLS_SEEN.exists() else None,
             "planner": {"failures_in_a_row": self.plan_failures, "last_error": self.last_plan_error[:300],
                         "log_file": str(self.plan_log) if self.plan_log else None},
         }
