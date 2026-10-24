@@ -332,9 +332,9 @@ class FaceServoSession:
             return self._event("tuning", self._set_tuning(**kw))
         if action == "set_params":
             if "aim_raise_cm" in kw and self.taught.close:
-                self.taught.close["raised_cm"] = float(np.clip(float(kw.pop("aim_raise_cm")), -5.0, 8.0))
+                self.taught.close["raised_cm"] = float(np.clip(float(kw.pop("aim_raise_cm")), -5.0, 12.0))
+                self._apply_close()  # recomputes the aim offset, THEN save (the file used to keep the old one)
                 self.taught.save(self.path)
-                self._apply_close()
                 if self.track is not None:
                     self.track.cfg = self.track_cfg  # live, also while tracking
                 return self._event("params", f"spoon aim raised {self.taught.close['raised_cm']:g} cm")
