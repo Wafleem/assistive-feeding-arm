@@ -180,3 +180,63 @@ def bowl_for(food: str, labels: list[BowlLabel] | None, bowls: list[FixedBowl]) 
         if b.default_food == food:
             return b, "fixed assignment (no clear vision label)"
     raise RuntimeError(f"no bowl for {food!r}")
+
+
+# ---------------------------------------------------------------- sweeping mode
+def pan_to_centre(b: FixedBowl, q_posture, iters: int = 30) -> tuple[np.ndarray, float]:
+    """Same posture (lift/elbow/flex/roll), base pan turned so the bowl centre sits in the middle
+    of the image horizontally. Returns (joints, fraction of the rim in view)."""
+    q = np.asarray(q_posture, float).copy()
+    target = np.r_[b.centre, b.rim_z][None]
+    for _ in range(iters):
+        u = project(camera_pose(q), target)[0, 0]
+        if not np.isfinite(u):
+            break
+        err = u - IMG_W / 2
+        if abs(err) < 2:
+            break
+        q1 = q.copy(); q1[0] += 0.5
+        du = (project(camera_pose(q1), target)[0, 0] - u) / 0.5
+        if not np.isfinite(du) or abs(du) < 1e-3:
+            break
+        q[0] -= float(np.clip(err / du, -10, 10))
+    _, _, frac = opening_outline(b, camera_pose(q))
+    return np.round(q, 2), frac
+
+
+def sweep_poses(bowls: list[FixedBowl], q_from, look=look_pose) -> list[tuple[FixedBowl, np.ndarray]]:
+    """One look-down posture for all bowls (found for the first bowl), each bowl reached by turning
+    the base only: a single smooth sweep, nearest bowl first from ``q_from``'s heading."""
+    if not bowls:
+        return []
+    q0 = np.asarray(q_from, float)
+    first = min(bowls, key=lambda b: abs(-np.degrees(np.arctan2(b.centre[1], b.centre[0] - 0.0388)) - q0[0]))
+    posture, _ = look(first, q0)
+    out = [(b, pan_to_centre(b, posture)[0]) for b in bowls]
+    return sorted(out, key=lambda bq: abs(bq[1][0] - q0[0]))
+
+
+def vote_crops(rgb: np.ndarray, bottom_skip: int = 70) -> list[np.ndarray]:
+    """Crops of the inside of the bowl at a look-down view (the bowl fills the middle of the image):
+    centre, left, right and upper, avoiding the bottom band where the gripper/spoon may show."""
+    h, w = rgb.shape[:2]
+    H = h - bottom_skip
+    s = int(min(w, H) * 0.55)
+    cx, cy = w // 2, H // 2
+    boxes = [(cx - s // 2, cy - s // 2), (cx - s // 2 - s // 3, cy - s // 2), (cx - s // 2 + s // 3, cy - s // 2),
+             (cx - s // 2, max(0, cy - s // 2 - s // 4))]
+    out = []
+    for x, y in boxes:
+        x, y = int(np.clip(x, 0, w - s)), int(np.clip(y, 0, H - s))
+        out.append(rgb[y:y + s, x:x + s].copy())
+    return out
+
+
+def combine(results: list[dict]) -> dict:
+    """Average CLIP's per-crop scores into one label for the bowl."""
+    names = sorted({k for r in results for k in r["scores"]})
+    mean = {n: float(np.mean([r["scores"].get(n, 0.0) for r in results])) for n in names}
+    order = sorted(mean, key=lambda n: -mean[n])
+    margin = mean[order[0]] - (mean[order[1]] if len(order) > 1 else 0.0)
+    return {"label": order[0], "scores": {n: round(v, 4) for n, v in mean.items()}, "margin": round(margin, 4),
+            "votes": [r["label"] for r in results]}

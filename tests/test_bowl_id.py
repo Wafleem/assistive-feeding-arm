@@ -45,3 +45,53 @@ def test_food_goes_to_the_bowl_clip_named_and_falls_back_to_the_fixed_one():
     both = [BowlLabel("bowl1", "cereal", {}, 0.9), BowlLabel("bowl2", "cereal", {}, 0.9)]
     assert "cereal" not in assign(both)  # two bowls claim it: ambiguous, not guessed
     assert bowl_for("cereal", None, [B1, B2])[1].startswith("fixed")
+
+
+def test_sweep_uses_one_posture_and_turns_only_the_base():
+    from assistive_arm.food_perception.bowl_id import combine, sweep_poses, vote_crops
+    plan = sweep_poses([B1, B2], HOME)
+    assert [b.bowl_id for b, _ in plan] == ["bowl2", "bowl1"]  # nearest heading first from home
+    (_, qa), (_, qb) = plan
+    assert np.allclose(qa[1:], qb[1:])  # same posture: only the pan differs
+    for b, q in plan:
+        c = project(camera_pose(q), np.r_[b.centre, b.rim_z][None])[0]
+        assert abs(c[0] - 320) < 5  # bowl centre in the middle of the image
+    crops = vote_crops(np.zeros((480, 640, 3), np.uint8))
+    assert len(crops) == 4 and all(c.shape[0] == c.shape[1] for c in crops)
+    r = combine([{"label": "cereal", "scores": {"cereal": 0.9, "empty": 0.1}},
+                 {"label": "empty", "scores": {"cereal": 0.4, "empty": 0.6}}])
+    assert r["label"] == "cereal" and abs(r["margin"] - 0.3) < 1e-6
+
+
+def test_sweep_mode_labels_each_bowl_from_crops_sent_to_the_orin(tmp_path):
+    import json
+    import time
+    from test_face_track_session import KinArm, SeenFace
+    from assistive_arm.orchestration.face_servo_session import FaceServoSession
+
+    arm = KinArm(HOME)
+    sent = []
+
+    def vision_command(service, cmd, timeout=20.0):
+        sent.append((service, len(cmd["images_b64"])))
+        n = len(cmd["images_b64"])  # first half of the crops = first bowl swept (bowl2): empty; rest: cereal
+        res = [{"label": "empty", "scores": {"cereal": 0.1, "mms": 0.05, "empty": 0.85}, "margin": 0.75}] * (n // 2) + \
+              [{"label": "cereal", "scores": {"cereal": 0.9, "mms": 0.05, "empty": 0.05}, "margin": 0.85}] * (n - n // 2)
+        return {"results": res, "ms": 30.0, "device": "cuda"}
+
+    arm.vision_command = vision_command
+    s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
+    s.BOWLS_SEEN, s.BOWL_LOOK, s.SWEEP_SETTLE_S = tmp_path / "seen.json", tmp_path / "look.json", 0.0
+    s.taught.home = HOME.tolist()
+    s.start()
+    try:
+        s.command("sweep_bowls")
+        t0 = time.time()
+        while s.mode != "idle" and time.time() - t0 < 60:
+            time.sleep(0.1)
+        assert sent == [("bowl-contents", 8)], s.reason  # 2 bowls x 4 crops, one call
+        seen = {b["bowl_id"]: b["label"] for b in json.loads((tmp_path / "seen.json").read_text())["bowls"]}
+        assert seen == {"bowl2": "empty", "bowl1": "cereal"}, s.reason
+        assert np.max(np.abs(arm.q - HOME)) < 3  # back home
+    finally:
+        s.close()
