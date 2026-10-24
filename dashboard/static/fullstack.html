@@ -3,8 +3,14 @@
 <title>Ultraviolet · Full-stack test</title><link rel="stylesheet" href="language.css">
 <style>
   /* Full-stack test: Ultraviolet look (language.css) + a few page parts */
+  main { max-width:1500px; padding-top:14px; }
   .stack { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
-  @media (max-width:820px) { .stack { grid-template-columns:minmax(0,1fr); } }
+  .stack.top { grid-template-columns:minmax(0,5fr) minmax(0,6fr); align-items:start; }  /* command | camera */
+  .stack.top img.cam { max-height:calc(100vh - 170px); }
+  .stack.secondary { margin-top:14px; opacity:.92; }
+  .stack.secondary section { padding:10px 14px; }
+  .stack.secondary ol.progress li { padding:6px 10px; }
+  @media (max-width:820px) { .stack, .stack.top { grid-template-columns:minmax(0,1fr); } }
   button.mic.pill.big { width:100%; padding:20px; font-size:20px; }
   ol.progress { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
   ol.progress li { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--line);
@@ -24,11 +30,9 @@
   <button class="ghost" style="color:white" onclick="toggleTheme()" aria-label="Toggle light or dark theme">◐</button>
   <button class="stop" onclick="stopAll()" title="Stop the arm now (Esc)">STOP</button></header>
 <main>
-<div class="intro"><h1>Ask for a bite.</h1><p>Say what you'd like. The arm looks into both bowls, scoops from the one that holds it, and brings it to you.</p></div>
-<div class="preview-note" id="note">Start the arm centred, then tap the mic. “Stop”, “wait” or “no” stop the arm at once (or press Esc).</div>
-<div class="stack">
+<div class="stack top">
   <section>
-    <h2>1 · Say a command</h2>
+    <h2>Say a command</h2>
     <div class="say-mic"><button class="mic pill big" id="mic" onclick="toggleMic()" aria-pressed="false">🎤 Tap and talk</button></div>
     <div class="say-input"><input type="text" id="text" placeholder="e.g. grab me some cereal" aria-label="Command for the robot"
         onkeydown="if (event.key === 'Enter') go(this.value)"><button class="primary" onclick="go(document.getElementById('text').value)">Go</button></div>
@@ -36,12 +40,18 @@
       <button class="ex" onclick="go(this.textContent)">grab me some cereal</button>
       <button class="ex" onclick="go(this.textContent)">could you bring me some M&amp;Ms?</button>
       <button class="ex" onclick="go(this.textContent)">go home</button></div>
-    <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite">Waiting for a request.</div>
-    <div class="row"><label class="voice-toggle"><input type="checkbox" id="speak" checked> Spoken replies</label>
-      <label class="voice-toggle"><input type="checkbox" id="askready"> Wait for “ready” before feeding</label></div>
+    <div class="say-result" id="result" data-kind="idle" role="status" aria-live="polite">Start the arm centred, then tap the mic (or Space). “Stop”, “wait” or “no” stop the arm (or Esc).</div>
+    <div class="say-result" id="status" data-kind="idle">Idle.</div>
   </section>
   <section>
-    <h2>2 · What the robot is doing</h2>
+    <h2>Gripper camera</h2>
+    <img class="cam" id="cam" alt="Live gripper camera with bowl outlines">
+    <p class="muted" id="bowls">No bowl sweep yet.</p>
+  </section>
+</div>
+<div class="stack secondary">
+  <section>
+    <h2>Progress</h2>
     <ol class="progress" id="steps">
       <li data-k="heard"><span class="dot"></span>Understood the request<small class="muted"></small></li>
       <li data-k="find"><span class="dot"></span>Sweep: look into both bowls<small class="muted"></small></li>
@@ -49,16 +59,12 @@
       <li data-k="feed"><span class="dot"></span>Find the face and feed<small class="muted"></small></li>
       <li data-k="home"><span class="dot"></span>Back home<small class="muted"></small></li>
     </ol>
-    <div class="say-result" id="status" data-kind="idle" style="margin-top:12px">Idle.</div>
-  </section>
-  <section>
-    <h2>Gripper camera</h2>
-    <img class="cam" id="cam" alt="Live gripper camera with bowl outlines">
-    <p class="muted" id="bowls">No bowl sweep yet.</p>
   </section>
   <section>
     <h2>Robot says</h2>
     <ol id="say-log"></ol>
+    <div class="row" style="margin-top:10px"><label class="voice-toggle"><input type="checkbox" id="speak" checked> Spoken replies</label>
+      <label class="voice-toggle"><input type="checkbox" id="askready"> Wait for “ready” before feeding</label></div>
   </section>
   <section class="wide" style="grid-column:1/-1">
     <details><summary>Debug</summary>
@@ -252,7 +258,7 @@ async function poll() {
   setTimeout(poll, 700);
 }
 Object.assign(window, { go, toggleMic, stopAll, debug, toggleTheme });
-if (token) $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token); else $('cam').hidden = true;
+if (token) $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token); else { $('cam').hidden = true; $('bowls').textContent = 'The live camera shows here when this page is opened from the robot dashboard (/test?token=...).'; }
 $('full').href = '/?token=' + encodeURIComponent(token);
 $('lang').href = '/language.html?token=' + encodeURIComponent(token);
 poll();
