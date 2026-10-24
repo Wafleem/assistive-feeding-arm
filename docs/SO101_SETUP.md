@@ -227,6 +227,15 @@ when the 90 mm average span didn't fit the person. Both cameras use fx = 772.5 p
 The dashboard shows the depth distance next to the fast estimate and embeds the module's
 own preview page (tunnelled to `localhost:8766` by `dashboard/run_mac.sh`).
 
+**2026-10-24: Depth Pro, and depth + mouth in one view.** Up close DA3's scale is wrong: on a
+face ~0.23 m away (eye-corner span) it read 0.59 m; Depth Pro read 0.21 m and MoGe-2 0.45 m.
+`webcam-2-depth` now runs Depth Pro (`model: depth-pro`), about 1 frame/s instead of ~5; DA3
+stays available as `model: da3-metric`. The dashboard's depth view now draws the depth over
+the depth camera's own colour frame, with the lips that MediaPipe found on that same frame and
+their distance measured on the lip surface (never inside the open mouth), so depth and mouth
+line up exactly. Caveat: Depth Pro and MoGe-2 both estimate the C270's focal at ~1008 px, not
+the 772.5 px used here; if they're right, all distances are ~23 % short. Calibrate it.
+
 ## Scoop from a bowl (2026-10-23)
 Dashboard → **Scoop**: teach the bowl once, then **Plan scoop** (dry run) and **Scoop and come back**.
 1. Put the bowl **28-34 cm from the arm's pan axis** (about 32-38 cm in front of the base's
