@@ -105,7 +105,8 @@ class Stopped(Exception):
 
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
-               "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "find_food", "scoop_food", "feed")
+               "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "find_food", "scoop_food", "teach_bowls",
+               "feed")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -1062,12 +1063,29 @@ class FaceServoSession:
             box = None if bx is None else tuple(round(v) for v in bx)
         except Exception:
             pass
-        crops = [jpeg_b64(c) for c in vote_crops(frame.rgb)]
+        crops_rgb = vote_crops(frame.rgb)
+        self._save_frames(b, frame.rgb, crops_rgb)
+        crops = [jpeg_b64(c) for c in crops_rgb]
+        self._last_crops = crops
         res = self.robot.vision_command("bowl-contents", {"command": "classify", "images_b64": crops})
         c = combine(res["results"])
         lab = BowlLabel(b.bowl_id, c["label"], c["scores"], c["margin"], box)
         self._save_label(lab, res)
         return lab
+
+    FRAMES_DIR = Path("data/bowl_frames")
+
+    def _save_frames(self, b, rgb, crops) -> None:
+        """Every look into a bowl is kept (frame + crops) to check what the camera really saw."""
+        try:
+            import cv2
+            self.FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%H%M%S")
+            cv2.imwrite(str(self.FRAMES_DIR / f"{stamp}_{b.bowl_id}.jpg"), rgb[:, :, ::-1])
+            for i, c in enumerate(crops):
+                cv2.imwrite(str(self.FRAMES_DIR / f"{stamp}_{b.bowl_id}_crop{i}.jpg"), c[:, :, ::-1])
+        except Exception:
+            pass
 
     def _save_label(self, lab, res: dict) -> None:
         d = json.loads(self.BOWLS_SEEN.read_text()) if self.BOWLS_SEEN.exists() else {"bowls": []}
@@ -1097,26 +1115,51 @@ class FaceServoSession:
         self.reason = "bowls: " + ", ".join(f"{b.name} = {lab.label} ({max(lab.scores.values()):.2f})" for b, lab in seen)
         self._event("bowls", self.reason)
 
-    def _find_food(self, food: str, min_margin: float = 0.2):
-        """Sweep bowl by bowl and stop at the first one CLIP says holds ``food`` (swap-proof: it
-        looks every time instead of trusting where the food was)."""
-        from ..food_perception.bowl_id import sweep_poses
+    def _find_food(self, food: str):
+        """Look into EVERY bowl (Bowl 1, then Bowl 2), then choose the one that scores highest for
+        ``food`` relative to the others (swap-proof: it looks each time)."""
+        from ..food_perception.bowl_id import pick_bowl, sweep_poses
 
         spoken = self.FOOD_SPOKEN.get(food, food)
         self.robot.stop_teleop()
         self._say(f"Looking for {spoken}.")
         plan = sweep_poses(self.fixed_bowls(), self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        labels = []
         for i, (b, q) in enumerate(plan):
             self.reason = f"looking for {food}: checking {b.name}"
+            self._say(f"Checking {self._bowl_words(b)}.")
             lab = self._look_into(b, q, 45.0 if i == 0 else 30.0)
-            if lab.label == food and lab.margin >= min_margin:
-                self._say(f"Found {spoken} in {self._bowl_words(b)}.")
-                self._event("bowls", f"{food} is in {b.name} ({lab.scores.get(food, 0):.2f})")
-                return b
-            self._say(f"{self._bowl_words(b)} has {self.FOOD_SPOKEN.get(lab.label, lab.label)}.")
+            labels.append(lab)
+            self._event("bowls", f"{b.name}: " + ", ".join(f"{k} {v:.2f}" for k, v in sorted(lab.scores.items())))
+        pick = pick_bowl(food, labels)
+        if pick is None:
+            self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
+            self._say(f"I couldn't tell which bowl has {spoken}.")
+            raise RuntimeError(f"no bowl clearly holds {food}: " +
+                               ", ".join(f"{x.bowl_id} {x.scores.get(food, 0):.2f}" for x in labels))
+        b = next(x for x, _ in plan if x.bowl_id == pick)
+        self._say(f"{spoken.capitalize()} is in {self._bowl_words(b)}.")
+        self._event("bowls", f"{food} is in {b.name}")
+        return b
+
+    def _do_teach_bowls(self) -> None:
+        """Debug: teach CLIP on the Orin what the real foods look like, from the current setup
+        (kw bowl1, bowl2: what each bowl holds; default Bowl 1 = cereal, Bowl 2 = M&Ms)."""
+        from ..food_perception.bowl_id import sweep_poses
+
+        kw = getattr(self, "_kw", {}) or {}
+        truth = {"bowl1": str(kw.get("bowl1", "cereal")), "bowl2": str(kw.get("bowl2", "mms"))}
+        self.robot.stop_teleop()
+        self._say("Learning what is in each bowl.")
+        plan = sweep_poses(self.fixed_bowls(), self.robot.joints(), look=lambda b, q: (self._look_pose(b), {}))
+        for i, (b, q) in enumerate(plan):
+            self._look_into(b, q, 45.0 if i == 0 else 30.0)  # also saves the frame + crops
+            n = self.robot.vision_command("bowl-contents", {"command": "enroll", "label": truth[b.bowl_id],
+                                                            "images_b64": self._last_crops}).get("examples")
+            self._say(f"{self._bowl_words(b)} is {self.FOOD_SPOKEN.get(truth[b.bowl_id], truth[b.bowl_id])}. Learned.")
+            self._event("bowls", f"taught {truth[b.bowl_id]} from {b.name} ({n} examples)")
         self._glide(self.home_pose(), speed_degs=45.0, what="bowls: back home")
-        self._say(f"I couldn't find any {spoken}.")
-        raise RuntimeError(f"no bowl with {food} (checked {len(plan)})")
+        self.reason = f"taught: Bowl 1 = {truth['bowl1']}, Bowl 2 = {truth['bowl2']} (CLIP examples on the Orin)"
 
     def _do_find_food(self) -> None:
         """Debug: just the sweep for one food (kw food), then home."""
