@@ -1,8 +1,14 @@
 # Viam module: `depth-anything-3`
 
 Turns any RGB camera into a metric depth camera with a point cloud and a lidar-style range
-sensor, using [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)
-(DA3METRIC-LARGE, Apache-2.0). Runs on the AGX Orin's GPU (docs/COMPUTE.md: models are services).
+sensor. Two models: [Depth Pro](https://github.com/apple/ml-depth-pro) (Apple, the default) and
+[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3) (DA3METRIC-LARGE, Apache-2.0).
+Runs on the AGX Orin's GPU (docs/COMPUTE.md: models are services).
+
+Which model (measured on the Orin 2026-10-24, one close-up face ~0.23 m away by its eye-corner
+span, same focal for all): **Depth Pro 0.21 m**, MoGe-2 0.45 m, DA3 0.59 m. DA3's scale is only
+trustworthy at room scale (0.5 m+, like its benchmarks) but it is ~6x faster: about 0.15 s per
+frame vs ~1.1 s for Depth Pro. The module was first built around DA3, hence its name.
 
 | Model | API | What it serves |
 |---|---|---|
@@ -25,7 +31,7 @@ optical axis, elevation + up.
   "components": [
     { "name": "webcam-2-depth", "api": "rdk:component:camera", "model": "assistive-arm:depth-anything-3:camera",
       "attributes": { "source": "webcam-2", "hfov_deg": 45,
-                      "weights": "/home/ultraviolet/depth-anything-3/weights/DA3METRIC-LARGE" },
+                      "weights": "/home/ultraviolet/depth-anything-3/weights/depth_pro.pt" },
       "frame": { "parent": "<same parent as webcam-2>", "translation": "<same as webcam-2>",
                  "orientation": "<same as webcam-2>" } },
     { "name": "webcam-2-range", "api": "rdk:component:sensor", "model": "assistive-arm:depth-anything-3:range",
@@ -40,12 +46,13 @@ camera's optical frame (+z out of the lens, +x right, +y down).
 | Attribute | Default | |
 |---|---|---|
 | `source` | required | the RGB camera |
-| `weights` | `depth-anything/DA3METRIC-LARGE` | HF repo id or local dir; metric models only (DA3METRIC, DA3NESTED) |
+| `model` | `depth-pro` | `depth-pro` (accurate close up, ~1 Hz) or `da3-metric` (~6 Hz, trust from ~0.5 m) |
+| `weights` | the model's own | Depth Pro: HF repo `apple/DepthPro` or a local `.pt`; DA3: HF repo id or local dir (metric models only) |
 | `device` | `auto` | `auto` / `cuda` / `mps` / `cpu`. `auto` with a CUDA build of torch requires a working GPU: if it is down, the module reports an error and retries every 30 s instead of crawling on the CPU (on the Orin ~8 min per frame, starving teleop). Use `cpu` to force the CPU |
-| `process_res` | 504 | DA3 input size (longest side); lower = faster, coarser |
+| `process_res` | 504 | DA3 only: input size (longest side); lower = faster, coarser. Depth Pro always uses 1536 |
 | `produce_hz` | 2 | background inference rate (upper bound) |
 | `stale_after_s` | 5 | older depth is refused with an error, never served |
-| `fx` `fy` (`cx` `cy`) / `hfov_deg` | – | intrinsics: these, else the source's properties, else an error |
+| `fx` `fy` (`cx` `cy`) / `hfov_deg` | – | intrinsics: these, else the source's properties, else Depth Pro's own focal estimate (DA3: an error) |
 | `stride` | 2 | point-cloud pixel subsampling |
 | `min_range_m` / `max_range_m` | 0.1 / 10 | returns outside are dropped |
 | `center_roi` | 0.1 | fraction of the image used for `distance_m` |
@@ -82,7 +89,12 @@ a perception aid, never as a safety sensor (AGENTS.md §4).
 that already has torch: `DA3_BASE_VENV=~/assistive-arm-vision/.venv ./setup.sh`. PyPI's
 cu13x torch runs on the Orin's GPU: its sm_80 kernels run on sm_87, though torch warns
 that 8.7 isn't an official target. Download the weights beside it with `./fetch_weights.sh`
-(resumable; the venue Wi-Fi drops connections) and set `weights` to that directory.
+(Depth Pro, 1.9 GB) or `./fetch_weights.sh da3-metric` (resumable; the venue Wi-Fi drops
+connections) and point `weights` at them.
+
+**Focal length.** webcam-2 is configured with `hfov_deg: 45` (772.5 px, from the C270's 55°
+diagonal spec). Depth Pro and MoGe-2 both estimate ~1008 px for it; if they're right, every
+distance is ~23 % short. Calibrate the camera (checkerboard) before trusting absolute distances.
 
 viam-server stops a module with SIGTERM and then closes its connection; the Python SDK waits
 for that, so `kill` on its own doesn't restart the module. To load new code, change the

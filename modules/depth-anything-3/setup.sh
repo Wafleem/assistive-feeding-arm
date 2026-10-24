@@ -18,6 +18,7 @@ cd "$(dirname "$0")"
 # Depth Anything 3, pinned. Installed without its dependencies: those are for exporting
 # GLB/COLMAP/videos (open3d, pycolmap, xformers, ...); requirements.txt has what inference needs.
 DA3_REF=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4
+DEPTH_PRO_REF=9e65e4dbe9568d23c546fcec53302b10445e109e  # Apple Depth Pro, also without its dependencies
 VENV=viam-env
 
 [ -f "$VENV/.installed" ] && exit 0
@@ -39,5 +40,6 @@ fi
 # hatch-vcs can't read a version from a source archive; tell it one.
 SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 "${PIP[@]}" install --no-deps \
   "https://github.com/ByteDance-Seed/Depth-Anything-3/archive/${DA3_REF}.zip"
-"$VENV/bin/python" -c "import torch, depth_anything_3; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+"${PIP[@]}" install --no-deps "https://github.com/apple/ml-depth-pro/archive/${DEPTH_PRO_REF}.zip"
+"$VENV/bin/python" -c "import torch, depth_anything_3, depth_pro; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 touch "$VENV/.installed"
