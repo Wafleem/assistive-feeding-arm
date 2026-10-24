@@ -358,7 +358,7 @@ function hover(ev,c){if(!live||!grid)return;const k=S.intrinsics,rect=c.getBound
  const x=(u-k.cx)/k.fx,y=(v-k.cy)/k.fy;$('hover').textContent=(z/1000*Math.sqrt(1+x*x+y*y)).toFixed(2)+' m';}
 for(const c of Object.values(C)){c.addEventListener('mousemove',e=>hover(e,c));c.addEventListener('mouseleave',()=>$('hover').textContent='–');}
 function decode(b64){return new Promise((ok,bad)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=bad;i.src='data:image/jpeg;base64,'+b64;});}
-function meta(st){const mod=st.module||{};return (mod.status||'')+(mod.last_error?' | '+mod.last_error:'');}
+function meta(st){const mod=st.module||{};return (mod.status||'')+(mod.device?' on '+mod.device:'')+(mod.timing&&mod.timing.total_ms?' ('+mod.timing.total_ms+' ms)':'')+(mod.last_error?' | '+mod.last_error:'');}
 function connect(){if(es)es.close();es=new EventSource('/events?scale='+$('scale').value);$('state').textContent='Connecting...';
  es.addEventListener('frame',async e=>{const st=JSON.parse(e.data);
   const[ci,di]=await Promise.all([decode(st.color),decode(st.depth)]);
