@@ -151,7 +151,7 @@ class DepthAnything3Camera(Camera, EasyResource):
                 self._status = f"model failed to load, retrying in {LOAD_RETRY_S:.0f} s: {e!r}"
                 LOGGER.error("%s: %s", self.name, self._status)
                 await asyncio.sleep(LOAD_RETRY_S)
-        self._status = f"running on {self._estimator.device}"
+        self._status = "running"
         period = 1.0 / cfg.produce_hz
         while True:
             t0 = time.monotonic()
@@ -275,6 +275,9 @@ class DepthAnything3Camera(Camera, EasyResource):
             "status": self._status,
             "source": self._cfg.source if self._cfg else None,
             "model": self._cfg.model if self._cfg else None,
+            "compute": self._cfg.compute if self._cfg else None,
+            "device": getattr(self._estimator, "device", None),
+            "timing": getattr(self._estimator, "timing", None),
             "weights": self._cfg.weights if self._cfg else None,
             "frames": self._frames,
             "errors": self._errors,

@@ -23,6 +23,13 @@ class CameraConfig:
     # path (Depth Pro: the .pt file; DA3: a directory, a metric model such as DA3METRIC-LARGE).
     weights: Optional[str] = None
     device: str = "auto"  # auto = CUDA with a CUDA build of torch (required then), else MPS, else CPU
+    # Where the model runs. "cloud" (default): Depth Pro on a cloud GPU (cloud/depth_server.py)
+    # at cloud_url, an SSH tunnel to the instance; "local": on this machine. With cloud_fallback
+    # the local model takes over while the cloud is unreachable (rechecked every 30 s).
+    compute: str = "cloud"
+    cloud_url: str = "http://127.0.0.1:8800"
+    cloud_timeout_s: float = 3.0
+    cloud_fallback: bool = True
     process_res: int = 504  # DA3 only: input size (longest side, px). Depth Pro always uses 1536
     produce_hz: float = 2.0  # background inference rate (an upper bound: one frame at a time)
     stale_after_s: float = 5.0  # point clouds and ranges older than this are refused, not served
@@ -60,10 +67,13 @@ class CameraConfig:
         def num(key: str, kind=float):
             return None if attrs.get(key) is None else kind(attrs[key])
 
-        kw = {k: num(k) for k in ("fx", "fy", "cx", "cy", "hfov_deg", "produce_hz", "stale_after_s", "source_timeout_s")}
+        kw = {k: num(k) for k in ("fx", "fy", "cx", "cy", "hfov_deg", "produce_hz", "stale_after_s", "source_timeout_s",
+                                  "cloud_timeout_s")}
         kw.update(process_res=num("process_res", int), stride=num("stride", int), preview_port=num("preview_port", int))
         kw = {k: v for k, v in kw.items() if v is not None}
-        for k in ("model", "weights", "device", "vision_status_url"):
+        if attrs.get("cloud_fallback") is not None:
+            kw["cloud_fallback"] = bool(attrs["cloud_fallback"])
+        for k in ("model", "weights", "device", "vision_status_url", "compute", "cloud_url"):
             if attrs.get(k) is not None:
                 kw[k] = str(attrs[k]).strip()
         rp = {range_keys[k]: (int if k in ("scan_beams", "min_support_px") else float)(attrs[k])
@@ -76,6 +86,10 @@ class CameraConfig:
         r = self.ranges
         problems = [
             (self.model not in MODELS, f"model must be one of {MODELS}"),
+            (self.compute not in ("cloud", "local"), "compute must be cloud or local"),
+            (self.compute == "cloud" and self.model != "depth-pro", "the cloud server runs depth-pro only"),
+            (self.compute == "cloud" and not self.cloud_url.startswith("http"), "cloud_url must be an http(s) URL"),
+            (self.cloud_timeout_s <= 0, "cloud_timeout_s must be > 0"),
             (self.device not in DEVICES, f"device must be one of {DEVICES}"),
             ((self.fx is None) != (self.fy is None), "give fx and fy together"),
             ((self.cx is None) != (self.cy is None), "give cx and cy together"),
