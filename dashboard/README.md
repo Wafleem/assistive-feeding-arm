@@ -4,9 +4,7 @@
 
 The separate `static/language.html` page reuses the Viam hackathon's Ultraviolet
 styling, text/voice command card, hold-to-talk and keyboard microphone controls,
-voice selection and spoken acknowledgments. The presentation styling uses larger
-text, 48px minimum button targets, visible keyboard focus, readable disabled
-controls and responsive layouts with reduced-motion support. It does not change `server.py`, the
+voice selection and spoken acknowledgments. It does not change `server.py`, the
 original `static/index.html`, controller code, robot configuration or calibration.
 
 ```bash
