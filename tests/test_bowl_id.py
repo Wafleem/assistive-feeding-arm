@@ -65,33 +65,73 @@ def test_sweep_uses_one_posture_and_turns_only_the_base():
 
 def test_sweep_mode_labels_each_bowl_from_crops_sent_to_the_orin(tmp_path):
     import json
-    import time
+    arm, s = _session_with_bowls(tmp_path, {"bowl1": "cereal", "bowl2": "empty"})
+    calls = []
+    inner = arm.vision_command
+    arm.vision_command = lambda service, cmd, timeout=20.0: (calls.append(len(cmd["images_b64"])), inner(service, cmd))[1]
+    s.start()
+    try:
+        _run(s, "sweep_bowls")
+        assert calls == [4, 4], s.reason  # 4 crops per bowl, one call per bowl
+        seen = {b["bowl_id"]: b["label"] for b in json.loads((tmp_path / "seen.json").read_text())["bowls"]}
+        assert seen == {"bowl2": "empty", "bowl1": "cereal"}, s.reason
+        assert np.max(np.abs(arm.q - HOME)) < 3  # back home
+        assert [m["text"] for m in s.speech][-2:] == ["Bowl 2 has nothing.", "Bowl 1 has cereal."]
+    finally:
+        s.close()
+
+
+def _session_with_bowls(tmp_path, contents):
+    """A session on the fake arm whose Orin says bowl -> contents (by which bowl the camera faces)."""
     from test_face_track_session import KinArm, SeenFace
     from assistive_arm.orchestration.face_servo_session import FaceServoSession
 
     arm = KinArm(HOME)
-    sent = []
-
-    def vision_command(service, cmd, timeout=20.0):
-        sent.append((service, len(cmd["images_b64"])))
-        n = len(cmd["images_b64"])  # first half of the crops = first bowl swept (bowl2): empty; rest: cereal
-        res = [{"label": "empty", "scores": {"cereal": 0.1, "mms": 0.05, "empty": 0.85}, "margin": 0.75}] * (n // 2) + \
-              [{"label": "cereal", "scores": {"cereal": 0.9, "mms": 0.05, "empty": 0.05}, "margin": 0.85}] * (n - n // 2)
-        return {"results": res, "ms": 30.0, "device": "cuda"}
-
-    arm.vision_command = vision_command
     s = FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
     s.BOWLS_SEEN, s.BOWL_LOOK, s.SWEEP_SETTLE_S = tmp_path / "seen.json", tmp_path / "look.json", 0.0
     s.taught.home = HOME.tolist()
+
+    def vision_command(service, cmd, timeout=20.0):
+        facing = "bowl1" if arm.q[0] < -35 else "bowl2"  # bowl1 is at pan ~-50, bowl2 at ~-21
+        food = contents[facing]
+        sc = {"cereal": 0.03, "mms": 0.03, "empty": 0.03, food: 0.94}
+        return {"results": [{"label": food, "scores": sc, "margin": 0.91}] * len(cmd["images_b64"]), "ms": 20, "device": "cuda"}
+
+    arm.vision_command = vision_command
+    return arm, s
+
+
+def _run(s, action, **kw):
+    import time
+    s.command(action, **kw)
+    t0 = time.time()
+    while s.mode != "idle" and time.time() - t0 < 60:
+        time.sleep(0.05)
+    return s.reason
+
+
+def test_find_food_stops_at_the_bowl_that_holds_it_even_when_the_bowls_are_swapped(tmp_path):
+    for contents, want in (({"bowl1": "cereal", "bowl2": "mms"}, {"cereal": "bowl1", "mms": "bowl2"}),
+                           ({"bowl1": "mms", "bowl2": "cereal"}, {"cereal": "bowl2", "mms": "bowl1"})):
+        arm, s = _session_with_bowls(tmp_path, contents)
+        s.start()
+        try:
+            for food, bowl in want.items():
+                reason = _run(s, "find_food", food=food)
+                assert reason.startswith(f"{food} is in") and ("Bowl 1" in reason) == (bowl == "bowl1"), reason
+                assert np.max(np.abs(arm.q - HOME)) < 3  # back home
+            spoken = [m["text"] for m in s.speech]
+            assert any(t.startswith("Looking for M and Ms") for t in spoken) and any("Found cereal" in t for t in spoken)
+        finally:
+            s.close()
+
+
+def test_find_food_says_so_when_no_bowl_has_it(tmp_path):
+    arm, s = _session_with_bowls(tmp_path, {"bowl1": "cereal", "bowl2": "empty"})
     s.start()
     try:
-        s.command("sweep_bowls")
-        t0 = time.time()
-        while s.mode != "idle" and time.time() - t0 < 60:
-            time.sleep(0.1)
-        assert sent == [("bowl-contents", 8)], s.reason  # 2 bowls x 4 crops, one call
-        seen = {b["bowl_id"]: b["label"] for b in json.loads((tmp_path / "seen.json").read_text())["bowls"]}
-        assert seen == {"bowl2": "empty", "bowl1": "cereal"}, s.reason
-        assert np.max(np.abs(arm.q - HOME)) < 3  # back home
+        reason = _run(s, "find_food", food="mms")
+        assert "failed" in reason and "no bowl with mms" in reason
+        assert any("couldn't find any M and Ms" in m["text"] for m in s.speech)
     finally:
         s.close()
