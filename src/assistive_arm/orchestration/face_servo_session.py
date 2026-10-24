@@ -38,6 +38,7 @@ from ..feeding.face_servo import (
 
 ROLL = 4  # SO-101 wrist roll joint index
 FLEX_J = 3
+from ..mouth_perception import face_geometry as fg
 from ..mouth_perception.depth_range import DepthRangeCorrector
 from ..mouth_perception.kalman import KalmanParams
 from ..mouth_perception.tracker import MouthTracker, TrackerParams
@@ -185,6 +186,7 @@ class FaceServoSession:
                         self.depth_status = "depth ok, no face in it"
                     else:
                         params = getattr(self.det, "params", None)
+                        self._depth_range_face(found[0], frame, params)
                         if params is not None and self.depth.update(found[0], frame.intrinsics, frame.depth, params):
                             if self.depth.ready:
                                 params.eye_span_m = self.depth.eye_span_m  # the 20 Hz pipeline now ranges metrically
@@ -192,6 +194,24 @@ class FaceServoSession:
             except Exception as e:
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
+
+    DEPTH_FRESH_S = 0.8  # Extend uses the depth-measured lips while they are at most this old
+
+    def _depth_range_face(self, lm, frame, params) -> None:
+        """Lips position (arm base frame) ranged by the depth camera itself, for Extend's stop."""
+        m = fg.measure_face(lm, frame.intrinsics, frame.depth, params)
+        if m.distance_source != "depth" or not (0.08 < m.distance < 1.5) or m.frontalness < 0.5:
+            return
+        t = frame.timestamp or self.robot.now()
+        cam = self._pose_fn(t) if self._pose_fn is not None else self.robot.camera_pose(self.camera)
+        self._depth_lips = (time.monotonic(), np.asarray(cam.transform_point(m.position), float), float(m.distance))
+
+    def _stop_face(self, face):
+        """The lips for Extend's distance: depth-ranged when fresh, else the fast (eye-span) estimate."""
+        d = getattr(self, "_depth_lips", None)
+        if d is not None and time.monotonic() - d[0] <= self.DEPTH_FRESH_S:
+            return d[1], "depth"
+        return face, "eye span"
 
     def _perception_loop(self) -> None:
         last = time.monotonic()
@@ -702,12 +722,13 @@ class FaceServoSession:
                 ext_reason, ext_log = "", {}
                 if extend:
                     e0 = tr.last or {}
+                    stop_face, range_src = self._stop_face(face) if face is not None else (None, "")
                     if face is None:
                         tip = 9.9
                     elif self.ext_cfg.close_fwd is not None:
-                        tip = tr.remaining(face, self.ext_cfg)
+                        tip = tr.remaining(stop_face, self.ext_cfg)
                     else:
-                        tip = tr.tip_distance(face, self.ext_cfg.spoon_tip_from_tool)
+                        tip = tr.tip_distance(stop_face, self.ext_cfg.spoon_tip_from_tool)
                     held = (time.monotonic() - held_since) if held_since else 0.0
                     direction, ext_reason = extend_decision(
                         self.ext_cfg, face is not None, st.age if st is not None else 9.9,
@@ -764,6 +785,8 @@ class FaceServoSession:
                         self._event("extend", ext_reason)
                     self._last_ext_reason = ext_reason
                     ext_log = {"ext_dir": direction, "ext_reason": ext_reason, "tip_cm": round(tip * 100, 1),
+                               "range_src": range_src,
+                               "depth_face_mm": _mm(stop_face) if range_src == "depth" else None,
                                "travel_target_cm": round(tr.travelled * 100, 1),
                                "travel_actual_cm": round(tr.actual_travelled() * 100, 1),
                                "head_speed_cm_s": None if st is None else round(st.speed * 100, 1)}
@@ -796,7 +819,7 @@ class FaceServoSession:
                 c, dt = tr.cfg, 1.0 / tr.cfg.rate_hz  # tuning can change live
                 e = tr.last
                 if extend and ext_reason:
-                    self.reason = f"extend: {ext_reason} | travelled {tr.travelled * 100:.1f} cm"
+                    self.reason = f"extend: {ext_reason} | travelled {tr.travelled * 100:.1f} cm | range: {range_src}"
                 elif face is not None and e:
                     self.reason = "tracking: miss {miss_cm} cm, spoon tilt {tilt_deg} deg".format(**e)
                     if e.get("lips_above_reach_cm"):
