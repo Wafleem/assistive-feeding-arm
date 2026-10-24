@@ -9,7 +9,8 @@
 <section style="margin-bottom:14px"><h2>What's in each bowl?</h2>
 <div class="row"><label for="bowl-1-food">Bowl 1</label><select id="bowl-1-food"><option value="cereal" selected>Cereal</option><option value="m&amp;ms">M&amp;Ms</option><option value="">Empty / not set</option></select>
 <label for="bowl-2-food">Bowl 2</label><select id="bowl-2-food"><option value="m&amp;ms" selected>M&amp;Ms</option><option value="cereal">Cereal</option><option value="">Empty / not set</option></select></div>
-<p class="muted">Labels for this preview only. Bowl numbers do not imply left/right or a known robot position. Changing a label clears the previous request.</p></section>
+<p class="muted" id="bowl-note">Labels for this preview only. Bowl numbers do not imply left/right or a known robot position. Changing a label clears the previous request.</p>
+<div class="row"><button id="sweep-bowls" hidden>🔍 Sweep bowls (camera + CLIP on the Orin)</button><span class="muted" id="bowls-seen"></span></div></section>
 <section class="say"><h2>Say a command</h2>
 <div class="say-mic"><div class="voice-controls"><button class="mic pill" id="mic" title="Hold to talk, or activate to start and stop" aria-pressed="false" aria-describedby="mic-help"
       onpointerdown="micDown(event)" onpointerup="micUp('pointer')" onpointerleave="micUp('pointer')" onpointercancel="micUp('pointer')" onclick="micClick(event)">🎤 Hold to talk</button>

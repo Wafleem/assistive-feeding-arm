@@ -69,6 +69,8 @@ export function parseInstruction(input, bowls = DEFAULT_BOWLS) {
     return motion('scoop', 'Scoop food and come back.');
   if (/^(?:home|(?:go|return|go back) (?:to )?home|start centered)$/.test(text))
     return motion('home', 'Return to the taught start pose.');
+  if (/^(?:(?:sweep|check|scan|identify|look (?:at|in|into)) (?:the |both )?bowls?|what(?:'s| is) in (?:the |each |both )?bowls?)$/.test(text))
+    return motion('sweep_bowls', 'Sweep over the bowls: the camera looks into each and CLIP on the Orin says what is in it.');
   if (/^(find (?:my|the) face|look for (?:my|the) face)$/.test(text))
     return motion('find_face', 'Find the face near the taught look pose.');
   if (/^(center(?: on (?:my|the) face)?|centre(?: on (?:my|the) face)?)$/.test(text))

@@ -85,3 +85,8 @@ test('changing bowl labels invalidates the previous review and voice generation'
   const app=readFileSync(new URL('../static/language-app.js',import.meta.url),'utf8');
   assert.match(app,/for \(const id of \['bowl-1-food', 'bowl-2-food'\]\).*addEventListener\('change', \(\) => \{\s*invalidateVoice\(\); micUp\(\); clearReview\(\);/);
 });
+
+test('bowl sweep phrases map to the sweep_bowls action', () => {
+  for (const s of ['check the bowls', "what's in the bowls", 'sweep bowls', 'look into the bowls', 'scan both bowls'])
+    assert.equal(parse(s).command && parse(s).command.action, 'sweep_bowls', s);
+});

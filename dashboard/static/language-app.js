@@ -256,6 +256,7 @@ async function sendReviewed() {
       speakReply(`Spoon loaded. Tell me when you're ready.`, voiceGeneration, replyGeneration);
       return;
     }
+    if (cmd.action === 'sweep_bowls') { await sweepBowls(); return; }
     if (cmd.action) { await api('/api/cmd', { action: cmd.action }); say('ok', `Sent ${cmd.action}.`); }
   } catch (e) { say('bad', `Robot: ${e.message}`); $('send').disabled = false; }
 }
@@ -263,17 +264,34 @@ async function feedNow() {
   pendingFeed = false; $('send').textContent = 'Send to robot';
   try { await api('/api/cmd', { action: 'feed' }); await waitIdle('Feeding'); } catch (e) { say('bad', `Robot: ${e.message}`); }
 }
+function applySeen(seen) {  // labels from the bowl sweep -> the selectors
+  if (!seen || !seen.bowls) return;
+  for (const b of seen.bowls) {
+    const sel = $(b.bowl_id === 'bowl1' ? 'bowl-1-food' : 'bowl-2-food');
+    if (sel && b.label) sel.value = b.label === 'mms' ? 'm&ms' : (b.label === 'empty' ? '' : b.label);
+  }
+  $('bowls-seen').textContent = 'Last sweep ' + seen.t.slice(11, 16) + ': ' + seen.bowls.map(b =>
+    (b.bowl_id === 'bowl1' ? 'Bowl 1' : 'Bowl 2') + ' = ' + (b.label || '?') + ' ' + Math.max(...Object.values(b.scores)).toFixed(2)).join(', ');
+}
+async function sweepBowls() {
+  try {
+    $('sweep-bowls').disabled = true;
+    await api('/api/cmd', { action: 'sweep_bowls' });
+    const s = await waitIdle('Sweeping the bowls');
+    applySeen(s.bowls_seen); clearReview();
+    say(/failed/.test(s.reason) ? 'bad' : 'ok', s.reason);
+  } catch (e) { say('bad', `Robot: ${e.message}`); } finally { $('sweep-bowls').disabled = false; }
+}
 async function goLive() {
   if (!liveToken) return;
   try { var s = await api('/api/state'); } catch (e) { return; }
   live = true;
   $('offline-note').textContent = 'Connected to the robot dashboard. Check the meaning, then Send. Stop, wait, no and done send STOP at once.';
   document.querySelector('.chip').textContent = 'Live';
-  const seen = s.bowls_seen && s.bowls_seen.bowls;  // labels from "Identify bowls" (CLIP on the Orin)
-  if (seen) for (const b of seen) {
-    const sel = $(b.bowl_id === 'bowl1' ? 'bowl-1-food' : 'bowl-2-food');
-    if (sel && b.label) sel.value = b.label === 'mms' ? 'm&ms' : (b.label === 'empty' ? '' : b.label);
-  }
+  applySeen(s.bowls_seen);
+  $('bowl-note').textContent = 'Live: set from the last bowl sweep (CLIP on the Orin). Sweep again after changing the bowls.';
+  $('sweep-bowls').hidden = false;
+  $('sweep-bowls').onclick = sweepBowls;
   $('send').onclick = () => (pendingFeed ? feedNow() : sendReviewed());
   $('manual-dashboard').src = '/?token=' + encodeURIComponent(liveToken);
   const enable = () => { $('send').disabled = !(reviewedCommand || pendingFeed); };
