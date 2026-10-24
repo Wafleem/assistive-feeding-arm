@@ -61,6 +61,27 @@ camera's optical frame (+z out of the lens, +x right, +y down).
 | `preview_port` | 0 (off) | serve the preview page on `127.0.0.1:<port>` (below) |
 | `vision_status_url` | off | e.g. `http://127.0.0.1:8765/status.json`: also show how far away vision_preview's mouths and spoons are |
 
+## Cloud GPU (the default)
+
+`compute: cloud` (default) sends each frame (a ~35 kB JPEG) to `cloud/depth_server.py` on a cloud
+GPU and gets depth back (~100 kB, uint16 mm). The Orin runs no model then, which keeps it cool.
+While the cloud is unreachable the local model takes over (`cloud_fallback`, rechecked every
+30 s); `compute: local` runs only on this machine. Status shows where each frame ran (`device`)
+and the round trip (`timing`).
+
+| Attribute | Default | |
+|---|---|---|
+| `compute` | `cloud` | `cloud` or `local` (cloud serves Depth Pro only) |
+| `cloud_url` | `http://127.0.0.1:8800` | the server, through an SSH tunnel |
+| `cloud_timeout_s` | 3 | per frame; a timeout counts as the cloud being down |
+| `cloud_fallback` | true | run the local model while the cloud is down |
+
+Set up (NVIDIA Brev, PyTorch template, one L4/A10/L40S; stop it when idle, it bills by the hour):
+1. On the instance: copy `cloud/` there and run `bash cloud/setup_instance.sh` (installs Depth Pro,
+   fetches the weights, starts the server on the instance's 127.0.0.1:8800).
+2. On the Orin, keep a tunnel up: `ssh -N -L 8800:127.0.0.1:8800 ubuntu@<instance>` (the server is
+   never exposed publicly; Brev's public tunnel URLs need a browser login, so they can't be used).
+
 ## Preview page
 
 With `preview_port` set (the Orin uses 8766), the module serves a read-only page from the
