@@ -133,14 +133,17 @@ Viewing detections:
 | Component | Parent | Geometry | Why |
 |---|---|---|---|
 | `table` | `world`, (x 287.2, y 227, z −15) | box x 726 × y 565 × z 30 mm | the marble table (measured 2026-10-24), 72.6 × 56.5 cm: its long side runs straight ahead of the arm (+x, the way the arm points at zero joints). The back of the base is 5 cm from the near edge (x −75.8; the back of the module's base box is x −25.8), and the base's right side is flush with the right edge (y −55.5, half the base box's 111 mm width; the left edge is at y +509.5). Top at z = 0, the bottom of the SO-101 base (the module's base origin; the shoulder pan axis is 62.4 mm up) |
-| `spoon` | `follower-gripper`, z +35.5 | box x 16 × y 16 × z 91 mm | the handle: from 10 mm behind the jaw tips to the end of the bend, 81 mm past them |
-| `spoon-bowl` | `follower-gripper`, (x +11, z +100.5) | box x 32 × y 45 × z 61 mm | the bend and bowl. The spoon sticks out **126 mm** past the jaw tips (measured 2026-10-24); from a side photo scaled to that, the bowl is the last 45 mm and hangs below the handle (+X, away from the webcam): rim ~6 mm, bottom ~21 mm below it. The box covers 70–131 mm along the spoon and −5 to +27 mm in X; the 45 mm width is a guess |
+| `spoon` | `follower-gripper`, (x +0.93, z +35.49), tilted 1.5° | box x 16 × y 16 × z 91 mm | the handle: from 10 mm behind the jaw tips to the end of the bend, 81 mm past them |
+| `spoon-bowl` | `follower-gripper`, (x +13.63, z +100.18), tilted 1.5° | box x 32 × y 45 × z 61 mm | the bend and bowl. The spoon sticks out **126 mm** past the jaw tips (measured 2026-10-24); from a side photo scaled to that, the bowl is the last 45 mm and hangs below the handle (+X, away from the webcam): rim ~6 mm, bottom ~21 mm below it. The box covers 70–131 mm along the spoon and −5 to +27 mm in X; the 45 mm width is a guess |
 | `bowl-right` | `world`, (x 309.2, y 94.5, z 0) | mesh `bowl-150x60.ply` | paper bowl, 150 mm across the rim, modelled 60 mm tall (measured ~70 mm, lowered 15%; the 100 mm bottom is a guess). The empty bowl nearest the arm: its rim is 75 mm from the right edge and 310 mm from the near edge (2026-10-24) |
 | `bowl-left` | `world`, (x 234.2, y 259.5, z 0) | mesh `bowl-150x60.ply` | the same bowl (the cereal bowl): its rim is 240 mm from the right edge and 235 mm from the near edge (2026-10-24). A third bowl, farther back, isn't modelled yet |
 
 - `follower-gripper`'s frame is the module's TCP, the point between the jaw tips, with the arm
   tool's axes (+Z along the spoon, +X down, away from the webcam). So the spoon boxes start at the
   tips and move with the arm: the planner treats them as part of the arm and keeps them off the table.
+- The spoon droops about 1.5° from the gripper axis (2026-10-24), so both boxes are rotated 1.5°
+  about +Y, pivoting at the jaw tips: `ov_degrees (0.026177, 0, 0.999657, 0)`, and each centre
+  `(x, z)` becomes `(x cos t + z sin t, −x sin t + z cos t)`. The tip ends up ~3.3 mm lower.
 - In the 3D SCENE tab, `spoon-bowl` should sit under the handle, on the side away from `webcam-2`.
   If it's on the webcam's side, the spoon is mounted the other way up: flip the bowl box's X
   (translation x −11). Shrink the boxes if close approaches get refused.

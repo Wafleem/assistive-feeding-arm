@@ -257,16 +257,16 @@
       "frame": {
         "parent": "follower-gripper",
         "translation": {
-          "x": 0,
+          "x": 0.93,
           "y": 0,
-          "z": 35.5
+          "z": 35.49
         },
         "orientation": {
           "type": "ov_degrees",
           "value": {
-            "x": 0,
+            "x": 0.026177,
             "y": 0,
-            "z": 1,
+            "z": 0.999657,
             "th": 0
           }
         }
@@ -290,16 +290,16 @@
       "frame": {
         "parent": "follower-gripper",
         "translation": {
-          "x": 11,
+          "x": 13.63,
           "y": 0,
-          "z": 100.5
+          "z": 100.18
         },
         "orientation": {
           "type": "ov_degrees",
           "value": {
-            "x": 0,
+            "x": 0.026177,
             "y": 0,
-            "z": 1,
+            "z": 0.999657,
             "th": 0
           }
         }
