@@ -218,3 +218,73 @@ for (const id of ['bowl-1-food', 'bowl-2-food']) $(id).addEventListener('change'
   invalidateVoice(); micUp(); clearReview();
   say('idle', 'Bowl labels changed. Check your instruction again to select the correct bowl.');
 });
+
+
+// ---------------------------------------------------------------- live mode (served by dashboard/server.py)
+// With ?token=... the page talks to the real dashboard: Send runs the reviewed request.
+// A bowl request = scoop that food (from whichever bowl holds it), then wait for "ready"
+// before Feed brings the spoon to the mouth. Stop/wait/no/done always send STOP at once.
+const liveToken = new URLSearchParams(location.search).get('token') || '';
+let live = false, pendingFeed = false;
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Token': liveToken },
+    body: JSON.stringify(body) } : { headers: { 'X-Token': liveToken } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+async function waitIdle(label) {
+  for (;;) {
+    await new Promise(res => setTimeout(res, 500));
+    const s = await api('/api/state');
+    say('ok', `${label}: ${s.mode} · ${s.reason}`);
+    if (['idle', 'done'].includes(s.mode)) return s;
+  }
+}
+async function sendReviewed() {
+  const cmd = reviewedCommand; if (!cmd || !live) return;
+  try {
+    if (cmd.action === 'stop') { await api('/api/cmd', { action: 'stop' }); pendingFeed = false; say('ok', 'STOP sent.'); return; }
+    if (cmd.kind === 'feeding_request_preview') {
+      const food = cmd.food === 'm&ms' ? 'mms' : cmd.food;
+      $('send').disabled = true;
+      await api('/api/cmd', { action: 'scoop_food', food });
+      const s = await waitIdle(`Scooping ${cmd.food}`);
+      if (/failed/.test(s.reason)) throw new Error(s.reason);
+      pendingFeed = true; $('send').disabled = false; $('send').textContent = "I'm ready: feed me";
+      say('ok', `Spoon loaded with ${cmd.food}. Say "ready" or press "I'm ready" to bring it to your mouth.`);
+      speakReply(`Spoon loaded. Tell me when you're ready.`, voiceGeneration, replyGeneration);
+      return;
+    }
+    if (cmd.action) { await api('/api/cmd', { action: cmd.action }); say('ok', `Sent ${cmd.action}.`); }
+  } catch (e) { say('bad', `Robot: ${e.message}`); $('send').disabled = false; }
+}
+async function feedNow() {
+  pendingFeed = false; $('send').textContent = 'Send to robot';
+  try { await api('/api/cmd', { action: 'feed' }); await waitIdle('Feeding'); } catch (e) { say('bad', `Robot: ${e.message}`); }
+}
+async function goLive() {
+  if (!liveToken) return;
+  try { var s = await api('/api/state'); } catch (e) { return; }
+  live = true;
+  $('offline-note').textContent = 'Connected to the robot dashboard. Check the meaning, then Send. Stop, wait, no and done send STOP at once.';
+  document.querySelector('.chip').textContent = 'Live';
+  const seen = s.bowls_seen && s.bowls_seen.bowls;  // labels from "Identify bowls" (CLIP on the Orin)
+  if (seen) for (const b of seen) {
+    const sel = $(b.bowl_id === 'bowl1' ? 'bowl-1-food' : 'bowl-2-food');
+    if (sel && b.label) sel.value = b.label === 'mms' ? 'm&ms' : (b.label === 'empty' ? '' : b.label);
+  }
+  $('send').onclick = () => (pendingFeed ? feedNow() : sendReviewed());
+  $('manual-dashboard').src = '/?token=' + encodeURIComponent(liveToken);
+  const enable = () => { $('send').disabled = !(reviewedCommand || pendingFeed); };
+  setInterval(enable, 300);
+}
+// "ready"/"yes" while a loaded spoon waits = feed; stop words go out immediately
+const parseLive = nlParse;
+window.nlParse = function () {
+  const ok = parseLive();
+  if (live && reviewedCommand && reviewedCommand.action === 'stop') sendReviewed();
+  else if (live && pendingFeed && /^(yes|yes please|ready|i'?m ready|okay|ok)$/i.test(val('nltext'))) feedNow();
+  return ok;
+};
+goLive();

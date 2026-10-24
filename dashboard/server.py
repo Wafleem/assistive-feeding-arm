@@ -170,10 +170,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # The natural-language page and its assets (static files, no secrets: served without the token;
+    # every robot call they make still needs it, like the main page).
+    LANGUAGE_ASSETS = {"/language.css": "text/css", "/language-app.js": "text/javascript",
+                       "/language-parser.mjs": "text/javascript"}
+
+    def _static(self, name: str, mime: str) -> None:
+        body = (ROOT / "dashboard/static" / name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        path = urlparse(self.path).path
+        if path in self.LANGUAGE_ASSETS:
+            return self._static(path.lstrip("/"), self.LANGUAGE_ASSETS[path])
         if not self._authorised():
             return
-        path = urlparse(self.path).path
+        if path == "/language.html":
+            return self._static("language.html", "text/html; charset=utf-8")
         if path in ("/", "/index.html"):
             body = (ROOT / "dashboard/static/index.html").read_bytes()
             self.send_response(200)
