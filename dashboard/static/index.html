@@ -139,6 +139,9 @@
         <button class="step" id="find_mms">Debug: find <b>M&amp;Ms</b> (sweep only)</button>
         <button class="step" id="scoop_cereal" style="border-color: var(--accent)">Scoop <b>cereal</b> (looks first, then scoops)</button>
         <button class="step" id="scoop_mms" style="border-color: var(--accent)">Scoop <b>M&amp;Ms</b> (looks first, then scoops)</button>
+        <button class="step" data-a="scoop_bowl" data-bowl="bowl1">Debug: scoop <b>Bowl 1</b> (no vision, no voice)</button>
+        <button class="step" data-a="scoop_bowl" data-bowl="bowl2">Debug: scoop <b>Bowl 2</b> (no vision, no voice)</button>
+        <button class="step" data-a="go_mouth" style="grid-column: span 2">Debug: sweep to the <b>mouth spot</b> (taught pose, no vision), hold, home</button>
         <button class="step" id="dump_cereal">Debug: dump spoon back into the <b>cereal</b> bowl</button>
         <button class="step" id="dump_mms">Debug: dump spoon back into the <b>M&amp;M</b> bowl</button>
         <div id="bowlsinfo" style="grid-column: span 2; color:var(--dim); font-size:12px"></div>
@@ -208,8 +211,8 @@ async function cmd(action, extra = {}) {
 
 document.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
   const a = b.dataset.a;
-  if ((a === "extend" || a === "feed") && !$("consent").checked) { $("msg").textContent = "Tick the readiness box before Extend."; return; }
-  cmd(a);
+  if ((a === "extend" || a === "feed" || a === "go_mouth") && !$("consent").checked) { $("msg").textContent = "Tick the readiness box before Extend."; return; }
+  cmd(a, b.dataset.bowl ? { bowl: b.dataset.bowl } : undefined);
 });
 $("stop").onclick = () => cmd("stop");
 document.querySelectorAll("button.nudge").forEach(b => b.onclick = () => cmd("nudge_spoon", { deg: parseFloat(b.dataset.deg) }));

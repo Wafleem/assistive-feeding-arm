@@ -87,6 +87,10 @@
         <button class="dbg move" onclick="debug('feed')">Feed only</button>
         <button class="dbg" onclick="debug('home')">Home</button></div>
       <div class="row">
+        <button class="dbg move" onclick="debug('scoop_bowl',{bowl:'bowl1'})">Scoop Bowl 1 (no vision, no voice)</button>
+        <button class="dbg move" onclick="debug('scoop_bowl',{bowl:'bowl2'})">Scoop Bowl 2 (no vision, no voice)</button>
+        <button class="dbg move" onclick="debug('go_mouth')">Sweep to the mouth spot (no vision)</button></div>
+      <div class="row">
         <button class="dbg move" onclick="debug('dump',{food:'cereal'})">Dump spoon back into the cereal bowl</button>
         <button class="dbg move" onclick="debug('dump',{food:'mms'})">Dump spoon back into the M&amp;M bowl</button></div>
       <p class="muted">Dump: the spoon goes over that bowl (bowl from the last sweep; otherwise Bowl 1 cereal, Bowl 2 M&amp;Ms),
