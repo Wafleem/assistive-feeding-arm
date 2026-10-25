@@ -7,5 +7,7 @@
   94.5
  ],
  "calibrated": false,
- "note": "position from the Viam scene (bowl-right), not yet touched with the spoon tip; calibrate like Bowl 1"
+ "note": "position from the Viam scene (bowl-right), not yet touched with the spoon tip; calibrate like Bowl 1",
+ "deeper_mm": 8.0,
+ "deeper_note": "scoop dips this many mm deeper in Bowl 2 than in Bowl 1 (floor limit lowered the same)"
 }

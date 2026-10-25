@@ -1220,7 +1220,9 @@ class FaceServoSession:
         d2 = json.loads(Path("poses/so101_bowl2.json").read_text())
         off = np.asarray(cal["centre_mm"], float) - np.asarray(cal.get("scene_centre_mm", cal["centre_mm"]), float)
         c = np.asarray(d2["scene_centre_mm"], float) + off
-        return {**cal, "id": "bowl2", "name": d2.get("name", "Bowl 2"), "centre_mm": [round(float(v), 1) for v in c]}
+        deeper = float(d2.get("deeper_mm", 0.0))  # Bowl 2 only: dip this much lower (and allow it)
+        return {**cal, "id": "bowl2", "name": d2.get("name", "Bowl 2"), "centre_mm": [round(float(v), 1) for v in c],
+                "floor_z_mm": float(cal["floor_z_mm"]) - deeper, "deeper_mm": deeper}
 
     def _do_scoop_food(self) -> None:
         """Scoop the requested food (kw food: cereal / mms): look first (sweep until a bowl holds
@@ -1348,12 +1350,15 @@ class FaceServoSession:
                         "food": lab.label if lab else None})
         return out
 
-    def _deepen_scoop(self, q: np.ndarray) -> np.ndarray:
+    def _deepen_scoop(self, q: np.ndarray, extra: float | None = None) -> np.ndarray:
         """Deeper and a longer sweep than the recording: the tool goes SCOOP_EXTRA_DEPTH lower
         (same spoon angle, so the tip does too), weighted by how deep each sample already is;
         along the bottom the base keeps turning SCOOP_EXTRA_SWEEP further in the direction it was
         sweeping, and lifts from there."""
         from ..feeding.face_track import solve_level_pose
+        extra = self.SCOOP_EXTRA_DEPTH if extra is None else extra
+        if extra <= 0:
+            return q
         q = q.copy()
         tips = np.array([(lambda T: T[:3, 3] + self.ext_cfg.spoon_tip_from_tool * T[:3, 2])(so101_fk(qi)) for qi in q])
         z, z_top = tips[:, 2], tips[0, 2]
@@ -1365,7 +1370,7 @@ class FaceServoSession:
                 continue
             T = so101_fk(qi)
             reach, height = float(np.linalg.norm(T[:3, 3][:2])), float(T[2, 3])
-            qn, ok = solve_level_pose(qi, reach, height - self.SCOOP_EXTRA_DEPTH * depth_w[i], _tool_pitch(qi))
+            qn, ok = solve_level_pose(qi, reach, height - extra * depth_w[i], _tool_pitch(qi))
             if ok:
                 out[i, 1:4] = qn[1:4]
         bottom = np.where(z <= z.min() + 0.015)[0]  # along the bottom
@@ -1435,7 +1440,7 @@ class FaceServoSession:
         k = 5 if demo.get("kind") == "hand-guided" else 3  # moving average: hand/servo jitter out, motion kept
         pad = np.vstack([np.repeat(q[:1], k, 0), q, np.repeat(q[-1:], k, 0)])
         q = np.array([pad[i:i + 2 * k + 1].mean(axis=0) for i in range(len(q))])
-        q = self._deepen_scoop(q)
+        q = self._deepen_scoop(q, self.SCOOP_EXTRA_DEPTH + float((bowl or {}).get("deeper_mm", 0.0)) / 1000)
         if bowl is not None or self.BOWL_CAL.exists():
             q = self._fit_scoop_to_bowl(q, bowl if bowl is not None else json.loads(self.BOWL_CAL.read_text()))
         r0 = q[0, ROLL]
