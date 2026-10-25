@@ -45,5 +45,7 @@
   216.5
  ],
  "scene_note": "centre with the viam scene's spoon geometry (tip (14.4, 0, 130.7) mm in the gripper frame); the Viam scene obstacle bowl-left was moved here on 2026-10-24",
- "viam_obstacle": "bowl-left"
+ "viam_obstacle": "bowl-left",
+ "deeper_mm": 5.0,
+ "deeper_note": "scoop dips this many mm deeper than the recording (floor limit lowered the same); the floor was measured with the spoon tip"
 }

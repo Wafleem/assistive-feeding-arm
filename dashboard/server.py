@@ -298,30 +298,33 @@ def main() -> int:
     from assistive_arm.mouth_perception import MediaPipeMouthDetector
     from assistive_arm.robot_iface.viam_so101 import SO101ViamRobot
 
-    cams = (args.camera,) + ((args.depth_camera,) if args.depth_camera else ())
     for attempt in range(1, 7):  # the cloud link can take a few tries (WebRTC through NAT)
         try:
-            try:
-                robot = SO101ViamRobot(cameras=cams, camera_address=args.camera_address or None)
-            except Exception as e:
-                if not args.depth_camera or "depth" not in str(e).lower() and args.depth_camera not in str(e):
-                    raise
-                print(f"depth camera {args.depth_camera!r} unavailable ({e}); running without depth", flush=True)
-                args.depth_camera = ""
-                robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
+            robot = SO101ViamRobot(cameras=(args.camera,), camera_address=args.camera_address or None)
             break
         except Exception as e:
             print(f"connect attempt {attempt}/6 failed: {type(e).__name__} {e}", flush=True)
             if attempt == 6:
                 raise
             time.sleep(min(2 * attempt, 8))
+    # Depth gets its OWN connection and worker thread: a slow or failing depth fetch must never
+    # hold up the gripper camera or the arm (they share the main connection's thread).
+    depth_src = None
+    if args.depth_camera:
+        try:
+            from assistive_arm.robot_iface.viam import ViamCameraRig
+            depth_src = ViamCameraRig((args.depth_camera,), address=args.camera_address or os.environ.get("VIAM_ADDRESS"))
+        except Exception as e:
+            print(f"depth camera {args.depth_camera!r} unavailable ({type(e).__name__} {e}); running without depth", flush=True)
+            args.depth_camera = ""
     det = MediaPipeMouthDetector(camera=args.camera, model_path=args.model)
     cfg = FaceServoConfig(stop_tip_distance=args.stop_cm / 100, joint_speed_degs=args.speed)
     depth_det = MediaPipeMouthDetector(camera=args.depth_camera, model_path=args.model) if args.depth_camera else None
     session = FaceServoSession(robot, det, args.camera, args.poses, cfg, render=make_render(),
                                allow_extend=args.allow_extend, log_dir=ROOT / "data/logs",
                                depth_camera=args.depth_camera or None, depth_detector=depth_det,
-                               depth_render=make_depth_render() if args.depth_camera else None)
+                               depth_render=make_depth_render() if args.depth_camera else None,
+                               depth_source=depth_src)
     session.start()
 
     Handler.session = session

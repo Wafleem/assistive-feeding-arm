@@ -319,7 +319,10 @@ class ViamCameraRig:
         try:
             for name in names or list(self._cams):
                 t = self.now()
-                images, _ = self._io.run(self._cams[name].get_images(), timeout=timeout)
+                # depth cameras: just colour + raw depth (the dashboard draws its own overlay, so the
+                # module's ready-made "depth_color" picture would only cost bandwidth)
+                kw = {"filter_source_names": ["color", "depth"]} if "depth" in name else {}
+                images, _ = self._io.run(self._cams[name].get_images(**kw), timeout=timeout)
                 rgb, depth = _rgb_and_depth(images)
                 out[name] = RGBDFrame(name, rgb, depth, self.intrinsics(name), timestamp=t)
         except Exception:

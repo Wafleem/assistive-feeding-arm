@@ -112,7 +112,7 @@ class FaceServoSession:
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
                  cfg: FaceServoConfig | None = None, render=None, probe_deg: float = 4.0, settle: float = 0.15,
                  allow_extend: bool = True, log_dir=None, depth_camera: str | None = None, depth_detector=None,
-                 depth_render=None):
+                 depth_render=None, depth_source=None):
         self.robot, self.det, self.camera = robot, detector, camera
         self.path = Path(poses_path)
         self.taught = Taught.load(self.path)
@@ -142,6 +142,7 @@ class FaceServoSession:
         self._frame_times = deque(maxlen=200)
         self.allow_extend = allow_extend
         self.depth_camera, self.depth_det = depth_camera, depth_detector
+        self.depth_source = depth_source  # its own connection + thread (else the robot's: may stall the camera)
         self.depth = DepthRangeCorrector()
         self.depth_status = "off" if not (depth_camera and depth_detector) else "starting"
         self.depth_render = depth_render  # (frame, landmarks or None, session) -> jpeg bytes
@@ -188,10 +189,11 @@ class FaceServoSession:
         while self._running:
             t0 = time.monotonic()
             try:
+                src = self.depth_source or self.robot
                 try:
-                    frames = self.robot.get_frames([self.depth_camera], may_reconnect=False)
+                    frames = src.get_frames([self.depth_camera], may_reconnect=self.depth_source is not None)
                 except TypeError:  # robots without the option (tests, sim)
-                    frames = self.robot.get_frames([self.depth_camera])
+                    frames = src.get_frames([self.depth_camera])
                 frame = frames.get(self.depth_camera)
                 d1 = time.monotonic()
                 fails = 0
@@ -1038,6 +1040,8 @@ class FaceServoSession:
         ``bowl``: the bowl dict to fit the scoop to (default Bowl 1's calibration)."""
         self._event("scoop", "going home")
         self._glide(self.home_pose(), what="scoop: going home")
+        if bowl is None and self.BOWL_CAL.exists():
+            bowl = self._scoop_bowl_dict("bowl1")
         if self.SCOOP_DEMO.exists():
             self._replay_scoop_demo(json.loads(self.SCOOP_DEMO.read_text()), bowl=bowl)
         else:
@@ -1216,7 +1220,8 @@ class FaceServoSession:
         is placed by the Viam scene (shifted by the same scene-to-spoon offset as Bowl 1)."""
         cal = json.loads(self.BOWL_CAL.read_text())
         if bowl_id == "bowl1":
-            return cal
+            deeper = float(cal.get("deeper_mm", 0.0))  # dip this much below the recording (and allow it)
+            return {**cal, "floor_z_mm": float(cal["floor_z_mm"]) - deeper, "deeper_mm": deeper}
         d2 = json.loads(Path("poses/so101_bowl2.json").read_text())
         off = np.asarray(cal["centre_mm"], float) - np.asarray(cal.get("scene_centre_mm", cal["centre_mm"]), float)
         c = np.asarray(d2["scene_centre_mm"], float) + off
