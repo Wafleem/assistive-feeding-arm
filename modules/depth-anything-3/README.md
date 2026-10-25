@@ -76,9 +76,12 @@ and the round trip (`timing`).
 | `cloud_timeout_s` | 3 | per frame; a timeout counts as the cloud being down |
 | `cloud_fallback` | true | run the local model while the cloud is down |
 
-Set up (NVIDIA Brev, PyTorch template, one L4/A10/L40S; stop it when idle, it bills by the hour):
-1. On the instance: copy `cloud/` there and run `bash cloud/setup_instance.sh` (installs Depth Pro,
-   fetches the weights, starts the server on the instance's 127.0.0.1:8800).
+Set up (NVIDIA Brev, VM mode; the team uses `depth-cloud`, one H200 on Nebius; stop it when idle,
+it bills by the hour):
+1. On the instance: copy `cloud/` there and run `bash cloud/setup_instance.sh`. It installs Depth Pro
+   in `~/depth-cloud/venv`, fetches the weights and runs the server as the `depth-server` systemd
+   service on the instance's 127.0.0.1:8800, so it comes back by itself after a stop/start (Brev's
+   VMs don't allow cron). Logs: `journalctl -u depth-server -f`.
 2. On the Orin, keep the tunnel up with `cloud/depth-cloud-tunnel.service` (systemd, as `ultraviolet`;
    starts at boot, restarts itself). It uses a dedicated key, `~/.ssh/brev_depth` on the Orin, whose
    public half is in the instance's `authorized_keys` as
