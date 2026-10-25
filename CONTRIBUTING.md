@@ -3,7 +3,7 @@
 ## First 15 minutes
 
 ```bash
-git clone git@github.com:Wafleem/open-vocab-helper-arm.git && cd open-vocab-helper-arm
+git clone git@github.com:Wafleem/assistive-feeding-arm.git && cd assistive-feeding-arm
 make setup      # .venv with Python 3.12 + numpy, mujoco, pytest (uses uv if installed)
 make test       # passing tests + xfail specs for sections not implemented yet
 make render     # what the cameras see in the MuJoCo feeding scene (out/)

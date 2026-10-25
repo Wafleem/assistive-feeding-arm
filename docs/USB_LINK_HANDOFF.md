@@ -50,7 +50,7 @@ ping -c 3 8.8.8.8         # expect ~20 ms (the Orin's own Wi-Fi gave 300-600 ms)
 ```
 The Viam app should show `orin-dev-kit` online and stay connected.
 
-**6. Optional: the face-servo dashboard** (repo `Wafleem/open-vocab-helper-arm`):
+**6. Optional: the face-servo dashboard** (repo `Wafleem/assistive-feeding-arm`):
 put your own Viam API key in `.env` (`VIAM_ADDRESS=orin-dev-kit-main.1pabvgfolw.viam.cloud`,
 `VIAM_API_KEY`, `VIAM_API_KEY_ID`: Viam app → orin-dev-kit → CONNECT → API keys), then
 `JETSON_KEY=~/.ssh/<your key> dashboard/run_mac.sh` and open the printed `localhost:8090` link.
