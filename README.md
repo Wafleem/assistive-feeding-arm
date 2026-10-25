@@ -11,8 +11,9 @@ a low-cost SO-101 arm.
 
 ## Demo
 
-<!-- Paste the demo video link here, e.g. [![Watch the demo](docs/media/arm_scooping.jpg)](https://youtu.be/...) -->
-**Video:** *coming soon*
+[![Watch the demo on YouTube](https://img.youtube.com/vi/ueZ0i9V6slo/maxresdefault.jpg)](https://youtu.be/ueZ0i9V6slo)
+
+**[Watch the demo on YouTube](https://youtu.be/ueZ0i9V6slo)**
 
 ## Why
 
