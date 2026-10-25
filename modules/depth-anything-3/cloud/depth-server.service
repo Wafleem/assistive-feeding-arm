@@ -1,0 +1,13 @@
+[Unit]
+Description=Depth Pro server for the Orin depth module (127.0.0.1:8800, reached through an SSH tunnel)
+After=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/depth-cloud
+ExecStart=/home/ubuntu/depth-cloud/venv/bin/python depth_server.py --weights depth_pro.pt --port 8800
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
