@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Depth + mouth view without the arm: the dashboard's own depth overlay, nothing else.
 
-    dashboard/run_depth_view.sh            # on the laptop: tunnel to the Jetson + this page
+    dashboard/run_depth_view.sh            # on the laptop: runs this on the Jetson, tunnels the page
     .venv/bin/python dashboard/depth_view.py --camera-address localhost:18080
 
 The full dashboard needs follower-arm; this uses only its camera rig, MediaPipe detector and
 ``make_depth_render``, so the picture is exactly the dashboard's depth view (depth from
 ``webcam-2-depth``: the cloud GPU or the Orin, whichever the camera is set to). Read-only: no
 arm, no commands. Serves http://127.0.0.1:<port>/ (an MJPEG stream and a status line).
+
+Each depth fetch is ~650 kB (the raw 640x480 depth map), so run it on the Jetson
+(run_depth_view.sh does): fetched over a laptop's tunnel it fills the Orin's Wi-Fi uplink and the
+live dashboard's video and depth stall behind it. It fetches at most ``--max-fps`` times a second
+(the depth camera makes ~3 new frames/s; faster only re-fetches the same frame).
 """
 
 from __future__ import annotations
@@ -44,7 +49,9 @@ def main() -> int:
     ap.add_argument("--camera", default="webcam-2-depth")
     ap.add_argument("--model", default=str(ROOT / "data/models/face_landmarker.task"))
     ap.add_argument("--port", type=int, default=8091)
+    ap.add_argument("--max-fps", type=float, default=3.0, help="depth fetches per second at most (the camera's produce_hz)")
     args = ap.parse_args()
+    period = 1.0 / args.max_fps
 
     load_dotenv(ROOT / ".env")
     from assistive_arm.mouth_perception import MediaPipeMouthDetector
@@ -60,6 +67,7 @@ def main() -> int:
 
     def loop() -> None:
         while True:
+            t0 = time.monotonic()
             try:
                 frame = rig.get_frames([args.camera])[args.camera]  # reconnects after repeated failures
                 found = det.landmarks(frame.rgb, time.monotonic())
@@ -72,6 +80,7 @@ def main() -> int:
                 with lock:
                     state["err"] = f"{type(e).__name__}: {e}"[:200]
                 time.sleep(1)
+            time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_a) -> None:

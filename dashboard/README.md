@@ -80,10 +80,12 @@ Safety (all in `feeding/face_servo.py: FaceServoConfig`; review with the safety 
 
 `dashboard/run_depth_view.sh` serves the dashboard's depth view (depth over the picture, lips,
 distances) on http://localhost:8091/ without the arm: the full dashboard needs `follower-arm`.
-It tunnels to the Jetson's viam-server (restarting the tunnel if it drops) and runs
-`dashboard/depth_view.py`, which uses only the camera rig, MediaPipe and `make_depth_render`.
-Over the USB cable by default; on a shared network `JETSON=ultraviolet@<jetson-ip> dashboard/run_depth_view.sh`.
-Read-only: it sends no commands.
+It runs `dashboard/depth_view.py` (only the camera rig, MediaPipe and `make_depth_render`) **on the
+Jetson**, so the raw depth (~650 kB a frame) stays on the Jetson and only the finished picture
+crosses the tunnel; fetched from a laptop, the depth filled the Orin's Wi-Fi uplink and froze the
+live dashboard's video and depth. It fetches at most 3 frames/s (`--max-fps`), restarts with the
+tunnel, and Ctrl-C stops it on the Jetson. Over the USB cable by default; on a shared network
+`JETSON=ultraviolet@<jetson-ip> dashboard/run_depth_view.sh`. Read-only: it sends no commands.
 
 ## Run (on your laptop)
 
