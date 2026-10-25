@@ -76,6 +76,15 @@ Safety (all in `feeding/face_servo.py: FaceServoConfig`; review with the safety 
 - retreat if the face is lost (> 0.4 s), the head moves fast, or turns away during the approach;
 - Extend needs the readiness box ticked; every request needs the server's token.
 
+## Depth + mouth only (no arm)
+
+`dashboard/run_depth_view.sh` serves the dashboard's depth view (depth over the picture, lips,
+distances) on http://localhost:8091/ without the arm: the full dashboard needs `follower-arm`.
+It tunnels to the Jetson's viam-server (restarting the tunnel if it drops) and runs
+`dashboard/depth_view.py`, which uses only the camera rig, MediaPipe and `make_depth_render`.
+Over the USB cable by default; on a shared network `JETSON=ultraviolet@<jetson-ip> dashboard/run_depth_view.sh`.
+Read-only: it sends no commands.
+
 ## Run (on your laptop)
 
 ```bash
