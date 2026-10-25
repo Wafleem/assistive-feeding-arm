@@ -339,9 +339,10 @@ async function poll() {
 Object.assign(window, { go, toggleMic, toggleHandsFree, stopAll, debug, toggleTheme });
 if (token) {
   $('cam').src = '/stream.mjpg?token=' + encodeURIComponent(token);
-  $('depth').src = '/depth.mjpg?token=' + encodeURIComponent(token);
+  // depth view rendered ON the Orin (dashboard/run_depth_view.sh): only its picture crosses the link
+  $('depth').src = location.protocol + '//' + location.hostname + ':8091/depth.mjpg';
   setTimeout(() => { if (!$('depth').naturalWidth) { $('depth').hidden = true; $('depth-note').hidden = false;
-    $('depth-note').textContent = 'No depth frames (cloud depth GPU not reachable, or the dashboard started without depth).'; } }, 6000);
+    $('depth-note').textContent = 'No depth view: start it with dashboard/run_depth_view.sh (runs on the Orin, port 8091).'; } }, 6000);
 } else {
   for (const id of ['cam', 'depth']) $(id).hidden = true;
   $('depth-note').hidden = false; $('depth-note').textContent = 'Live views appear when opened from the robot dashboard (/test?token=...).';
