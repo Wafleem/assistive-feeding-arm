@@ -18,4 +18,8 @@ if ! nc -z localhost 8766 2>/dev/null; then  # the depth module's preview page (
   ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o HostKeyAlias="$HOSTKEY_ALIAS" \
       -i "$KEY" -L "8766:127.0.0.1:8766" "$JETSON" && echo "depth preview tunnel: localhost:8766" || true
 fi
+# Everything (arm, cameras, vision services) goes direct over the USB link: the cloud (WebRTC)
+# connection over venue Wi-Fi stalled the whole dashboard while it retried (video froze for
+# seconds, joint reads timed out). Set VIAM_VIA_CLOUD=1 to use the cloud link instead.
+if [ -z "${VIAM_VIA_CLOUD:-}" ]; then export VIAM_ADDRESS="localhost:$PORT"; fi
 exec .venv/bin/python dashboard/server.py --camera-address "localhost:$PORT" "$@"
