@@ -106,7 +106,7 @@ class Stopped(Exception):
 class FaceServoSession:
     ACTIONS = ("home", "search", "sweep", "find_face", "level_spoon", "jog", "center", "auto_center", "extend", "retreat",
                "scoop", "home_scoop", "identify_bowls", "sweep_bowls", "find_food", "scoop_food", "teach_bowls",
-               "feed", "dump")
+               "feed", "dump", "scoop_bowl", "go_mouth")
     LEVEL_TOL_DEG = 5.0  # centring/extend only start with the spoon at least this level
 
     def __init__(self, robot, detector, camera: str = "webcam-2", poses_path="poses/so101_face.json",
@@ -139,6 +139,7 @@ class FaceServoSession:
         self._worker: threading.Thread | None = None
         self.last_move_end = 0.0
         self.fps = 0.0
+        self._frame_times = deque(maxlen=200)
         self.allow_extend = allow_extend
         self.depth_camera, self.depth_det = depth_camera, depth_detector
         self.depth = DepthRangeCorrector()
@@ -166,6 +167,13 @@ class FaceServoSession:
         self.last_plan_error = ""
 
     # ---------------------------------------------------------------- perception
+    def _perf_add(self, loop: str, parts: dict) -> None:
+        """Running means (ms) of where each loop's time goes (shown in /api/state "perf")."""
+        perf = self.__dict__.setdefault("_perf", {})
+        cur = perf.setdefault(loop, {})
+        for k, v in parts.items():
+            cur[k] = round(0.9 * cur.get(k, v * 1000) + 0.1 * v * 1000, 1)
+
     def start(self) -> None:
         threading.Thread(target=self._perception_loop, daemon=True).start()
         if self.depth_camera and self.depth_det is not None:
@@ -185,6 +193,7 @@ class FaceServoSession:
                 except TypeError:  # robots without the option (tests, sim)
                     frames = self.robot.get_frames([self.depth_camera])
                 frame = frames.get(self.depth_camera)
+                d1 = time.monotonic()
                 fails = 0
                 sig = None if frame is None or frame.depth is None else hash(frame.depth[::16, ::16].tobytes())
                 if frame is None or frame.depth is None or not np.any(frame.depth > 0):
@@ -207,6 +216,7 @@ class FaceServoSession:
                             if self.depth.ready:
                                 params.eye_span_m = self.depth.eye_span_m  # the 20 Hz pipeline now ranges metrically
                         self.depth_status = "ok" if self.depth.ready else f"learning ({len(self.depth.samples)} samples)"
+                self._perf_add("depth", {"grab": d1 - t0, "process": time.monotonic() - d1})
             except Exception as e:
                 fails += 1
                 self.depth_status = f"error: {type(e).__name__} {e}"[:160]
@@ -236,14 +246,17 @@ class FaceServoSession:
         while self._running:
             try:
                 t0 = self.robot.now()
+                p0 = time.monotonic()
                 frames = self.robot.get_frames([self.camera])
                 frame = frames.get(self.camera)
                 if frame is None:
                     time.sleep(0.1)
                     continue
+                p1 = time.monotonic()
                 one = _OneFrame(self.robot, frames)
                 one.pose_fn = self._pose_fn
                 obs = self.det.observe(one)
+                p2 = time.monotonic()
                 self.tracker.update(obs)
                 now = self.robot.now()
                 state = self.tracker.state(now)
@@ -256,15 +269,21 @@ class FaceServoSession:
                     view = FaceView((float(lips[0]), float(lips[1])), m.distance, m.frontalness,
                                     (k.width, k.height), k.fx, k.fy)
                 t = time.monotonic()
-                self.fps = 0.8 * self.fps + 0.2 / max(t - last, 1e-3)
+                self._frame_times.append(t)
+                while self._frame_times and t - self._frame_times[0] > 2.0:
+                    self._frame_times.popleft()
+                self.fps = (len(self._frame_times) - 1) / max(t - self._frame_times[0], 1e-3) if len(self._frame_times) > 1 else 0.0
                 last = t
                 snap = {"frame_t": t0, "view": view, "state": state, "obs": obs, "frame": frame}
                 with self._lock:
                     self._snap = snap
+                p3 = time.monotonic()
                 if self.render is not None:
                     jpeg = self.render(frame, self)
                     with self._lock:
                         self._jpeg = jpeg
+                p4 = time.monotonic()
+                self._perf_add("cam", {"grab": p1 - p0, "face": p2 - p1, "track": p3 - p2, "draw": p4 - p3, "total": p4 - p0})
                 with self._new_frame:
                     self._new_frame.notify_all()
             except Exception as e:  # keep the preview alive through network hiccups (the rig reconnects)
@@ -435,8 +454,12 @@ class FaceServoSession:
 
     FOOD_SPOKEN = {"cereal": "cereal", "mms": "M and Ms", "empty": "nothing"}
 
+    QUIET_ACTIONS = ("scoop_bowl", "go_mouth")  # debug moves: no narration
+
     def _say(self, text: str) -> None:
         """Narration: the dashboard speaks these aloud (and they appear in the log)."""
+        if self.mode in self.QUIET_ACTIONS:
+            return
         self._speech_id += 1
         self.speech.append({"id": self._speech_id, "t": time.strftime("%H:%M:%S"), "text": text})
         self._event("say", text)
@@ -1558,6 +1581,42 @@ class FaceServoSession:
     LOADED_EXTEND = {"approach_speed": 0.05, "near_speed": 0.03, "near_m": 0.06, "retreat_speed": 0.06,
                      "reach_accel": 0.08}
 
+    def _do_scoop_bowl(self) -> None:
+        """Debug, no vision, no speech: home -> scoop from the given bowl (kw bowl: bowl1 / bowl2)
+        at its calibrated position -> home."""
+        bid = str((getattr(self, "_kw", {}) or {}).get("bowl", "bowl1"))
+        if bid not in ("bowl1", "bowl2"):
+            raise ValueError(f"unknown bowl {bid!r}")
+        self._do_home_scoop(bowl=self._scoop_bowl_dict(bid))
+        self.reason = f"scooped from {'Bowl 1' if bid == 'bowl1' else 'Bowl 2'} (no vision): back home"
+        self._event("scoop", self.reason)
+
+    def _do_go_mouth(self) -> None:
+        """Debug, no vision, no speech: Feed's path without the camera. Home -> the search height
+        -> pan to where the person sits -> the taught close-to-the-mouth pose (slowly) -> hold for
+        the eating time -> back the same way -> home. STOP at any time."""
+        close = (self.taught.close or {}).get("joints")
+        if close is None:
+            raise RuntimeError("teach the close pose first (the spoon at the mouth)")
+        home = self.home_pose()
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="mouth spot: going home")
+        sweep = home.copy()
+        if self.taught.look is not None and self.taught.notes.get("look_t"):
+            sweep = np.asarray(self.taught.look, float).copy()
+            pre = sweep.copy(); pre[PAN] = home[PAN]
+            self._glide(pre, speed_degs=self.LOADED_DEGS, what="mouth spot: to the search height")
+        sweep[PAN] = self._person_pan()
+        self._glide(sweep, speed_degs=self.LOADED_DEGS, what="mouth spot: sweeping to the person")
+        q = np.asarray(close, float)
+        self._glide(q, speed_degs=self.LOADED_DEGS / 2, what="mouth spot: moving to the taught mouth pose")
+        self.reason = f"mouth spot: holding {self.ext_cfg.hold_s:.0f} s"
+        if self._stop.wait(self.ext_cfg.hold_s):
+            raise Stopped()
+        self._glide(sweep, speed_degs=self.LOADED_DEGS, what="mouth spot: backing out")
+        self._glide(home, speed_degs=self.LOADED_DEGS, what="mouth spot: going home")
+        self.reason = "mouth spot done (no vision): back home"
+        self._event("feed", self.reason)
+
     def _do_feed(self) -> None:
         """One bite with a loaded spoon, gently (LOADED_*), restoring the normal tuning after."""
         saved = (self.track_cfg, self.ext_cfg)
@@ -1691,7 +1750,7 @@ class FaceServoSession:
             last = getattr(self, "_last_joints", None)
             joints = f"{last} (stale: {type(e).__name__})" if last else f"unavailable ({type(e).__name__})"
         return {
-            "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "joints": joints,
+            "mode": self.mode, "reason": self.reason, "fps": round(self.fps, 1), "perf": getattr(self, "_perf", {}), "joints": joints,
             "taught": {"home": self.taught.home, "look": self.taught.look, "near": self.taught.near, "calibrated": self.taught.jacobian is not None,
                        "close": self.taught.close, "close_margin_cm": round(self.ext_cfg.close_margin * 100, 1)},
             "track": ({**self.track.last, "travelled_cm": round(self.track.travelled * 100, 1),
