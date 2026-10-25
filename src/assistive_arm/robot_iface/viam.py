@@ -342,7 +342,8 @@ class ViamCameraRig:
             # the arm read hangs, so wait briefly and fall back to the last good pose (the video
             # must never freeze on the arm).
             origin = PoseInFrame(reference_frame=name, pose=VPose(o_z=1))
-            p = self._io.run(self.client.transform_pose(origin, "world"), timeout=0.5 if name in last else 5).pose
+            quick = name in last or getattr(self, "pose_error", None) is not None  # known pose, or the arm was already down
+            p = self._io.run(self.client.transform_pose(origin, "world"), timeout=0.5 if quick else 5).pose
             self.pose_error = None
             last[name] = viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
             return last[name]
