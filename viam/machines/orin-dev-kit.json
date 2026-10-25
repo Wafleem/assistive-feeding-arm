@@ -1,5 +1,5 @@
 {
-  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-23. SO-101 leader + follower with teleop (auto_start on). Both calibration sensors are disabled (only needed to recalibrate). Cameras: arm-camera and webcam-2 (the wrist camera; its frame is an estimate, to be verified), detections-view (YOLOv8s detections drawn on webcam-2), and webcam-2-depth / webcam-2-range: Depth Anything 3 metric depth, a point cloud and lidar-style ranges from webcam-2, served by the local module in modules/depth-anything-3 (installed at /home/ultraviolet/depth-anything-3 on the Orin; preview page on 127.0.0.1:8766). The ViamShellDanger shell service comes from a fragment, not listed here. No secrets are stored here.",
+  "_note": "Snapshot of the orin-dev-kit (Jetson AGX Orin, Ubuntu 24.04, JetPack 7, viam-server 1.13) machine config, 2026-10-24. SO-101 leader + follower with teleop (auto_start on); both calibration sensors disabled (only needed to recalibrate). Cameras: arm-camera, webcam-2 (the wrist camera; its frame is an estimate, to be verified), detections-view, and webcam-2-depth / webcam-2-range from the local module in modules/depth-anything-3 (on the Orin at /home/ultraviolet/depth-anything-3 -> the repo clone): Depth Pro depth computed on the cloud GPU (compute: cloud, through the depth-cloud-tunnel service to the Brev instance), preview page on 127.0.0.1:8766. Bowls, spoon and table are collision geometry; bowl-contents is a local module from assistive-arm-servo. The ViamShellDanger shell service comes from a fragment, not listed here. No secrets are stored here.",
   "components": [
     {
       "name": "follower-arm",
@@ -59,10 +59,10 @@
       "attributes": {
         "geometries": [
           {
-            "y": 685.8,
-            "label": "table",
-            "x": 1447.8,
+            "x": 726,
+            "y": 565,
             "z": 30,
+            "label": "table",
             "type": "box"
           }
         ]
@@ -70,8 +70,8 @@
       "frame": {
         "parent": "world",
         "translation": {
-          "x": 698.1,
-          "y": 266.7,
+          "x": 287.2,
+          "y": 227,
           "z": -15
         },
         "orientation": {
@@ -169,9 +169,9 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:webcam",
       "attributes": {
-        "height_px": 480,
-        "width_px": 640,
         "format": "YUYV",
+        "width_px": 640,
+        "height_px": 480,
         "video_path": "usb-icSpring_icspring_camera-video-index0",
         "frame_rate": 30
       }
@@ -181,9 +181,9 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:webcam",
       "attributes": {
-        "height_px": 480,
         "width_px": 640,
         "video_path": "usb-046d_C270_HD_WEBCAM_7DEF8890-video-index0",
+        "height_px": 480,
         "format": "MJPEG",
         "frame_rate": 30
       },
@@ -210,11 +210,12 @@
       "api": "rdk:component:camera",
       "model": "rdk:builtin:transform",
       "attributes": {
+        "source": "webcam-2",
         "pipeline": [
           {
             "attributes": {
-              "detector_name": "spoon-detector",
               "confidence_threshold": 0.3,
+              "detector_name": "spoon-detector",
               "valid_labels": [
                 "bowl",
                 "cup",
@@ -235,41 +236,7 @@
             },
             "type": "detections"
           }
-        ],
-        "source": "webcam-2"
-      }
-    },
-    {
-      "name": "spoon",
-      "api": "rdk:component:generic",
-      "model": "viam:obstacle-pack:obstacle",
-      "attributes": {
-        "geometries": [
-          {
-            "y": 45,
-            "label": "spoon",
-            "x": 50,
-            "z": 143,
-            "type": "box"
-          }
         ]
-      },
-      "frame": {
-        "parent": "follower-gripper",
-        "translation": {
-          "x": 0,
-          "y": 0,
-          "z": 61.5
-        },
-        "orientation": {
-          "type": "ov_degrees",
-          "value": {
-            "x": 0,
-            "y": 0,
-            "z": 1,
-            "th": 0
-          }
-        }
       }
     },
     {
@@ -277,12 +244,17 @@
       "api": "rdk:component:camera",
       "model": "assistive-arm:depth-anything-3:camera",
       "attributes": {
-        "weights": "/home/ultraviolet/depth-anything-3/weights/DA3METRIC-LARGE",
-        "produce_hz": 5,
+        "cloud_fallback": false,
+        "produce_hz": 3,
+        "compute": "cloud",
         "hfov_deg": 45,
+        "model": "depth-pro",
         "source": "webcam-2",
-        "preview_port": 8766
+        "weights": "/home/ultraviolet/depth-anything-3/weights/depth_pro.pt",
+        "preview_port": 8766,
+        "cloud_url": "http://127.0.0.1:8800"
       },
+      "disabled": false,
       "frame": {
         "parent": "follower-arm",
         "translation": {
@@ -307,6 +279,123 @@
       "model": "assistive-arm:depth-anything-3:range",
       "attributes": {
         "camera": "webcam-2-depth"
+      },
+      "disabled": false
+    },
+    {
+      "name": "bowl-right",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x60.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 309.2,
+          "y": 94.5,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "bowl-left",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle-from-mesh",
+      "attributes": {
+        "mesh_path": "/home/ultraviolet/bowl-150x60.ply"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 229.6,
+          "y": 216.5,
+          "z": 0
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "spoon",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle",
+      "attributes": {
+        "geometries": [
+          {
+            "x": 16,
+            "y": 16,
+            "label": "spoon-handle",
+            "z": 91,
+            "type": "box"
+          }
+        ]
+      },
+      "frame": {
+        "parent": "follower-gripper",
+        "translation": {
+          "x": 0.93,
+          "y": 0,
+          "z": 35.49
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0.026177,
+            "y": 0,
+            "z": 0.999657,
+            "th": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "spoon-bowl",
+      "api": "rdk:component:generic",
+      "model": "viam:obstacle-pack:obstacle",
+      "attributes": {
+        "geometries": [
+          {
+            "x": 32,
+            "y": 45,
+            "z": 61,
+            "label": "spoon-bowl",
+            "type": "box"
+          }
+        ]
+      },
+      "frame": {
+        "parent": "follower-gripper",
+        "translation": {
+          "x": 13.63,
+          "y": 0,
+          "z": 100.18
+        },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": {
+            "x": 0.026177,
+            "y": 0,
+            "z": 0.999657,
+            "th": 0
+          }
+        }
       }
     }
   ],
@@ -322,13 +411,13 @@
       "api": "rdk:service:generic",
       "model": "devrel:so101:teleop",
       "attributes": {
-        "manage_leader_torque": true,
-        "follower_gripper": "follower-gripper",
-        "follower_arm": "follower-arm",
-        "leader_arm": "leader-arm",
+        "auto_start": true,
         "rate_hz": 100,
-        "leader_gripper": "leader-gripper",
-        "auto_start": true
+        "leader_arm": "leader-arm",
+        "follower_arm": "follower-arm",
+        "follower_gripper": "follower-gripper",
+        "manage_leader_torque": true,
+        "leader_gripper": "leader-gripper"
       },
       "disabled": false
     },
@@ -337,11 +426,17 @@
       "api": "rdk:service:vision",
       "model": "viam-labs:vision:yolov8",
       "attributes": {
-        "task": "detect",
+        "confidence": 0.3,
         "camera_name": "webcam-2",
-        "model_location": "yolov8s.pt",
-        "confidence": 0.3
+        "task": "detect",
+        "model_location": "yolov8s.pt"
       }
+    },
+    {
+      "name": "bowl-contents",
+      "api": "rdk:service:vision",
+      "model": "assistive-arm:bowl-contents:clip",
+      "attributes": {}
     }
   ],
   "modules": [
@@ -368,10 +463,15 @@
       "name": "depth-anything-3",
       "executable_path": "/home/ultraviolet/depth-anything-3/run.sh",
       "env": {
-        "DA3_PREVIEW": "stream",
+        "DA3_LOG_LEVEL": "WARN",
         "PYTHONUNBUFFERED": "1",
-        "DA3_LOG_LEVEL": "WARN"
+        "DA3_REV": "depth-pro"
       }
+    },
+    {
+      "type": "local",
+      "name": "bowl-contents",
+      "executable_path": "/home/ultraviolet/assistive-arm-servo/modules/bowl-contents/run.sh"
     }
   ]
 }
