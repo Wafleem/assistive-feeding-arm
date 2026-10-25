@@ -336,14 +336,19 @@ class ViamCameraRig:
         """Camera pose in the base (world) frame; identity if the frame system can't say."""
         from viam.proto.common import Pose as VPose, PoseInFrame
 
+        last = self.__dict__.setdefault("_last_pose", {})
         try:
+            # The camera rides on the arm: this needs the arm's joints. When the servo bus hiccups
+            # the arm read hangs, so wait briefly and fall back to the last good pose (the video
+            # must never freeze on the arm).
             origin = PoseInFrame(reference_frame=name, pose=VPose(o_z=1))
-            p = self._io.run(self.client.transform_pose(origin, "world"), timeout=5).pose
+            p = self._io.run(self.client.transform_pose(origin, "world"), timeout=0.5 if name in last else 5).pose
             self.pose_error = None
-            return viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
+            last[name] = viam_dict_to_pose({k: getattr(p, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")})
+            return last[name]
         except Exception as e:  # no frame configured: positions stay in the camera frame
             self.pose_error = str(e)
-            return Pose()
+            return last.get(name, Pose())
 
     def close(self) -> None:
         self._io.run(self.client.close())
