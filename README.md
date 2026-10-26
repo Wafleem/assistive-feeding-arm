@@ -6,11 +6,9 @@
 in the *Physical AI for Good* track sponsored by [Viam](https://www.viam.com/).
 Built in one weekend by Kurt Lin, Sunny Li and Safal Ghimire.
 
-![1. It scoops, 2. It feeds you](docs/media/scoop_and_feed.jpg)
-
-## Watch it
-
 [![Watch the demo on YouTube](https://img.youtube.com/vi/ueZ0i9V6slo/maxresdefault.jpg)](https://youtu.be/ueZ0i9V6slo)
+
+**[Watch the demo on YouTube](https://youtu.be/ueZ0i9V6slo)**
 
 ## Why
 
@@ -18,6 +16,8 @@ Some people can't lift a spoon to their mouth, for example after a stroke or wit
 This robot helps them eat on their own, at their own pace, using only their voice.
 
 ## How it works
+
+![1. It scoops, 2. It feeds you](docs/media/scoop_and_feed.jpg)
 
 1. **You ask:** "Grab me some cereal."
 2. **It looks into each bowl** to find the food you asked for.

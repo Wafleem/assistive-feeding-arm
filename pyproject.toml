@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "assistive-arm"
 version = "0.1.0"
-description = "Assisted eating with an xArm6: mouth tracking, open-vocabulary food perception, gentle grasping, safe feeding motion, LLM routing; MuJoCo sim, Viam on hardware"
+description = "Assistive feeding robot: voice request, bowl recognition (CLIP), learned scooping and face-tracked feeding on an SO-101 arm with Viam"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 sim = ["mujoco>=3.1"]
-dev = ["pytest>=8", "mujoco>=3.1"]
+dev = ["pytest>=8", "mujoco>=3.1", "opencv-python-headless>=4.8"]  # cv2: bowl-ID crops are JPEG-encoded
 viam = ["viam-sdk>=0.40"]
 vision = ["torch", "transformers>=4.44", "pillow"]
 # Real-face mouth tracking (MediaPipe Face Landmarker) and real-time detectors (YOLOv8 / YOLO-World)
