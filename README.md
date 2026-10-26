@@ -10,6 +10,13 @@ Built in one weekend by Kurt Lin, Sunny Li and Safal Ghimire.
 
 **[Watch the demo on YouTube](https://youtu.be/ueZ0i9V6slo)**
 
+**In short:** a voice-controlled robot arm built in **Python** on the **Viam** robotics platform,
+using a 3D-printed **SO-101** arm and an **NVIDIA Jetson Orin**. It combines **computer vision**
+(OpenAI **CLIP** in **PyTorch** to recognise food, Google **MediaPipe** face tracking with a **Kalman filter**, **OpenCV**,
+Apple **Depth Pro** depth on a cloud GPU) with real-time **motion control**: kinematics,
+smooth trajectories, and a scoop learned from a human demonstration. People talk to it through a
+**JavaScript** web app that uses speech recognition and text-to-speech.
+
 ## Why
 
 Some people can't lift a spoon to their mouth, for example after a stroke or with ALS.
@@ -19,10 +26,10 @@ This robot helps them eat on their own, at their own pace, using only their voic
 
 ![1. It scoops, 2. It feeds you](docs/media/scoop_and_feed.jpg)
 
-1. **You ask:** "Grab me some cereal."
-2. **It looks into each bowl** to find the food you asked for.
-3. **It scoops a bite,** the way we taught it by guiding the arm by hand.
-4. **It finds your mouth** with its camera and brings the spoon to you.
+1. **You ask:** "Grab me some cereal." (speech recognition in the browser)
+2. **It looks into each bowl** to find the food you asked for, using an AI vision model (CLIP) on the Jetson.
+3. **It scoops a bite,** the way we taught it by guiding the arm by hand (learning from demonstration).
+4. **It finds your mouth** with its camera (MediaPipe face tracking) and brings the spoon to you.
 5. **It stops 3 cm from your lips,** waits while you eat, then goes back.
 
 Say **"stop"** at any time and the arm stops.
