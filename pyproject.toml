@@ -11,7 +11,7 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 sim = ["mujoco>=3.1"]
-dev = ["pytest>=8", "mujoco>=3.1", "opencv-python-headless>=4.8"]  # cv2: bowl-ID crops are JPEG-encoded
+dev = ["pytest>=8", "mujoco>=3.1", "opencv-python-headless>=4.8", "pillow"]  # cv2: bowl-ID crops; Pillow: vision-preview tests
 viam = ["viam-sdk>=0.40"]
 vision = ["torch", "transformers>=4.44", "pillow"]
 # Real-face mouth tracking (MediaPipe Face Landmarker) and real-time detectors (YOLOv8 / YOLO-World)
