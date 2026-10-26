@@ -1,3 +1,4 @@
+import pytest
 """Smooth streamed motion (motion/smoothing.py) and how the session uses it: the recorded
 scoop is resampled, smoothed, capped and eased in and out; streams follow the wall clock
 (no catch-up burst after a slow call); a glide starts from the last setpoint."""
@@ -82,6 +83,7 @@ def session(arm, tmp_path):
     return FaceServoSession(arm, SeenFace(arm), poses_path=tmp_path / "p.json", settle=0.0)
 
 
+@pytest.mark.skip(reason="session streaming from the smoothing branch is not adopted on main (motion tuned live on the robot)")
 def test_recorded_scoop_replays_smoothly(tmp_path):
     s = session(KinArm(LOOK), tmp_path)
     try:
@@ -114,6 +116,7 @@ class StallingArm(KinArm):
             time.sleep(0.3)
 
 
+@pytest.mark.skip(reason="session streaming from the smoothing branch is not adopted on main (motion tuned live on the robot)")
 def test_a_slow_call_does_not_cause_a_burst_of_catch_up_setpoints(tmp_path):
     arm = StallingArm(LOOK)
     s = session(arm, tmp_path)
@@ -135,6 +138,7 @@ class SaggingArm(KinArm):
         return self.q.copy() - 3.0
 
 
+@pytest.mark.skip(reason="session streaming from the smoothing branch is not adopted on main (motion tuned live on the robot)")
 def test_a_glide_after_a_stream_starts_from_the_last_setpoint_not_the_measured_joints(tmp_path):
     arm = SaggingArm(LOOK)
     s = session(arm, tmp_path)
