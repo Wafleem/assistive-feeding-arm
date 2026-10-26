@@ -10,12 +10,12 @@ Built in one weekend by Kurt Lin, Sunny Li and Safal Ghimire.
 
 **[Watch the demo on YouTube](https://youtu.be/ueZ0i9V6slo)**
 
-**In short:** a voice-controlled robot arm built in **Python** on the **Viam** robotics platform,
-using a 3D-printed **SO-101** arm and an **NVIDIA Jetson Orin**. It combines **computer vision**
-(OpenAI **CLIP** in **PyTorch** to recognise food, Google **MediaPipe** face tracking with a **Kalman filter**, **OpenCV**,
-Apple **Depth Pro** depth on a cloud GPU) with real-time **motion control**: kinematics,
-smooth trajectories, and a scoop learned from a human demonstration. People talk to it through a
-**JavaScript** web app that uses speech recognition and text-to-speech.
+**In short:** a voice-controlled assistive feeding system on a 3D-printed, 5-DOF **SO-101 robotic arm**,
+built in **Python** on the **Viam** robotics platform with an **NVIDIA Jetson Orin**. It combines
+**computer vision** (OpenAI **CLIP** in **PyTorch** to recognise food, Google **MediaPipe** face tracking
+with a **Kalman filter**, **OpenCV**) with real-time **motion control**: inverse kinematics that keeps the
+spoon level, smooth trajectories, and a scoop learned from a human demonstration. People talk to it through
+a **JavaScript** web app that uses speech recognition and text-to-speech.
 
 ## Why
 
@@ -74,8 +74,7 @@ flowchart LR
 | Food recognition | OpenAI CLIP ViT-B/32 (`openai/clip-vit-base-patch32`), Hugging Face Transformers and PyTorch, FP16 on CUDA. Zero-shot prompt ensembles plus a few enrolled example photos, packaged as a custom Viam vision-service module. | NVIDIA Jetson Orin GPU |
 | Bowl positions | Viam frame system and 3D scene; camera pose from forward kinematics; bowls calibrated by touching them with the spoon tip. | Laptop |
 | Face and mouth tracking | Google MediaPipe Face Landmarker (478 landmarks) plus a Kalman filter. Distance estimated from eye spacing. | Laptop CPU, 30 fps |
-| Depth | Apple Depth Pro (monocular metric depth) in a custom Viam camera module. Depth Anything 3 is available as an alternative. | Cloud GPU (NVIDIA H200 via Brev) |
-| Arm control | Custom SO-101 kinematics; damped-least-squares tracking with joint limits; 60 Hz minimum-jerk trajectories; servo-sag compensation. | Laptop, to the arm through Viam |
+| Arm control | Custom SO-101 kinematics; inverse-kinematics tracking that keeps the spoon level within joint limits; smooth 60 Hz trajectories; compensation for servo sag. | Laptop, to the arm through Viam |
 | Scooping | Learning from demonstration: one hand-guided scoop recorded at 30 Hz, smoothed, and retargeted to each bowl with rim and floor clearance checks. | Laptop |
 | Robot platform | Viam RDK (`viam-server`), Viam Python SDK, SO-101 arm module | Jetson Orin |
 | Operator dashboard | Python HTTP server, MJPEG video, OpenCV overlays; HTML, CSS and JavaScript web UI. | Laptop and browser |
@@ -87,11 +86,10 @@ near the face, and voice control works only after an operator presses a safety b
 
 <img src="docs/media/hardware.jpg" alt="Hardware: 3D-printed robot arm, spoon, Jetson Orin, dashboard" width="420">
 
-- **SO-101 robot arm:** low-cost and 3D-printed, with a spoon in its gripper.
+- **SO-101 robotic arm:** low-cost, 3D-printed, 5-DOF plus a gripper holding the spoon.
 - **Logitech C270 webcam** on the wrist.
 - **NVIDIA Jetson Orin** for the robot software and the CLIP model.
 - **Laptop** for face tracking, control and the dashboard.
-- **Cloud GPU** for depth.
 
 ### Run it
 
